@@ -1,0 +1,4 @@
+.git
+.gitignore
+/web/dist/*
+!/web/dist/.gitkeep

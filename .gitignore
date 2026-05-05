@@ -1,0 +1,7 @@
+/server
+/out/
+/web/dist/*
+!/web/dist/.gitkeep
+/cover.out
+/coverage.html
+.env

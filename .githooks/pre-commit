@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-or-later
+set -euo pipefail
+
+echo "==> go build"
+go build ./...
+
+echo "==> go vet"
+go vet ./...
+
+echo "==> gofmt"
+unformatted=$(gofmt -l .)
+if [ -n "$unformatted" ]; then
+  echo "gofmt: files need formatting:" >&2
+  echo "$unformatted" >&2
+  exit 1
+fi
+
+echo "==> go test -race"
+go test ./... -race
+
+if command -v golangci-lint >/dev/null 2>&1; then
+  echo "==> golangci-lint"
+  golangci-lint run
+else
+  echo "(skipping golangci-lint: not installed)" >&2
+fi
