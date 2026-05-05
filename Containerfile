@@ -1,17 +1,27 @@
 # syntax=docker/dockerfile:1.7
 
-# Build the frontend SPA. The frontend lives in a separate repo and is
-# supplied as a named build context:
-#   podman build --build-context frontend=../cat-wrangler-frontend -t cat-wrangler:dev .
-FROM docker.io/library/node:22-alpine AS frontend-build
+FROM quay.io/centos/centos:stream10 AS frontend-build
+RUN dnf install -y --setopt=install_weak_deps=False nodejs npm \
+ && dnf clean all && rm -rf /var/cache/dnf
 WORKDIR /app
 COPY --from=frontend package.json package-lock.json* ./
 RUN npm ci
 COPY --from=frontend . .
 RUN npm run build
 
-# Build the Go binary with the frontend embedded.
-FROM docker.io/library/golang:1.24-alpine AS backend-build
+FROM quay.io/centos/centos:stream10 AS backend-build
+ARG GO_VERSION=1.24.0
+RUN dnf install -y --setopt=install_weak_deps=False tar gzip curl-minimal \
+ && dnf clean all && rm -rf /var/cache/dnf \
+ && ARCH=$(uname -m) \
+ && case "$ARCH" in \
+        x86_64)  GOARCH=amd64 ;; \
+        aarch64) GOARCH=arm64 ;; \
+        *) echo "unsupported arch: $ARCH" >&2; exit 1 ;; \
+    esac \
+ && curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-${GOARCH}.tar.gz" \
+    | tar -C /usr/local -xz
+ENV PATH=/usr/local/go/bin:$PATH
 WORKDIR /src
 COPY go.mod go.sum* ./
 RUN go mod download
@@ -22,9 +32,11 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
     -o /out/server \
     ./cmd/server
 
-# Final minimal image: distroless, non-root, no shell.
-FROM gcr.io/distroless/static-debian12:nonroot
-COPY --from=backend-build /out/server /server
+FROM quay.io/centos/centos:stream10
+RUN dnf install -y --setopt=install_weak_deps=False ca-certificates \
+ && dnf clean all && rm -rf /var/cache/dnf \
+ && useradd --uid 65532 --user-group --create-home --shell /sbin/nologin app
+COPY --from=backend-build /out/server /usr/local/bin/server
 EXPOSE 8080
-USER nonroot:nonroot
-ENTRYPOINT ["/server"]
+USER app
+ENTRYPOINT ["/usr/local/bin/server"]
