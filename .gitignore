@@ -5,3 +5,6 @@
 /cover.out
 /coverage.html
 .env
+*.db
+*.db-wal
+*.db-shm

@@ -10,7 +10,7 @@ COPY --from=frontend . .
 RUN npm run build
 
 FROM quay.io/centos/centos:stream10 AS backend-build
-ARG GO_VERSION=1.24.0
+ARG GO_VERSION=1.25.0
 RUN dnf install -y --setopt=install_weak_deps=False tar gzip curl-minimal \
  && dnf clean all && rm -rf /var/cache/dnf \
  && ARCH=$(uname -m) \
@@ -37,6 +37,9 @@ RUN dnf install -y --setopt=install_weak_deps=False ca-certificates \
  && dnf clean all && rm -rf /var/cache/dnf \
  && useradd --uid 65532 --user-group --create-home --shell /sbin/nologin app
 COPY --from=backend-build /out/server /usr/local/bin/server
+RUN install -d -o app -g app -m 0750 /var/lib/cat-wrangler
+ENV DB_PATH=/var/lib/cat-wrangler/cat-wrangler.db
+VOLUME ["/var/lib/cat-wrangler"]
 EXPOSE 8080
 USER app
 ENTRYPOINT ["/usr/local/bin/server"]

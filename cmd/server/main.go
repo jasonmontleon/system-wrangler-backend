@@ -22,7 +22,17 @@ func main() {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
 
 	addr := ":" + envOr("PORT", "8080")
-	store := inventory.NewMemStore()
+	dbPath := envOr("DB_PATH", "cat-wrangler.db")
+	store, err := inventory.OpenSQLite("file:" + dbPath)
+	if err != nil {
+		slog.Error("open db", "path", dbPath, "err", err)
+		os.Exit(1)
+	}
+	defer func() {
+		if err := store.Close(); err != nil {
+			slog.Error("close db", "err", err)
+		}
+	}()
 
 	srv := &http.Server{
 		Addr:              addr,
