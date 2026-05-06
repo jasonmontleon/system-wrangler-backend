@@ -1,7 +1,8 @@
 # syntax=docker/dockerfile:1.7
 
 FROM quay.io/centos/centos:stream10 AS frontend-build
-RUN dnf install -y --setopt=install_weak_deps=False nodejs npm \
+RUN dnf update -y \
+ && dnf install -y --setopt=install_weak_deps=False nodejs npm \
  && dnf clean all && rm -rf /var/cache/dnf
 WORKDIR /app
 COPY --from=frontend package.json package-lock.json* ./
@@ -11,7 +12,8 @@ RUN npm run build
 
 FROM quay.io/centos/centos:stream10 AS backend-build
 ARG GO_VERSION=1.25.0
-RUN dnf install -y --setopt=install_weak_deps=False tar gzip curl-minimal \
+RUN dnf update -y \
+ && dnf install -y --setopt=install_weak_deps=False tar gzip curl-minimal \
  && dnf clean all && rm -rf /var/cache/dnf \
  && ARCH=$(uname -m) \
  && case "$ARCH" in \
@@ -33,7 +35,8 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
     ./cmd/server
 
 FROM quay.io/centos/centos:stream10
-RUN dnf install -y --setopt=install_weak_deps=False ca-certificates \
+RUN dnf update -y \
+ && dnf install -y --setopt=install_weak_deps=False ca-certificates \
  && dnf clean all && rm -rf /var/cache/dnf \
  && useradd --uid 65532 --user-group --create-home --shell /sbin/nologin app
 COPY --from=backend-build /out/server /usr/local/bin/server
