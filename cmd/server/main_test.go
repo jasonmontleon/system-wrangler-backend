@@ -6,11 +6,43 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/http/cookiejar"
 	"net/http/httptest"
+	"path/filepath"
+	"strings"
 	"testing"
 
+	"system-wrangler-backend/internal/auth"
+	"system-wrangler-backend/internal/database"
 	"system-wrangler-backend/internal/inventory"
 )
+
+// newTestMux returns a fully-wired mux backed by a temp SQLite DB so the
+// integration paths exercised here mirror the production wiring.
+func newTestMux(t *testing.T) http.Handler {
+	t.Helper()
+	dsn := "file:" + filepath.Join(t.TempDir(), "test.db")
+	db, err := database.Open(dsn)
+	if err != nil {
+		t.Fatalf("database.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	invStore, err := inventory.NewSQLiteStore(db)
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	authStore, err := auth.NewSQLiteAuthStore(db)
+	if err != nil {
+		t.Fatalf("NewSQLiteAuthStore: %v", err)
+	}
+	secret, err := auth.LoadOrInitSecret(authStore)
+	if err != nil {
+		t.Fatalf("LoadOrInitSecret: %v", err)
+	}
+	svc := auth.NewService(authStore, secret, false)
+	return newMux(invStore, authStore, svc, secret)
+}
 
 func TestHandleHealth(t *testing.T) {
 	w := httptest.NewRecorder()
@@ -35,7 +67,7 @@ func TestHandleHealth(t *testing.T) {
 }
 
 func TestServerRoutesHealth(t *testing.T) {
-	srv := httptest.NewServer(withLogging(newMux(inventory.NewMemStore())))
+	srv := httptest.NewServer(withLogging(newTestMux(t)))
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/api/health")
@@ -56,8 +88,8 @@ func TestServerRoutesHealth(t *testing.T) {
 	}
 }
 
-func TestServerRoutesHostsList(t *testing.T) {
-	srv := httptest.NewServer(withLogging(newMux(inventory.NewMemStore())))
+func TestHostsRequiresAuth(t *testing.T) {
+	srv := httptest.NewServer(withLogging(newTestMux(t)))
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/api/hosts")
@@ -65,11 +97,50 @@ func TestServerRoutesHostsList(t *testing.T) {
 		t.Fatalf("get: %v", err)
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("status = %d, want 401", resp.StatusCode)
+	}
+}
+
+// TestHostsReachableAfterSetup walks the full bootstrap path: setup admin,
+// then reuse the cookie to read /api/hosts.
+func TestHostsReachableAfterSetup(t *testing.T) {
+	srv := httptest.NewServer(withLogging(newTestMux(t)))
+	defer srv.Close()
+
+	jar, _ := cookiejar.New(nil)
+	client := &http.Client{Jar: jar}
+	resp, err := client.Post(srv.URL+"/api/auth/setup", "application/json",
+		strings.NewReader(`{"username":"admin","password":"correctpassword"}`))
+	if err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("setup status = %d", resp.StatusCode)
+	}
+
+	hostsResp, err := client.Get(srv.URL + "/api/hosts")
+	if err != nil {
+		t.Fatalf("hosts: %v", err)
+	}
+	defer hostsResp.Body.Close()
+	if hostsResp.StatusCode != http.StatusOK {
+		t.Errorf("hosts status = %d, want 200", hostsResp.StatusCode)
+	}
+}
+
+func TestAuthEndpointsAreUngated(t *testing.T) {
+	srv := httptest.NewServer(withLogging(newTestMux(t)))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/api/auth/status")
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("status = %d, want 200", resp.StatusCode)
-	}
-	if ct := resp.Header.Get("Content-Type"); ct != "application/json" {
-		t.Errorf("content-type = %q", ct)
 	}
 }
 

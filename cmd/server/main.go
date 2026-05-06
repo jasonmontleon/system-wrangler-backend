@@ -14,6 +14,8 @@ import (
 	"syscall"
 	"time"
 
+	"system-wrangler-backend/internal/auth"
+	"system-wrangler-backend/internal/database"
 	"system-wrangler-backend/internal/inventory"
 	"system-wrangler-backend/web"
 )
@@ -29,20 +31,36 @@ func main() {
 	}
 
 	dbPath := envOr("DB_PATH", "system-wrangler.db")
-	store, err := inventory.OpenSQLite("file:" + dbPath)
+	db, err := database.Open("file:" + dbPath)
 	if err != nil {
 		slog.Error("open db", "path", dbPath, "err", err)
 		os.Exit(1)
 	}
 	defer func() {
-		if err := store.Close(); err != nil {
+		if err := db.Close(); err != nil {
 			slog.Error("close db", "err", err)
 		}
 	}()
+	store, err := inventory.NewSQLiteStore(db)
+	if err != nil {
+		slog.Error("init inventory store", "err", err)
+		os.Exit(1)
+	}
+	authStore, err := auth.NewSQLiteAuthStore(db)
+	if err != nil {
+		slog.Error("init auth store", "err", err)
+		os.Exit(1)
+	}
+	secret, err := auth.LoadOrInitSecret(authStore)
+	if err != nil {
+		slog.Error("load session secret", "err", err)
+		os.Exit(1)
+	}
+	authSvc := auth.NewService(authStore, secret, useTLS)
 
 	srv := &http.Server{
 		Addr:              addr,
-		Handler:           withLogging(newMux(store)),
+		Handler:           withLogging(newMux(store, authStore, authSvc, secret)),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
@@ -87,10 +105,12 @@ func main() {
 	<-probeDone
 }
 
-func newMux(store inventory.Store) *http.ServeMux {
+func newMux(store inventory.Store, users auth.UserStore, authSvc *auth.Service, secret []byte) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", handleHealth)
-	inventory.NewHandler(store).Register(mux)
+	authSvc.Register(mux)
+	requireUser := auth.RequireUser(secret, users, time.Now)
+	inventory.NewHandler(store).Register(mux, requireUser)
 	mux.Handle("GET /", spaHandler())
 	return mux
 }

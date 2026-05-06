@@ -8,51 +8,28 @@ import (
 	"fmt"
 	"strings"
 	"time"
-
-	_ "modernc.org/sqlite"
 )
 
-// SQLiteStore is a Store backed by a single SQLite database file.
-// In-memory databases ("file::memory:?cache=shared") work for tests, but
-// per-test files via t.TempDir() are simpler and exercise the same code path.
+// SQLiteStore is a Store backed by SQLite. The *sql.DB is owned by the caller
+// (typically opened via internal/database.Open); this lets every domain
+// package share one connection pool without one of them owning the others'
+// tables.
 type SQLiteStore struct {
 	db *sql.DB
 
-	// Same injection points as MemStore so tests stay deterministic.
 	NewID func() string
 	Now   func() time.Time
 }
 
-// OpenSQLite opens (or creates) the DB at dsn, applies safe defaults, and
-// ensures the schema exists. Caller owns the returned *SQLiteStore and must
-// Close it on shutdown.
-func OpenSQLite(dsn string) (*SQLiteStore, error) {
-	db, err := sql.Open("sqlite", dsn)
-	if err != nil {
-		return nil, fmt.Errorf("inventory: open %q: %w", dsn, err)
-	}
-	// SQLite serializes writes; one conn keeps :memory: tests sane and is
-	// plenty for fleet-management write rates.
-	db.SetMaxOpenConns(1)
-
-	for _, p := range []string{
-		`PRAGMA journal_mode=WAL`,
-		`PRAGMA foreign_keys=ON`,
-		`PRAGMA busy_timeout=5000`,
-	} {
-		if _, err := db.Exec(p); err != nil {
-			_ = db.Close()
-			return nil, fmt.Errorf("inventory: %s: %w", p, err)
-		}
-	}
+// NewSQLiteStore ensures the inventory tables exist on db and returns a Store
+// using them. Calling it on an already-initialized db is a no-op (CREATE
+// TABLE IF NOT EXISTS).
+func NewSQLiteStore(db *sql.DB) (*SQLiteStore, error) {
 	if _, err := db.Exec(schema); err != nil {
-		_ = db.Close()
 		return nil, fmt.Errorf("inventory: schema: %w", err)
 	}
 	return &SQLiteStore{db: db, NewID: newUUID, Now: time.Now}, nil
 }
-
-func (s *SQLiteStore) Close() error { return s.db.Close() }
 
 // Unix nanoseconds for timestamps: trivial to sort, no parsing on read,
 // round-trips Go's time.Time without precision loss. NULL last_seen = never.

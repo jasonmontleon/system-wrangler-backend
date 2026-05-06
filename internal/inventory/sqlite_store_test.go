@@ -11,6 +11,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"system-wrangler-backend/internal/database"
 )
 
 // newTestSQLiteStore opens an SQLiteStore against a per-test file with the
@@ -19,11 +21,16 @@ import (
 func newTestSQLiteStore(t *testing.T) *SQLiteStore {
 	t.Helper()
 	dsn := "file:" + filepath.Join(t.TempDir(), "test.db")
-	s, err := OpenSQLite(dsn)
+	db, err := database.Open(dsn)
 	if err != nil {
-		t.Fatalf("OpenSQLite: %v", err)
+		t.Fatalf("database.Open: %v", err)
 	}
-	t.Cleanup(func() { _ = s.Close() })
+	t.Cleanup(func() { _ = db.Close() })
+
+	s, err := NewSQLiteStore(db)
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
 
 	var counter atomic.Int64
 	s.NewID = func() string {
@@ -40,9 +47,9 @@ func newTestSQLiteStore(t *testing.T) *SQLiteStore {
 func TestSQLiteOpenInvalidDSN(t *testing.T) {
 	// A path under a nonexistent directory cannot be created; SQLite returns
 	// an error during the first PRAGMA exec.
-	_, err := OpenSQLite("file:/nonexistent-dir-xyzzy/never.db")
+	_, err := database.Open("file:/nonexistent-dir-xyzzy/never.db")
 	if err == nil {
-		t.Fatal("OpenSQLite on bad path: want error, got nil")
+		t.Fatal("database.Open on bad path: want error, got nil")
 	}
 }
 
@@ -75,8 +82,6 @@ func TestSQLiteStoreCreateAndGet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	// Compare fields rather than struct equality: time.Time round-tripping
-	// through SQLite should be exact (UnixNano), but be explicit.
 	if got.ID != h.ID || got.Name != h.Name || got.Hostname != h.Hostname {
 		t.Errorf("Get returned %+v, want %+v", got, h)
 	}
@@ -194,29 +199,38 @@ func TestSQLiteStoreUpdateProbeMissing(t *testing.T) {
 	}
 }
 
-// TestSQLiteStorePersistence verifies that data written by one *SQLiteStore
-// is visible when the same DB file is reopened — guarding against any future
-// change that accidentally moves state into process-local memory.
+// TestSQLiteStorePersistence verifies that data written through one
+// *SQLiteStore is visible when the same DB file is reopened — guarding
+// against any future change that accidentally moves state into process-local
+// memory.
 func TestSQLiteStorePersistence(t *testing.T) {
 	dsn := "file:" + filepath.Join(t.TempDir(), "persist.db")
 
-	s1, err := OpenSQLite(dsn)
+	db1, err := database.Open(dsn)
 	if err != nil {
-		t.Fatalf("OpenSQLite #1: %v", err)
+		t.Fatalf("database.Open #1: %v", err)
+	}
+	s1, err := NewSQLiteStore(db1)
+	if err != nil {
+		t.Fatalf("NewSQLiteStore #1: %v", err)
 	}
 	h, err := s1.Create(HostInput{Name: "persisted", Hostname: "10.0.0.99"})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	if err := s1.Close(); err != nil {
+	if err := db1.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
 
-	s2, err := OpenSQLite(dsn)
+	db2, err := database.Open(dsn)
 	if err != nil {
-		t.Fatalf("OpenSQLite #2: %v", err)
+		t.Fatalf("database.Open #2: %v", err)
 	}
-	defer s2.Close()
+	defer db2.Close()
+	s2, err := NewSQLiteStore(db2)
+	if err != nil {
+		t.Fatalf("NewSQLiteStore #2: %v", err)
+	}
 
 	got, err := s2.Get(h.ID)
 	if err != nil {

@@ -18,7 +18,7 @@ func newTestServer(t *testing.T) (*httptest.Server, *MemStore) {
 	t.Helper()
 	store := newTestStore()
 	mux := http.NewServeMux()
-	NewHandler(store).Register(mux)
+	NewHandler(store).Register(mux, nil)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return srv, store
@@ -178,7 +178,7 @@ func TestHandlerStoreErrors(t *testing.T) {
 	failErr := errors.New("boom")
 	stub := &stubStore{err: failErr}
 	mux := http.NewServeMux()
-	NewHandler(stub).Register(mux)
+	NewHandler(stub).Register(mux, nil)
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 

@@ -16,13 +16,17 @@ type Handler struct {
 
 func NewHandler(s Store) *Handler { return &Handler{Store: s} }
 
-// Register attaches /api/hosts routes to the given mux. Method-prefixed
-// patterns require Go 1.22+; the module is on 1.24.
-func (h *Handler) Register(mux *http.ServeMux) {
-	mux.HandleFunc("GET /api/hosts", h.list)
-	mux.HandleFunc("POST /api/hosts", h.create)
-	mux.HandleFunc("GET /api/hosts/{id}", h.get)
-	mux.HandleFunc("DELETE /api/hosts/{id}", h.delete)
+// Register attaches /api/hosts routes to the given mux. Each handler is
+// wrapped in mw before registration so callers can apply auth (or any other
+// per-route middleware) without exposing the handler methods.
+func (h *Handler) Register(mux *http.ServeMux, mw func(http.Handler) http.Handler) {
+	if mw == nil {
+		mw = func(next http.Handler) http.Handler { return next }
+	}
+	mux.Handle("GET /api/hosts", mw(http.HandlerFunc(h.list)))
+	mux.Handle("POST /api/hosts", mw(http.HandlerFunc(h.create)))
+	mux.Handle("GET /api/hosts/{id}", mw(http.HandlerFunc(h.get)))
+	mux.Handle("DELETE /api/hosts/{id}", mw(http.HandlerFunc(h.delete)))
 }
 
 func (h *Handler) list(w http.ResponseWriter, _ *http.Request) {
