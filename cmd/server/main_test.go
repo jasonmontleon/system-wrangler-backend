@@ -9,7 +9,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"cat-wrangler-backend/internal/inventory"
+	"system-wrangler-backend/internal/inventory"
 )
 
 func TestHandleHealth(t *testing.T) {
@@ -133,7 +133,7 @@ func TestEnvOr(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			key := "CW_TEST_KEY_" + tt.name
+			key := "SW_TEST_KEY_" + tt.name
 			if tt.set {
 				t.Setenv(key, tt.val)
 			}

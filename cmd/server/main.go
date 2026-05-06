@@ -14,8 +14,8 @@ import (
 	"syscall"
 	"time"
 
-	"cat-wrangler-backend/internal/inventory"
-	"cat-wrangler-backend/web"
+	"system-wrangler-backend/internal/inventory"
+	"system-wrangler-backend/web"
 )
 
 func main() {
@@ -28,7 +28,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	dbPath := envOr("DB_PATH", "cat-wrangler.db")
+	dbPath := envOr("DB_PATH", "system-wrangler.db")
 	store, err := inventory.OpenSQLite("file:" + dbPath)
 	if err != nil {
 		slog.Error("open db", "path", dbPath, "err", err)

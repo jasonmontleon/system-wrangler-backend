@@ -1,12 +1,12 @@
-# Cat Wrangler — Backend
+# System Wrangler — Backend
 
-Go backend for Cat Wrangler, a web-based fleet management dashboard providing
+Go backend for System Wrangler, a web-based fleet management dashboard providing
 system telemetry and cross-platform package/update management across Linux,
 macOS, and Windows. The frontend lives in a sibling repo
-(`cat-wrangler-frontend`) and is embedded into this Go binary at build time
+(`system-wrangler-frontend`) and is embedded into this Go binary at build time
 via `web/embed.FS`.
 
-Module path is `cat-wrangler-backend` (placeholder). If/when the project moves
+Module path is `system-wrangler-backend` (placeholder). If/when the project moves
 to a hosted git remote, update `go.mod` and the import in `cmd/server/main.go`
 together.
 

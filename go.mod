@@ -1,4 +1,4 @@
-module cat-wrangler-backend
+module system-wrangler-backend
 
 go 1.25.0
 
