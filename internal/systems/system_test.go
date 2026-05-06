@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-package inventory
+package systems
 
 import (
 	"errors"
@@ -9,21 +9,21 @@ import (
 	"testing"
 )
 
-func TestHostInputValidate(t *testing.T) {
+func TestSystemInputValidate(t *testing.T) {
 	long := strings.Repeat("a", maxFieldLen+1)
 	tests := []struct {
 		name    string
-		in      HostInput
+		in      SystemInput
 		wantErr bool
 		wantMsg string
 	}{
-		{"ok", HostInput{Name: "host1", Hostname: "1.2.3.4"}, false, ""},
-		{"trims and accepts", HostInput{Name: "  ok  ", Hostname: " 1.2.3.4 "}, false, ""},
-		{"empty name", HostInput{Name: "", Hostname: "1.2.3.4"}, true, "name is required"},
-		{"whitespace name", HostInput{Name: "   ", Hostname: "1.2.3.4"}, true, "name is required"},
-		{"empty hostname", HostInput{Name: "host1", Hostname: ""}, true, "hostname is required"},
-		{"name too long", HostInput{Name: long, Hostname: "1.2.3.4"}, true, "exceeds"},
-		{"hostname too long", HostInput{Name: "host1", Hostname: long}, true, "exceeds"},
+		{"ok", SystemInput{Name: "host1", Hostname: "1.2.3.4"}, false, ""},
+		{"trims and accepts", SystemInput{Name: "  ok  ", Hostname: " 1.2.3.4 "}, false, ""},
+		{"empty name", SystemInput{Name: "", Hostname: "1.2.3.4"}, true, "name is required"},
+		{"whitespace name", SystemInput{Name: "   ", Hostname: "1.2.3.4"}, true, "name is required"},
+		{"empty hostname", SystemInput{Name: "host1", Hostname: ""}, true, "hostname is required"},
+		{"name too long", SystemInput{Name: long, Hostname: "1.2.3.4"}, true, "exceeds"},
+		{"hostname too long", SystemInput{Name: "host1", Hostname: long}, true, "exceeds"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

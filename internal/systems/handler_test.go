@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-package inventory
+package systems
 
 import (
 	"bytes"
@@ -35,7 +35,7 @@ func TestHandlerCreate(t *testing.T) {
 	srv, store := newTestServer(t)
 
 	body := strings.NewReader(`{"name":"host1","hostname":"10.0.0.1"}`)
-	resp, err := http.Post(srv.URL+"/api/hosts", "application/json", body)
+	resp, err := http.Post(srv.URL+"/api/systems", "application/json", body)
 	if err != nil {
 		t.Fatalf("post: %v", err)
 	}
@@ -44,10 +44,10 @@ func TestHandlerCreate(t *testing.T) {
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("status = %d, want 201", resp.StatusCode)
 	}
-	if loc := resp.Header.Get("Location"); loc != "/api/hosts/id-1" {
-		t.Errorf("Location = %q, want /api/hosts/id-1", loc)
+	if loc := resp.Header.Get("Location"); loc != "/api/systems/id-1" {
+		t.Errorf("Location = %q, want /api/systems/id-1", loc)
 	}
-	var got Host
+	var got System
 	decodeJSON(t, resp.Body, &got)
 	if got.ID != "id-1" || got.Name != "host1" || got.Hostname != "10.0.0.1" {
 		t.Errorf("got %+v", got)
@@ -73,7 +73,7 @@ func TestHandlerCreateInvalid(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			resp, err := http.Post(srv.URL+"/api/hosts", "application/json", strings.NewReader(tt.body))
+			resp, err := http.Post(srv.URL+"/api/systems", "application/json", strings.NewReader(tt.body))
 			if err != nil {
 				t.Fatalf("post: %v", err)
 			}
@@ -95,12 +95,12 @@ func TestHandlerCreateInvalid(t *testing.T) {
 func TestHandlerListAndGet(t *testing.T) {
 	srv, store := newTestServer(t)
 	for _, name := range []string{"a", "b"} {
-		if _, err := store.Create(HostInput{Name: name, Hostname: "1.1.1.1"}); err != nil {
+		if _, err := store.Create(SystemInput{Name: name, Hostname: "1.1.1.1"}); err != nil {
 			t.Fatalf("seed: %v", err)
 		}
 	}
 
-	resp, err := http.Get(srv.URL + "/api/hosts")
+	resp, err := http.Get(srv.URL + "/api/systems")
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
@@ -108,14 +108,14 @@ func TestHandlerListAndGet(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d", resp.StatusCode)
 	}
-	var hosts []Host
-	decodeJSON(t, resp.Body, &hosts)
-	if len(hosts) != 2 {
-		t.Fatalf("len = %d, want 2", len(hosts))
+	var systems []System
+	decodeJSON(t, resp.Body, &systems)
+	if len(systems) != 2 {
+		t.Fatalf("len = %d, want 2", len(systems))
 	}
 
 	// GET by id
-	resp2, err := http.Get(srv.URL + "/api/hosts/" + hosts[0].ID)
+	resp2, err := http.Get(srv.URL + "/api/systems/" + systems[0].ID)
 	if err != nil {
 		t.Fatalf("get by id: %v", err)
 	}
@@ -123,16 +123,16 @@ func TestHandlerListAndGet(t *testing.T) {
 	if resp2.StatusCode != http.StatusOK {
 		t.Errorf("status = %d", resp2.StatusCode)
 	}
-	var single Host
+	var single System
 	decodeJSON(t, resp2.Body, &single)
-	if single.ID != hosts[0].ID {
-		t.Errorf("got %q, want %q", single.ID, hosts[0].ID)
+	if single.ID != systems[0].ID {
+		t.Errorf("got %q, want %q", single.ID, systems[0].ID)
 	}
 }
 
 func TestHandlerGetMissing(t *testing.T) {
 	srv, _ := newTestServer(t)
-	resp, err := http.Get(srv.URL + "/api/hosts/nope")
+	resp, err := http.Get(srv.URL + "/api/systems/nope")
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
@@ -144,9 +144,9 @@ func TestHandlerGetMissing(t *testing.T) {
 
 func TestHandlerDelete(t *testing.T) {
 	srv, store := newTestServer(t)
-	h, _ := store.Create(HostInput{Name: "x", Hostname: "1.1.1.1"})
+	h, _ := store.Create(SystemInput{Name: "x", Hostname: "1.1.1.1"})
 
-	req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/api/hosts/"+h.ID, nil)
+	req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/api/systems/"+h.ID, nil)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("delete: %v", err)
@@ -157,11 +157,11 @@ func TestHandlerDelete(t *testing.T) {
 	}
 
 	if _, err := store.Get(h.ID); !errors.Is(err, ErrNotFound) {
-		t.Error("host still present after delete")
+		t.Error("system still present after delete")
 	}
 
 	// Second delete should 404
-	req2, _ := http.NewRequest(http.MethodDelete, srv.URL+"/api/hosts/"+h.ID, nil)
+	req2, _ := http.NewRequest(http.MethodDelete, srv.URL+"/api/systems/"+h.ID, nil)
 	resp2, err := http.DefaultClient.Do(req2)
 	if err != nil {
 		t.Fatalf("delete: %v", err)
@@ -187,20 +187,20 @@ func TestHandlerStoreErrors(t *testing.T) {
 		req  func() *http.Request
 	}{
 		{"list", func() *http.Request {
-			r, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/hosts", nil)
+			r, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/systems", nil)
 			return r
 		}},
 		{"get", func() *http.Request {
-			r, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/hosts/x", nil)
+			r, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/systems/x", nil)
 			return r
 		}},
 		{"create", func() *http.Request {
-			r, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/hosts",
+			r, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/systems",
 				bytes.NewBufferString(`{"name":"x","hostname":"y"}`))
 			return r
 		}},
 		{"delete", func() *http.Request {
-			r, _ := http.NewRequest(http.MethodDelete, srv.URL+"/api/hosts/x", nil)
+			r, _ := http.NewRequest(http.MethodDelete, srv.URL+"/api/systems/x", nil)
 			return r
 		}},
 	}
@@ -220,10 +220,10 @@ func TestHandlerStoreErrors(t *testing.T) {
 
 type stubStore struct{ err error }
 
-func (s *stubStore) Create(HostInput) (Host, error) { return Host{}, s.err }
-func (s *stubStore) Get(string) (Host, error)       { return Host{}, s.err }
-func (s *stubStore) List() ([]Host, error)          { return nil, s.err }
-func (s *stubStore) Delete(string) error            { return s.err }
+func (s *stubStore) Create(SystemInput) (System, error) { return System{}, s.err }
+func (s *stubStore) Get(string) (System, error)         { return System{}, s.err }
+func (s *stubStore) List() ([]System, error)            { return nil, s.err }
+func (s *stubStore) Delete(string) error                { return s.err }
 func (s *stubStore) UpdateProbe(string, bool, time.Time) error {
 	return s.err
 }

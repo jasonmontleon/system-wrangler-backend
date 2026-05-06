@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-package inventory
+package systems
 
 import (
 	"errors"
@@ -55,7 +55,7 @@ func TestSQLiteOpenInvalidDSN(t *testing.T) {
 
 func TestSQLiteStoreCreateAndGet(t *testing.T) {
 	s := newTestSQLiteStore(t)
-	h, err := s.Create(HostInput{Name: "  host1 ", Hostname: " 10.0.0.1 "})
+	h, err := s.Create(SystemInput{Name: "  host1 ", Hostname: " 10.0.0.1 "})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -95,13 +95,13 @@ func TestSQLiteStoreCreateAndGet(t *testing.T) {
 
 func TestSQLiteStoreCreateInvalid(t *testing.T) {
 	s := newTestSQLiteStore(t)
-	_, err := s.Create(HostInput{Name: "", Hostname: "1.2.3.4"})
+	_, err := s.Create(SystemInput{Name: "", Hostname: "1.2.3.4"})
 	if !errors.Is(err, ErrInvalid) {
 		t.Fatalf("err = %v, want ErrInvalid", err)
 	}
-	hosts, _ := s.List()
-	if len(hosts) != 0 {
-		t.Errorf("invalid create should not persist; got %d hosts", len(hosts))
+	systems, _ := s.List()
+	if len(systems) != 0 {
+		t.Errorf("invalid create should not persist; got %d systems", len(systems))
 	}
 }
 
@@ -115,42 +115,42 @@ func TestSQLiteStoreGetMissing(t *testing.T) {
 func TestSQLiteStoreListOrdered(t *testing.T) {
 	s := newTestSQLiteStore(t)
 	for i := 0; i < 3; i++ {
-		if _, err := s.Create(HostInput{Name: "h" + strconv.Itoa(i), Hostname: "1.1.1.1"}); err != nil {
+		if _, err := s.Create(SystemInput{Name: "h" + strconv.Itoa(i), Hostname: "1.1.1.1"}); err != nil {
 			t.Fatalf("Create: %v", err)
 		}
 	}
-	hosts, err := s.List()
+	systems, err := s.List()
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
-	if len(hosts) != 3 {
-		t.Fatalf("len = %d, want 3", len(hosts))
+	if len(systems) != 3 {
+		t.Fatalf("len = %d, want 3", len(systems))
 	}
-	for i := 1; i < len(hosts); i++ {
-		if hosts[i].CreatedAt.Before(hosts[i-1].CreatedAt) {
-			t.Errorf("hosts not ordered by CreatedAt: %+v", hosts)
+	for i := 1; i < len(systems); i++ {
+		if systems[i].CreatedAt.Before(systems[i-1].CreatedAt) {
+			t.Errorf("systems not ordered by CreatedAt: %+v", systems)
 		}
 	}
 }
 
 func TestSQLiteStoreListEmpty(t *testing.T) {
 	s := newTestSQLiteStore(t)
-	hosts, err := s.List()
+	systems, err := s.List()
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
-	if len(hosts) != 0 {
-		t.Errorf("len = %d, want 0", len(hosts))
+	if len(systems) != 0 {
+		t.Errorf("len = %d, want 0", len(systems))
 	}
 	// Non-nil empty slice keeps JSON marshaling as `[]` not `null`.
-	if hosts == nil {
+	if systems == nil {
 		t.Error("List on empty store returned nil; want non-nil empty slice")
 	}
 }
 
 func TestSQLiteStoreDelete(t *testing.T) {
 	s := newTestSQLiteStore(t)
-	h, _ := s.Create(HostInput{Name: "h", Hostname: "1.1.1.1"})
+	h, _ := s.Create(SystemInput{Name: "h", Hostname: "1.1.1.1"})
 	if err := s.Delete(h.ID); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
@@ -164,7 +164,7 @@ func TestSQLiteStoreDelete(t *testing.T) {
 
 func TestSQLiteStoreUpdateProbe(t *testing.T) {
 	s := newTestSQLiteStore(t)
-	h, _ := s.Create(HostInput{Name: "h", Hostname: "1.1.1.1"})
+	h, _ := s.Create(SystemInput{Name: "h", Hostname: "1.1.1.1"})
 	probeAt := time.Date(2026, 5, 5, 12, 0, 0, 0, time.UTC)
 
 	if err := s.UpdateProbe(h.ID, true, probeAt); err != nil {
@@ -214,7 +214,7 @@ func TestSQLiteStorePersistence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSQLiteStore #1: %v", err)
 	}
-	h, err := s1.Create(HostInput{Name: "persisted", Hostname: "10.0.0.99"})
+	h, err := s1.Create(SystemInput{Name: "persisted", Hostname: "10.0.0.99"})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -253,7 +253,7 @@ func TestSQLiteStoreConcurrent(t *testing.T) {
 	for i := 0; i < n; i++ {
 		go func(i int) {
 			defer wg.Done()
-			if _, err := s.Create(HostInput{Name: "h" + strconv.Itoa(i), Hostname: "1.1.1.1"}); err != nil {
+			if _, err := s.Create(SystemInput{Name: "h" + strconv.Itoa(i), Hostname: "1.1.1.1"}); err != nil {
 				t.Errorf("Create: %v", err)
 			}
 			if _, err := s.List(); err != nil {
@@ -262,8 +262,8 @@ func TestSQLiteStoreConcurrent(t *testing.T) {
 		}(i)
 	}
 	wg.Wait()
-	hosts, _ := s.List()
-	if len(hosts) != n {
-		t.Errorf("len = %d, want %d", len(hosts), n)
+	systems, _ := s.List()
+	if len(systems) != n {
+		t.Errorf("len = %d, want %d", len(systems), n)
 	}
 }

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-package inventory
+package systems
 
 import (
 	"context"
@@ -10,13 +10,13 @@ import (
 	"time"
 )
 
-// Prober checks a single host for reachability. Returning nil means the host
+// Prober checks a single system for reachability. Returning nil means the system
 // answered; any error means it did not.
 type Prober interface {
 	Probe(ctx context.Context, address string) error
 }
 
-// TCPProber dials a TCP port on the host. Default target is :22 since the
+// TCPProber dials a TCP port on the system. Default target is :22 since the
 // fleet management direction (Ansible) requires SSH; addresses without a port
 // have Port appended.
 type TCPProber struct {
@@ -49,7 +49,7 @@ type Probe struct {
 	Logger   *slog.Logger
 }
 
-// Run probes all known hosts immediately, then on every Interval until ctx is
+// Run probes all known systems immediately, then on every Interval until ctx is
 // cancelled. Safe to invoke as a goroutine.
 func (p *Probe) Run(ctx context.Context) {
 	if p.Logger == nil {
@@ -74,17 +74,17 @@ func (p *Probe) Run(ctx context.Context) {
 	}
 }
 
-// Tick runs one probe cycle across all hosts. Exposed for tests; Run calls
+// Tick runs one probe cycle across all systems. Exposed for tests; Run calls
 // it on its schedule.
 func (p *Probe) Tick(ctx context.Context) {
-	hosts, err := p.Store.List()
+	systems, err := p.Store.List()
 	if err != nil {
 		p.Logger.Error("probe list", "err", err)
 		return
 	}
 	sem := make(chan struct{}, p.Workers)
 	var wg sync.WaitGroup
-	for _, h := range hosts {
+	for _, h := range systems {
 		select {
 		case <-ctx.Done():
 			wg.Wait()
@@ -92,7 +92,7 @@ func (p *Probe) Tick(ctx context.Context) {
 		case sem <- struct{}{}:
 		}
 		wg.Add(1)
-		go func(h Host) {
+		go func(h System) {
 			defer wg.Done()
 			defer func() { <-sem }()
 			probeCtx, cancel := context.WithTimeout(ctx, p.Timeout)

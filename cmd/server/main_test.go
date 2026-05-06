@@ -14,7 +14,7 @@ import (
 
 	"system-wrangler-backend/internal/auth"
 	"system-wrangler-backend/internal/database"
-	"system-wrangler-backend/internal/inventory"
+	"system-wrangler-backend/internal/systems"
 )
 
 // newTestMux returns a fully-wired mux backed by a temp SQLite DB so the
@@ -28,7 +28,7 @@ func newTestMux(t *testing.T) http.Handler {
 	}
 	t.Cleanup(func() { _ = db.Close() })
 
-	invStore, err := inventory.NewSQLiteStore(db)
+	invStore, err := systems.NewSQLiteStore(db)
 	if err != nil {
 		t.Fatalf("NewSQLiteStore: %v", err)
 	}
@@ -88,11 +88,11 @@ func TestServerRoutesHealth(t *testing.T) {
 	}
 }
 
-func TestHostsRequiresAuth(t *testing.T) {
+func TestSystemsRequiresAuth(t *testing.T) {
 	srv := httptest.NewServer(withLogging(newTestMux(t)))
 	defer srv.Close()
 
-	resp, err := http.Get(srv.URL + "/api/hosts")
+	resp, err := http.Get(srv.URL + "/api/systems")
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
@@ -102,9 +102,9 @@ func TestHostsRequiresAuth(t *testing.T) {
 	}
 }
 
-// TestHostsReachableAfterSetup walks the full bootstrap path: setup admin,
-// then reuse the cookie to read /api/hosts.
-func TestHostsReachableAfterSetup(t *testing.T) {
+// TestSystemsReachableAfterSetup walks the full bootstrap path: setup admin,
+// then reuse the cookie to read /api/systems.
+func TestSystemsReachableAfterSetup(t *testing.T) {
 	srv := httptest.NewServer(withLogging(newTestMux(t)))
 	defer srv.Close()
 
@@ -120,13 +120,13 @@ func TestHostsReachableAfterSetup(t *testing.T) {
 		t.Fatalf("setup status = %d", resp.StatusCode)
 	}
 
-	hostsResp, err := client.Get(srv.URL + "/api/hosts")
+	systemsResp, err := client.Get(srv.URL + "/api/systems")
 	if err != nil {
-		t.Fatalf("hosts: %v", err)
+		t.Fatalf("systems: %v", err)
 	}
-	defer hostsResp.Body.Close()
-	if hostsResp.StatusCode != http.StatusOK {
-		t.Errorf("hosts status = %d, want 200", hostsResp.StatusCode)
+	defer systemsResp.Body.Close()
+	if systemsResp.StatusCode != http.StatusOK {
+		t.Errorf("systems status = %d, want 200", systemsResp.StatusCode)
 	}
 }
 

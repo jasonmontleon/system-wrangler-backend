@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-package inventory
+package systems
 
 import (
 	"context"
@@ -78,8 +78,8 @@ func newQuietLogger() *slog.Logger {
 
 func TestProbeTickUpdatesStatus(t *testing.T) {
 	store := newTestStore()
-	hUp, _ := store.Create(HostInput{Name: "up", Hostname: "10.0.0.1"})
-	hDown, _ := store.Create(HostInput{Name: "down", Hostname: "10.0.0.2"})
+	hUp, _ := store.Create(SystemInput{Name: "up", Hostname: "10.0.0.1"})
+	hDown, _ := store.Create(SystemInput{Name: "down", Hostname: "10.0.0.2"})
 
 	prober := &fakeProber{result: map[string]error{
 		"10.0.0.1": nil,
@@ -122,7 +122,7 @@ func TestProbeTickUpdatesStatus(t *testing.T) {
 func TestProbeRunStopsOnContextCancel(t *testing.T) {
 	store := newTestStore()
 	for i := 0; i < 3; i++ {
-		_, _ = store.Create(HostInput{Name: "h" + strconv.Itoa(i), Hostname: "1.1.1.1"})
+		_, _ = store.Create(SystemInput{Name: "h" + strconv.Itoa(i), Hostname: "1.1.1.1"})
 	}
 	prober := &fakeProber{result: map[string]error{}}
 	p := &Probe{
@@ -175,7 +175,7 @@ func TestProbeRunDefaults(t *testing.T) {
 // fakeListErrStore returns an error from List; verifies Tick logs and skips.
 type fakeListErrStore struct{ MemStore }
 
-func (f *fakeListErrStore) List() ([]Host, error) { return nil, errors.New("boom") }
+func (f *fakeListErrStore) List() ([]System, error) { return nil, errors.New("boom") }
 
 func TestProbeTickHandlesListError(t *testing.T) {
 	var buf strings.Builder

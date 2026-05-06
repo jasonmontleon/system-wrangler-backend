@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-// Package inventory tracks the fleet of managed hosts. The current
-// implementation is in-memory; a persistent backing store will replace
-// MemStore once a database is chosen.
-package inventory
+// Package systems tracks the fleet of managed systems.
+package systems
 
 import (
 	"crypto/rand"
@@ -17,11 +15,11 @@ import (
 const maxFieldLen = 255
 
 var (
-	ErrNotFound = errors.New("host not found")
-	ErrInvalid  = errors.New("invalid host")
+	ErrNotFound = errors.New("system not found")
+	ErrInvalid  = errors.New("invalid system")
 )
 
-// Status reflects the most recent probe outcome for a host.
+// Status reflects the most recent probe outcome for a system.
 type Status string
 
 const (
@@ -31,7 +29,7 @@ const (
 )
 
 // Host is a managed system in the fleet.
-type Host struct {
+type System struct {
 	ID        string     `json:"id"`
 	Name      string     `json:"name"`
 	Hostname  string     `json:"hostname"`
@@ -41,14 +39,14 @@ type Host struct {
 }
 
 // HostInput is the user-supplied subset of a Host accepted on create.
-type HostInput struct {
+type SystemInput struct {
 	Name     string `json:"name"`
 	Hostname string `json:"hostname"`
 }
 
 // Validate returns ErrInvalid wrapped with a field-specific message if the
 // input is unusable. Callers should treat any error as a 400-level failure.
-func (in HostInput) Validate() error {
+func (in SystemInput) Validate() error {
 	name := strings.TrimSpace(in.Name)
 	host := strings.TrimSpace(in.Hostname)
 	switch {
@@ -70,7 +68,7 @@ func (in HostInput) Validate() error {
 func newUUID() string {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {
-		panic(fmt.Errorf("inventory: rand.Read: %w", err))
+		panic(fmt.Errorf("systems: rand.Read: %w", err))
 	}
 	b[6] = (b[6] & 0x0f) | 0x40
 	b[8] = (b[8] & 0x3f) | 0x80

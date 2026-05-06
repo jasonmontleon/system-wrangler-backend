@@ -16,7 +16,7 @@ import (
 
 	"system-wrangler-backend/internal/auth"
 	"system-wrangler-backend/internal/database"
-	"system-wrangler-backend/internal/inventory"
+	"system-wrangler-backend/internal/systems"
 	"system-wrangler-backend/web"
 )
 
@@ -41,9 +41,9 @@ func main() {
 			slog.Error("close db", "err", err)
 		}
 	}()
-	store, err := inventory.NewSQLiteStore(db)
+	store, err := systems.NewSQLiteStore(db)
 	if err != nil {
-		slog.Error("init inventory store", "err", err)
+		slog.Error("init systems store", "err", err)
 		os.Exit(1)
 	}
 	authStore, err := auth.NewSQLiteAuthStore(db)
@@ -67,9 +67,9 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	probe := &inventory.Probe{
+	probe := &systems.Probe{
 		Store:    store,
-		Prober:   inventory.TCPProber{Port: "22", Timeout: 3 * time.Second},
+		Prober:   systems.TCPProber{Port: "22", Timeout: 3 * time.Second},
 		Interval: 30 * time.Second,
 		Timeout:  5 * time.Second,
 		Workers:  10,
@@ -105,12 +105,12 @@ func main() {
 	<-probeDone
 }
 
-func newMux(store inventory.Store, users auth.UserStore, authSvc *auth.Service, secret []byte) *http.ServeMux {
+func newMux(store systems.Store, users auth.UserStore, authSvc *auth.Service, secret []byte) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", handleHealth)
 	authSvc.Register(mux)
 	requireUser := auth.RequireUser(secret, users, time.Now)
-	inventory.NewHandler(store).Register(mux, requireUser)
+	systems.NewHandler(store).Register(mux, requireUser)
 	mux.Handle("GET /", spaHandler())
 	return mux
 }

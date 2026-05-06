@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-package inventory
+package systems
 
 import (
 	"database/sql"
@@ -21,12 +21,12 @@ type SQLiteStore struct {
 	Now   func() time.Time
 }
 
-// NewSQLiteStore ensures the inventory tables exist on db and returns a Store
+// NewSQLiteStore ensures the systems table exist on db and returns a Store
 // using them. Calling it on an already-initialized db is a no-op (CREATE
 // TABLE IF NOT EXISTS).
 func NewSQLiteStore(db *sql.DB) (*SQLiteStore, error) {
 	if _, err := db.Exec(schema); err != nil {
-		return nil, fmt.Errorf("inventory: schema: %w", err)
+		return nil, fmt.Errorf("systems: schema: %w", err)
 	}
 	return &SQLiteStore{db: db, NewID: newUUID, Now: time.Now}, nil
 }
@@ -46,11 +46,11 @@ CREATE TABLE IF NOT EXISTS hosts (
 CREATE INDEX IF NOT EXISTS hosts_created_at ON hosts(created_at, id);
 `
 
-func (s *SQLiteStore) Create(in HostInput) (Host, error) {
+func (s *SQLiteStore) Create(in SystemInput) (System, error) {
 	if err := in.Validate(); err != nil {
-		return Host{}, err
+		return System{}, err
 	}
-	h := Host{
+	h := System{
 		ID:        s.NewID(),
 		Name:      strings.TrimSpace(in.Name),
 		Hostname:  strings.TrimSpace(in.Hostname),
@@ -62,44 +62,44 @@ func (s *SQLiteStore) Create(in HostInput) (Host, error) {
 		h.ID, h.Name, h.Hostname, h.CreatedAt.UnixNano(), string(h.Status),
 	)
 	if err != nil {
-		return Host{}, fmt.Errorf("inventory: insert host: %w", err)
+		return System{}, fmt.Errorf("systems: insert: %w", err)
 	}
 	return h, nil
 }
 
-func (s *SQLiteStore) Get(id string) (Host, error) {
+func (s *SQLiteStore) Get(id string) (System, error) {
 	row := s.db.QueryRow(
 		`SELECT id, name, hostname, created_at, status, last_seen FROM hosts WHERE id = ?`,
 		id,
 	)
 	h, err := scanHost(row)
 	if errors.Is(err, sql.ErrNoRows) {
-		return Host{}, ErrNotFound
+		return System{}, ErrNotFound
 	}
 	return h, err
 }
 
-// List returns hosts ordered by created_at asc with id as tiebreaker, matching
+// List returns systems ordered by created_at asc with id as tiebreaker, matching
 // MemStore so handler behavior is identical regardless of backend.
-func (s *SQLiteStore) List() ([]Host, error) {
+func (s *SQLiteStore) List() ([]System, error) {
 	rows, err := s.db.Query(
 		`SELECT id, name, hostname, created_at, status, last_seen FROM hosts ORDER BY created_at, id`,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("inventory: list: %w", err)
+		return nil, fmt.Errorf("systems: list: %w", err)
 	}
 	defer rows.Close()
 
-	out := []Host{}
+	out := []System{}
 	for rows.Next() {
 		h, err := scanHost(rows)
 		if err != nil {
-			return nil, fmt.Errorf("inventory: scan host: %w", err)
+			return nil, fmt.Errorf("systems: scan: %w", err)
 		}
 		out = append(out, h)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("inventory: list rows: %w", err)
+		return nil, fmt.Errorf("systems: list rows: %w", err)
 	}
 	return out, nil
 }
@@ -107,7 +107,7 @@ func (s *SQLiteStore) List() ([]Host, error) {
 func (s *SQLiteStore) Delete(id string) error {
 	res, err := s.db.Exec(`DELETE FROM hosts WHERE id = ?`, id)
 	if err != nil {
-		return fmt.Errorf("inventory: delete: %w", err)
+		return fmt.Errorf("systems: delete: %w", err)
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
 		return ErrNotFound
@@ -135,7 +135,7 @@ func (s *SQLiteStore) UpdateProbe(id string, ok bool, when time.Time) error {
 		)
 	}
 	if err != nil {
-		return fmt.Errorf("inventory: update probe: %w", err)
+		return fmt.Errorf("systems: update probe: %w", err)
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
 		return ErrNotFound
@@ -148,15 +148,15 @@ type rowScanner interface {
 	Scan(dest ...any) error
 }
 
-func scanHost(r rowScanner) (Host, error) {
+func scanHost(r rowScanner) (System, error) {
 	var (
-		h         Host
+		h         System
 		createdNs int64
 		lastSeen  sql.NullInt64
 		status    string
 	)
 	if err := r.Scan(&h.ID, &h.Name, &h.Hostname, &createdNs, &status, &lastSeen); err != nil {
-		return Host{}, err
+		return System{}, err
 	}
 	h.CreatedAt = time.Unix(0, createdNs).UTC()
 	h.Status = Status(status)

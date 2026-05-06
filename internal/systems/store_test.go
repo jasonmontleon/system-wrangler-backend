@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-package inventory
+package systems
 
 import (
 	"errors"
@@ -30,7 +30,7 @@ func newTestStore() *MemStore {
 
 func TestMemStoreCreateAndGet(t *testing.T) {
 	s := newTestStore()
-	h, err := s.Create(HostInput{Name: "  host1 ", Hostname: " 10.0.0.1 "})
+	h, err := s.Create(SystemInput{Name: "  host1 ", Hostname: " 10.0.0.1 "})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -64,13 +64,13 @@ func TestMemStoreCreateAndGet(t *testing.T) {
 
 func TestMemStoreCreateInvalid(t *testing.T) {
 	s := newTestStore()
-	_, err := s.Create(HostInput{Name: "", Hostname: "1.2.3.4"})
+	_, err := s.Create(SystemInput{Name: "", Hostname: "1.2.3.4"})
 	if !errors.Is(err, ErrInvalid) {
 		t.Fatalf("err = %v, want ErrInvalid", err)
 	}
-	hosts, _ := s.List()
-	if len(hosts) != 0 {
-		t.Errorf("invalid create should not persist; got %d hosts", len(hosts))
+	systems, _ := s.List()
+	if len(systems) != 0 {
+		t.Errorf("invalid create should not persist; got %d systems", len(systems))
 	}
 }
 
@@ -84,27 +84,27 @@ func TestMemStoreGetMissing(t *testing.T) {
 func TestMemStoreListOrdered(t *testing.T) {
 	s := newTestStore()
 	for i := 0; i < 3; i++ {
-		if _, err := s.Create(HostInput{Name: "h" + strconv.Itoa(i), Hostname: "1.1.1.1"}); err != nil {
+		if _, err := s.Create(SystemInput{Name: "h" + strconv.Itoa(i), Hostname: "1.1.1.1"}); err != nil {
 			t.Fatalf("Create: %v", err)
 		}
 	}
-	hosts, err := s.List()
+	systems, err := s.List()
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
-	if len(hosts) != 3 {
-		t.Fatalf("len = %d, want 3", len(hosts))
+	if len(systems) != 3 {
+		t.Fatalf("len = %d, want 3", len(systems))
 	}
-	for i := 1; i < len(hosts); i++ {
-		if hosts[i].CreatedAt.Before(hosts[i-1].CreatedAt) {
-			t.Errorf("hosts not ordered by CreatedAt: %+v", hosts)
+	for i := 1; i < len(systems); i++ {
+		if systems[i].CreatedAt.Before(systems[i-1].CreatedAt) {
+			t.Errorf("systems not ordered by CreatedAt: %+v", systems)
 		}
 	}
 }
 
 func TestMemStoreDelete(t *testing.T) {
 	s := newTestStore()
-	h, _ := s.Create(HostInput{Name: "h", Hostname: "1.1.1.1"})
+	h, _ := s.Create(SystemInput{Name: "h", Hostname: "1.1.1.1"})
 	if err := s.Delete(h.ID); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
@@ -118,7 +118,7 @@ func TestMemStoreDelete(t *testing.T) {
 
 func TestMemStoreUpdateProbe(t *testing.T) {
 	s := newTestStore()
-	h, _ := s.Create(HostInput{Name: "h", Hostname: "1.1.1.1"})
+	h, _ := s.Create(SystemInput{Name: "h", Hostname: "1.1.1.1"})
 	probeAt := time.Date(2026, 5, 5, 12, 0, 0, 0, time.UTC)
 
 	if err := s.UpdateProbe(h.ID, true, probeAt); err != nil {
@@ -163,7 +163,7 @@ func TestMemStoreConcurrent(t *testing.T) {
 	for i := 0; i < n; i++ {
 		go func(i int) {
 			defer wg.Done()
-			if _, err := s.Create(HostInput{Name: "h" + strconv.Itoa(i), Hostname: "1.1.1.1"}); err != nil {
+			if _, err := s.Create(SystemInput{Name: "h" + strconv.Itoa(i), Hostname: "1.1.1.1"}); err != nil {
 				t.Errorf("Create: %v", err)
 			}
 			if _, err := s.List(); err != nil {
@@ -172,8 +172,8 @@ func TestMemStoreConcurrent(t *testing.T) {
 		}(i)
 	}
 	wg.Wait()
-	hosts, _ := s.List()
-	if len(hosts) != n {
-		t.Errorf("len = %d, want %d", len(hosts), n)
+	systems, _ := s.List()
+	if len(systems) != n {
+		t.Errorf("len = %d, want %d", len(systems), n)
 	}
 }
