@@ -73,6 +73,53 @@ func TestServerRoutesHostsList(t *testing.T) {
 	}
 }
 
+func TestTLSConfig(t *testing.T) {
+	tests := []struct {
+		name      string
+		env       map[string]string
+		wantCert  string
+		wantKey   string
+		wantUse   bool
+		wantError bool
+	}{
+		{name: "both unset disables TLS", env: map[string]string{}, wantUse: false},
+		{
+			name:     "both set enables TLS",
+			env:      map[string]string{"TLS_CERT_PATH": "/tls/c.pem", "TLS_KEY_PATH": "/tls/k.pem"},
+			wantCert: "/tls/c.pem", wantKey: "/tls/k.pem", wantUse: true,
+		},
+		{
+			name:      "cert without key is rejected",
+			env:       map[string]string{"TLS_CERT_PATH": "/tls/c.pem"},
+			wantError: true,
+		},
+		{
+			name:      "key without cert is rejected",
+			env:       map[string]string{"TLS_KEY_PATH": "/tls/k.pem"},
+			wantError: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			get := func(k string) string { return tt.env[k] }
+			cert, key, use, err := tlsConfig(get)
+			if tt.wantError {
+				if err == nil {
+					t.Fatal("err = nil, want error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected err: %v", err)
+			}
+			if cert != tt.wantCert || key != tt.wantKey || use != tt.wantUse {
+				t.Errorf("got (%q, %q, %v), want (%q, %q, %v)",
+					cert, key, use, tt.wantCert, tt.wantKey, tt.wantUse)
+			}
+		})
+	}
+}
+
 func TestEnvOr(t *testing.T) {
 	tests := []struct {
 		name string

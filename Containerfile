@@ -37,9 +37,10 @@ RUN dnf install -y --setopt=install_weak_deps=False ca-certificates \
  && dnf clean all && rm -rf /var/cache/dnf \
  && useradd --uid 65532 --user-group --create-home --shell /sbin/nologin app
 COPY --from=backend-build /out/server /usr/local/bin/server
-RUN install -d -o app -g app -m 0750 /var/lib/cat-wrangler
+RUN install -d -o app -g app -m 0750 /var/lib/cat-wrangler \
+ && install -d -o root -g app -m 0750 /etc/cat-wrangler/tls
 ENV DB_PATH=/var/lib/cat-wrangler/cat-wrangler.db
 VOLUME ["/var/lib/cat-wrangler"]
-EXPOSE 8080
+EXPOSE 8080 8443
 USER app
 ENTRYPOINT ["/usr/local/bin/server"]

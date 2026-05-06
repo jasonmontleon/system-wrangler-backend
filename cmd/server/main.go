@@ -22,6 +22,12 @@ func main() {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
 
 	addr := ":" + envOr("PORT", "8080")
+	certPath, keyPath, useTLS, err := tlsConfig(os.Getenv)
+	if err != nil {
+		slog.Error("tls config", "err", err)
+		os.Exit(1)
+	}
+
 	dbPath := envOr("DB_PATH", "cat-wrangler.db")
 	store, err := inventory.OpenSQLite("file:" + dbPath)
 	if err != nil {
@@ -57,9 +63,16 @@ func main() {
 	}()
 
 	go func() {
-		slog.Info("server starting", "addr", addr)
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			slog.Error("server failed", "err", err)
+		var serveErr error
+		if useTLS {
+			slog.Info("server starting", "addr", addr, "tls", true)
+			serveErr = srv.ListenAndServeTLS(certPath, keyPath)
+		} else {
+			slog.Warn("server starting without TLS — set TLS_CERT_PATH and TLS_KEY_PATH to enable", "addr", addr)
+			serveErr = srv.ListenAndServe()
+		}
+		if serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
+			slog.Error("server failed", "err", serveErr)
 			os.Exit(1)
 		}
 	}()
@@ -140,4 +153,16 @@ func envOr(key, def string) string {
 		return v
 	}
 	return def
+}
+
+// tlsConfig reads TLS_CERT_PATH and TLS_KEY_PATH via the supplied lookup
+// (typically os.Getenv). Either both must be set or both unset; one without
+// the other is rejected to fail loud on misconfiguration.
+func tlsConfig(env func(string) string) (cert, key string, use bool, err error) {
+	cert = env("TLS_CERT_PATH")
+	key = env("TLS_KEY_PATH")
+	if (cert == "") != (key == "") {
+		return "", "", false, errors.New("TLS_CERT_PATH and TLS_KEY_PATH must both be set or both unset")
+	}
+	return cert, key, cert != "", nil
 }
