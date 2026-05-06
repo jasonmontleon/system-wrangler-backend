@@ -46,7 +46,9 @@ go build ./...
 go vet ./...
 go test ./... -race -cover
 gofmt -l . | tee /dev/stderr | (! read)
-golangci-lint run    # once configured
+golangci-lint run    # includes gosec for security smells
+govulncheck ./...    # Go vuln DB check; install: go install golang.org/x/vuln/cmd/govulncheck@latest
+gitleaks protect --staged --redact --verbose    # secret scan on staged changes
 ```
 
 ## Tests & coverage
