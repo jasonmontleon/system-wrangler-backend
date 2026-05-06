@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"cat-wrangler-backend/internal/inventory"
 	"cat-wrangler-backend/web"
 )
 
@@ -21,15 +22,29 @@ func main() {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
 
 	addr := ":" + envOr("PORT", "8080")
+	store := inventory.NewMemStore()
 
 	srv := &http.Server{
 		Addr:              addr,
-		Handler:           withLogging(newMux()),
+		Handler:           withLogging(newMux(store)),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	probe := &inventory.Probe{
+		Store:    store,
+		Prober:   inventory.TCPProber{Port: "22", Timeout: 3 * time.Second},
+		Interval: 30 * time.Second,
+		Timeout:  5 * time.Second,
+		Workers:  10,
+	}
+	probeDone := make(chan struct{})
+	go func() {
+		probe.Run(ctx)
+		close(probeDone)
+	}()
 
 	go func() {
 		slog.Info("server starting", "addr", addr)
@@ -46,11 +61,13 @@ func main() {
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		slog.Error("shutdown error", "err", err)
 	}
+	<-probeDone
 }
 
-func newMux() *http.ServeMux {
+func newMux(store inventory.Store) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", handleHealth)
+	inventory.NewHandler(store).Register(mux)
 	mux.Handle("GET /", spaHandler())
 	return mux
 }

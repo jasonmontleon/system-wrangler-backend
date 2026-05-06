@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"cat-wrangler-backend/internal/inventory"
 )
 
 func TestHandleHealth(t *testing.T) {
@@ -33,7 +35,7 @@ func TestHandleHealth(t *testing.T) {
 }
 
 func TestServerRoutesHealth(t *testing.T) {
-	srv := httptest.NewServer(withLogging(newMux()))
+	srv := httptest.NewServer(withLogging(newMux(inventory.NewMemStore())))
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/api/health")
@@ -51,6 +53,23 @@ func TestServerRoutesHealth(t *testing.T) {
 	}
 	if string(body) != `{"status":"ok"}` {
 		t.Errorf("body = %q", string(body))
+	}
+}
+
+func TestServerRoutesHostsList(t *testing.T) {
+	srv := httptest.NewServer(withLogging(newMux(inventory.NewMemStore())))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/api/hosts")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want 200", resp.StatusCode)
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != "application/json" {
+		t.Errorf("content-type = %q", ct)
 	}
 }
 
