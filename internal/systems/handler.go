@@ -22,6 +22,8 @@ type Handler struct {
 	OnDelete func()
 }
 
+// NewHandler constructs a Handler bound to the given Store. The optional
+// OnCreate / OnDelete callbacks can be set on the returned value.
 func NewHandler(s Store) *Handler { return &Handler{Store: s} }
 
 // Register attaches /api/systems routes to the given mux. Each handler is
@@ -81,7 +83,9 @@ func (h *Handler) get(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeError(w, http.StatusInternalServerError, "get failed")
-		slog.Error("systems get", "err", err, "id", id)
+		// id is user-controlled but slog's structured kv form doesn't
+		// interpolate it into the message — gosec G706 false positive.
+		slog.Error("systems get", "err", err, "id", id) //nolint:gosec
 		return
 	}
 	writeJSON(w, http.StatusOK, sys)
@@ -95,7 +99,8 @@ func (h *Handler) delete(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeError(w, http.StatusInternalServerError, "delete failed")
-		slog.Error("systems delete", "err", err, "id", id)
+		// See comment in get(): structured kv slog isn't G706-vulnerable.
+		slog.Error("systems delete", "err", err, "id", id) //nolint:gosec
 		return
 	}
 	if h.OnDelete != nil {

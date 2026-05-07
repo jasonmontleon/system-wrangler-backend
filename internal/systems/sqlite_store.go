@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS hosts (
 CREATE INDEX IF NOT EXISTS hosts_created_at ON hosts(created_at, id);
 `
 
+// Create persists a new System after running SystemInput.Validate.
 func (s *SQLiteStore) Create(in SystemInput) (System, error) {
 	if err := in.Validate(); err != nil {
 		return System{}, err
@@ -67,6 +68,7 @@ func (s *SQLiteStore) Create(in SystemInput) (System, error) {
 	return h, nil
 }
 
+// Get returns the System with the given ID, or ErrNotFound.
 func (s *SQLiteStore) Get(id string) (System, error) {
 	row := s.db.QueryRow(
 		`SELECT id, name, hostname, created_at, status, last_seen FROM hosts WHERE id = ?`,
@@ -88,7 +90,7 @@ func (s *SQLiteStore) List() ([]System, error) {
 	if err != nil {
 		return nil, fmt.Errorf("systems: list: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	out := []System{}
 	for rows.Next() {
@@ -104,6 +106,7 @@ func (s *SQLiteStore) List() ([]System, error) {
 	return out, nil
 }
 
+// Delete removes the System with the given ID, or returns ErrNotFound.
 func (s *SQLiteStore) Delete(id string) error {
 	res, err := s.db.Exec(`DELETE FROM hosts WHERE id = ?`, id)
 	if err != nil {

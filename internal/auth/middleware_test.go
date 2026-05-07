@@ -101,7 +101,9 @@ func (s *stubUserStore) UpdatePassword(id, hash string) error {
 
 func TestRequireUserAllowsValidCookie(t *testing.T) {
 	store := &stubUserStore{}
-	store.Create("alice", "h")
+	if _, err := store.Create("alice", "h"); err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
 	now := time.Date(2026, 5, 6, 12, 0, 0, 0, time.UTC)
 	tok, _ := SignSession(testSecret, "alice-id", now.Add(time.Hour))
 
@@ -142,7 +144,9 @@ func TestRequireUserRejectsNoCookie(t *testing.T) {
 
 func TestRequireUserRejectsExpired(t *testing.T) {
 	store := &stubUserStore{}
-	store.Create("alice", "h")
+	if _, err := store.Create("alice", "h"); err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
 	now := time.Date(2026, 5, 6, 12, 0, 0, 0, time.UTC)
 	tok, _ := SignSession(testSecret, "alice-id", now.Add(-time.Second))
 

@@ -33,6 +33,7 @@ type MemStore struct {
 	Now   func() time.Time
 }
 
+// NewMemStore returns an empty in-memory store with default ID/clock.
 func NewMemStore() *MemStore {
 	return &MemStore{
 		systems: map[string]System{},
@@ -41,6 +42,7 @@ func NewMemStore() *MemStore {
 	}
 }
 
+// Create adds a new System after running SystemInput.Validate.
 func (s *MemStore) Create(in SystemInput) (System, error) {
 	if err := in.Validate(); err != nil {
 		return System{}, err
@@ -58,6 +60,7 @@ func (s *MemStore) Create(in SystemInput) (System, error) {
 	return h, nil
 }
 
+// Get returns the System with the given ID, or ErrNotFound.
 func (s *MemStore) Get(id string) (System, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -86,6 +89,9 @@ func (s *MemStore) List() ([]System, error) {
 	return out, nil
 }
 
+// UpdateProbe records a probe result against id. ok=true sets Status to
+// reachable and updates LastSeen; ok=false sets Status to unreachable and
+// preserves any prior LastSeen.
 func (s *MemStore) UpdateProbe(id string, ok bool, when time.Time) error {
 	when = when.UTC()
 	s.mu.Lock()
@@ -104,6 +110,7 @@ func (s *MemStore) UpdateProbe(id string, ok bool, when time.Time) error {
 	return nil
 }
 
+// Delete removes the System with the given ID, or returns ErrNotFound.
 func (s *MemStore) Delete(id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

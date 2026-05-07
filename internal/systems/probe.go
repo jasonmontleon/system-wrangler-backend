@@ -25,6 +25,8 @@ type TCPProber struct {
 	Timeout time.Duration
 }
 
+// Probe attempts a TCP dial to address (host or host:port) within Timeout
+// and returns nil on a successful connect.
 func (p TCPProber) Probe(ctx context.Context, address string) error {
 	target := address
 	if _, _, err := net.SplitHostPort(address); err != nil {

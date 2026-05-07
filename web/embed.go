@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+// Package web embeds the built frontend bundle (web/dist) into the binary
+// via embed.FS so the server can serve the SPA without an external file
+// dependency.
 package web
 
 import "embed"

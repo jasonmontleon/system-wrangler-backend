@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+// Command server is the System Wrangler HTTP entrypoint. It wires the
+// SQLite-backed stores, auth service, systems probe, and SSE hub into a
+// single mux and listens on PORT (8080 by default).
 package main
 
 import (
@@ -192,7 +195,10 @@ func withLogging(next http.Handler) http.Handler {
 		start := time.Now()
 		rw := &statusWriter{ResponseWriter: w, status: 200}
 		next.ServeHTTP(rw, r)
-		slog.Info("request",
+		// Structured log fields aren't interpolated into the message, so an
+		// attacker-controlled URL can't forge log lines — gosec G706 is a
+		// false positive against slog's key/value form.
+		slog.Info("request", //nolint:gosec
 			"method", r.Method,
 			"path", r.URL.Path,
 			"status", rw.status,

@@ -226,7 +226,7 @@ func TestSQLiteStorePersistence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("database.Open #2: %v", err)
 	}
-	defer db2.Close()
+	defer func() { _ = db2.Close() }()
 	s2, err := NewSQLiteStore(db2)
 	if err != nil {
 		t.Fatalf("NewSQLiteStore #2: %v", err)

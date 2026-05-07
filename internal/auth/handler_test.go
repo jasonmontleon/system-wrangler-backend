@@ -38,7 +38,7 @@ func TestStatusEmptyDB(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	var body statusResponse
 	_ = json.NewDecoder(resp.Body).Decode(&body)
 	if !body.SetupRequired || body.Authenticated {
@@ -53,7 +53,7 @@ func TestSetupSucceedsThenIsBlocked(t *testing.T) {
 	if err != nil {
 		t.Fatalf("setup: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusCreated {
 		body, _ := io.ReadAll(resp.Body)
 		t.Fatalf("status = %d, body=%s", resp.StatusCode, body)
@@ -78,7 +78,7 @@ func TestSetupSucceedsThenIsBlocked(t *testing.T) {
 	if err != nil {
 		t.Fatalf("setup2: %v", err)
 	}
-	defer resp2.Body.Close()
+	defer func() { _ = resp2.Body.Close() }()
 	if resp2.StatusCode != http.StatusForbidden {
 		t.Errorf("second setup status = %d, want 403", resp2.StatusCode)
 	}
@@ -103,7 +103,7 @@ func TestSetupValidationErrors(t *testing.T) {
 			if err != nil {
 				t.Fatalf("post: %v", err)
 			}
-			defer resp.Body.Close()
+			defer func() { _ = resp.Body.Close() }()
 			if resp.StatusCode != tt.want {
 				t.Errorf("status = %d, want %d", resp.StatusCode, tt.want)
 			}
@@ -126,7 +126,7 @@ func TestLoginAndStatusFlow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("login wrong: %v", err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Errorf("wrong-password status = %d, want 401", resp.StatusCode)
 	}
@@ -139,7 +139,7 @@ func TestLoginAndStatusFlow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("login: %v", err)
 	}
-	defer loginResp.Body.Close()
+	defer func() { _ = loginResp.Body.Close() }()
 	if loginResp.StatusCode != http.StatusOK {
 		t.Fatalf("login status = %d", loginResp.StatusCode)
 	}
@@ -149,7 +149,7 @@ func TestLoginAndStatusFlow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("status: %v", err)
 	}
-	defer statusResp.Body.Close()
+	defer func() { _ = statusResp.Body.Close() }()
 	var body statusResponse
 	_ = json.NewDecoder(statusResp.Body).Decode(&body)
 	if !body.Authenticated || body.User == nil || body.User.Username != "alice" {
@@ -161,7 +161,7 @@ func TestLoginAndStatusFlow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("logout: %v", err)
 	}
-	logoutResp.Body.Close()
+	_ = logoutResp.Body.Close()
 	if logoutResp.StatusCode != http.StatusNoContent {
 		t.Errorf("logout status = %d", logoutResp.StatusCode)
 	}
@@ -171,7 +171,7 @@ func TestLoginAndStatusFlow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("post-logout status: %v", err)
 	}
-	defer statusResp2.Body.Close()
+	defer func() { _ = statusResp2.Body.Close() }()
 	var body2 statusResponse
 	_ = json.NewDecoder(statusResp2.Body).Decode(&body2)
 	if body2.Authenticated {
@@ -188,7 +188,7 @@ func TestLoginUnknownUser(t *testing.T) {
 	if err != nil {
 		t.Fatalf("post: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Errorf("status = %d, want 401", resp.StatusCode)
 	}
@@ -201,7 +201,7 @@ func TestLoginBadInput(t *testing.T) {
 	if err != nil {
 		t.Fatalf("post: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400", resp.StatusCode)
 	}
@@ -258,7 +258,7 @@ func TestHandlerStoreErrors(t *testing.T) {
 			if err != nil {
 				t.Fatalf("request: %v", err)
 			}
-			defer resp.Body.Close()
+			defer func() { _ = resp.Body.Close() }()
 			if resp.StatusCode != tt.want {
 				t.Errorf("status = %d, want %d", resp.StatusCode, tt.want)
 			}
@@ -282,7 +282,7 @@ func TestSetupCreateConflict(t *testing.T) {
 	if err != nil {
 		t.Fatalf("setup: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusInternalServerError {
 		t.Errorf("status = %d, want 500", resp.StatusCode)
 	}
@@ -315,7 +315,7 @@ func loggedInClient(t *testing.T, srv *httptest.Server, username string) *http.C
 	if err != nil {
 		t.Fatalf("login: %v", err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("login status = %d", resp.StatusCode)
 	}
@@ -337,7 +337,7 @@ func TestUpdateProfileHappyPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("patch: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		t.Fatalf("status = %d, body=%s", resp.StatusCode, body)
@@ -360,7 +360,7 @@ func TestUpdateProfileRequiresAuth(t *testing.T) {
 	if err != nil {
 		t.Fatalf("patch: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Errorf("status = %d, want 401", resp.StatusCode)
 	}
@@ -392,7 +392,7 @@ func TestUpdateProfileValidation(t *testing.T) {
 			if err != nil {
 				t.Fatalf("patch: %v", err)
 			}
-			defer resp.Body.Close()
+			defer func() { _ = resp.Body.Close() }()
 			if resp.StatusCode != tt.want {
 				t.Errorf("status = %d, want %d", resp.StatusCode, tt.want)
 			}
@@ -418,7 +418,7 @@ func TestUpdateProfileStoreFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("patch: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusInternalServerError {
 		t.Errorf("status = %d, want 500", resp.StatusCode)
 	}
@@ -442,7 +442,7 @@ func TestUpdateProfileUserGone(t *testing.T) {
 	if err != nil {
 		t.Fatalf("patch: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusNotFound {
 		t.Errorf("status = %d, want 404", resp.StatusCode)
 	}
@@ -461,7 +461,7 @@ func TestChangePasswordHappyPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("post: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusNoContent {
 		body, _ := io.ReadAll(resp.Body)
 		t.Fatalf("status = %d, body=%s", resp.StatusCode, body)
@@ -494,7 +494,7 @@ func TestChangePasswordRequiresCurrent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("post: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Errorf("status = %d, want 401", resp.StatusCode)
 	}
@@ -525,7 +525,7 @@ func TestChangePasswordValidation(t *testing.T) {
 			if err != nil {
 				t.Fatalf("post: %v", err)
 			}
-			defer resp.Body.Close()
+			defer func() { _ = resp.Body.Close() }()
 			if resp.StatusCode != tt.want {
 				t.Errorf("status = %d, want %d", resp.StatusCode, tt.want)
 			}
@@ -540,7 +540,7 @@ func TestChangePasswordRequiresAuth(t *testing.T) {
 	if err != nil {
 		t.Fatalf("post: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Errorf("status = %d, want 401", resp.StatusCode)
 	}
@@ -561,7 +561,7 @@ func TestChangePasswordHashLoadFails(t *testing.T) {
 	if err != nil {
 		t.Fatalf("post: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusInternalServerError {
 		t.Errorf("status = %d, want 500", resp.StatusCode)
 	}
@@ -582,7 +582,7 @@ func TestChangePasswordUpdateFails(t *testing.T) {
 	if err != nil {
 		t.Fatalf("post: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusInternalServerError {
 		t.Errorf("status = %d, want 500", resp.StatusCode)
 	}
@@ -631,7 +631,7 @@ func TestSetupInvalidUsername(t *testing.T) {
 	if err != nil {
 		t.Fatalf("setup: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400", resp.StatusCode)
 	}

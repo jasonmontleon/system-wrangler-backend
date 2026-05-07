@@ -77,7 +77,7 @@ func TestHubSlowSubscriberDoesNotBlockPublisher(t *testing.T) {
 	}
 }
 
-func TestHubConcurrentSubscribeAndBroadcast(t *testing.T) {
+func TestHubConcurrentSubscribeAndBroadcast(_ *testing.T) {
 	// Race-detector smoke test.
 	h := NewHub(quietLogger())
 	const n = 50

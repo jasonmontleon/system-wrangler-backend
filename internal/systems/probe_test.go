@@ -21,14 +21,14 @@ func TestTCPProberSuccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	defer ln.Close()
+	defer func() { _ = ln.Close() }()
 	go func() {
 		for {
 			c, err := ln.Accept()
 			if err != nil {
 				return
 			}
-			c.Close()
+			_ = c.Close()
 		}
 	}()
 
@@ -49,7 +49,7 @@ func TestTCPProberFailure(t *testing.T) {
 	// Bind a port, then close it to guarantee nothing listens there.
 	ln, _ := net.Listen("tcp", "127.0.0.1:0")
 	addr := ln.Addr().String()
-	ln.Close()
+	_ = ln.Close()
 
 	host, port, _ := net.SplitHostPort(addr)
 	p := TCPProber{Port: port, Timeout: 200 * time.Millisecond}

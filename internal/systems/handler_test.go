@@ -50,7 +50,7 @@ func TestHandlerOnDeleteFiresOnSuccessOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("delete: %v", err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("status = %d, want 204", resp.StatusCode)
 	}
@@ -64,7 +64,7 @@ func TestHandlerOnDeleteFiresOnSuccessOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("delete: %v", err)
 	}
-	resp2.Body.Close()
+	_ = resp2.Body.Close()
 	if resp2.StatusCode != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404", resp2.StatusCode)
 	}
@@ -89,7 +89,7 @@ func TestHandlerOnCreateFiresOnSuccessOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("post: %v", err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("status = %d, want 201", resp.StatusCode)
 	}
@@ -103,7 +103,7 @@ func TestHandlerOnCreateFiresOnSuccessOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("post: %v", err)
 	}
-	resp2.Body.Close()
+	_ = resp2.Body.Close()
 	if resp2.StatusCode != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", resp2.StatusCode)
 	}
@@ -120,7 +120,7 @@ func TestHandlerCreate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("post: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("status = %d, want 201", resp.StatusCode)
@@ -158,7 +158,7 @@ func TestHandlerCreateInvalid(t *testing.T) {
 			if err != nil {
 				t.Fatalf("post: %v", err)
 			}
-			defer resp.Body.Close()
+			defer func() { _ = resp.Body.Close() }()
 			if resp.StatusCode != tt.want {
 				t.Errorf("status = %d, want %d", resp.StatusCode, tt.want)
 			}
@@ -185,7 +185,7 @@ func TestHandlerListAndGet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d", resp.StatusCode)
 	}
@@ -200,7 +200,7 @@ func TestHandlerListAndGet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get by id: %v", err)
 	}
-	defer resp2.Body.Close()
+	defer func() { _ = resp2.Body.Close() }()
 	if resp2.StatusCode != http.StatusOK {
 		t.Errorf("status = %d", resp2.StatusCode)
 	}
@@ -217,7 +217,7 @@ func TestHandlerGetMissing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusNotFound {
 		t.Errorf("status = %d, want 404", resp.StatusCode)
 	}
@@ -232,7 +232,7 @@ func TestHandlerDelete(t *testing.T) {
 	if err != nil {
 		t.Fatalf("delete: %v", err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusNoContent {
 		t.Errorf("status = %d, want 204", resp.StatusCode)
 	}
@@ -247,7 +247,7 @@ func TestHandlerDelete(t *testing.T) {
 	if err != nil {
 		t.Fatalf("delete: %v", err)
 	}
-	resp2.Body.Close()
+	_ = resp2.Body.Close()
 	if resp2.StatusCode != http.StatusNotFound {
 		t.Errorf("second delete status = %d, want 404", resp2.StatusCode)
 	}
@@ -291,7 +291,7 @@ func TestHandlerStoreErrors(t *testing.T) {
 			if err != nil {
 				t.Fatalf("do: %v", err)
 			}
-			defer resp.Body.Close()
+			defer func() { _ = resp.Body.Close() }()
 			if resp.StatusCode != http.StatusInternalServerError {
 				t.Errorf("status = %d, want 500", resp.StatusCode)
 			}

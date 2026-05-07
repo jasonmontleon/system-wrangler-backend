@@ -23,6 +23,7 @@ type Hub struct {
 	logger      *slog.Logger
 }
 
+// NewHub constructs an empty Hub. A nil logger is replaced with slog.Default.
 func NewHub(logger *slog.Logger) *Hub {
 	if logger == nil {
 		logger = slog.Default()
@@ -38,6 +39,8 @@ type Subscriber struct {
 	Ch chan Event
 }
 
+// Subscribe registers and returns a new Subscriber with a buffered channel.
+// Callers MUST Unsubscribe before discarding the returned subscriber.
 func (h *Hub) Subscribe() *Subscriber {
 	s := &Subscriber{Ch: make(chan Event, 16)}
 	h.mu.Lock()
@@ -46,6 +49,7 @@ func (h *Hub) Subscribe() *Subscriber {
 	return s
 }
 
+// Unsubscribe removes s from the hub and closes its channel. Idempotent.
 func (h *Hub) Unsubscribe(s *Subscriber) {
 	h.mu.Lock()
 	if _, ok := h.subscribers[s]; ok {

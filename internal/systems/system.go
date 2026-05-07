@@ -14,6 +14,7 @@ import (
 // Maximum lengths are conservative; tighten only if a concrete need appears.
 const maxFieldLen = 255
 
+// Sentinel errors returned by the systems store and handler.
 var (
 	ErrNotFound = errors.New("system not found")
 	ErrInvalid  = errors.New("invalid system")
@@ -22,13 +23,14 @@ var (
 // Status reflects the most recent probe outcome for a system.
 type Status string
 
+// Probe-result statuses persisted on a System.
 const (
 	StatusUnprobed    Status = "unprobed"
 	StatusReachable   Status = "reachable"
 	StatusUnreachable Status = "unreachable"
 )
 
-// Host is a managed system in the fleet.
+// System is a managed host in the fleet.
 type System struct {
 	ID        string     `json:"id"`
 	Name      string     `json:"name"`
@@ -38,7 +40,7 @@ type System struct {
 	LastSeen  *time.Time `json:"lastSeen,omitempty"`
 }
 
-// HostInput is the user-supplied subset of a Host accepted on create.
+// SystemInput is the user-supplied subset of a System accepted on create.
 type SystemInput struct {
 	Name     string `json:"name"`
 	Hostname string `json:"hostname"`

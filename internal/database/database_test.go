@@ -13,7 +13,7 @@ func TestOpenAppliesPragmas(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	tests := []struct {
 		pragma string

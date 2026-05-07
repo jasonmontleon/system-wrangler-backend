@@ -76,7 +76,7 @@ func TestServerRoutesHealth(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d", resp.StatusCode)
@@ -98,7 +98,7 @@ func TestSystemsRequiresAuth(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Errorf("status = %d, want 401", resp.StatusCode)
 	}
@@ -117,7 +117,7 @@ func TestSystemsReachableAfterSetup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("setup: %v", err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("setup status = %d", resp.StatusCode)
 	}
@@ -126,7 +126,7 @@ func TestSystemsReachableAfterSetup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("systems: %v", err)
 	}
-	defer systemsResp.Body.Close()
+	defer func() { _ = systemsResp.Body.Close() }()
 	if systemsResp.StatusCode != http.StatusOK {
 		t.Errorf("systems status = %d, want 200", systemsResp.StatusCode)
 	}
@@ -152,7 +152,7 @@ func TestUnknownAPIReturnsJSON404(t *testing.T) {
 			if err != nil {
 				t.Fatalf("do: %v", err)
 			}
-			defer resp.Body.Close()
+			defer func() { _ = resp.Body.Close() }()
 			if resp.StatusCode != http.StatusNotFound {
 				t.Errorf("status = %d, want 404", resp.StatusCode)
 			}
@@ -187,7 +187,7 @@ func TestEventsEndpointStreamsThroughMiddleware(t *testing.T) {
 	if err != nil {
 		t.Fatalf("setup: %v", err)
 	}
-	setupResp.Body.Close()
+	_ = setupResp.Body.Close()
 	if setupResp.StatusCode != http.StatusCreated {
 		t.Fatalf("setup status = %d", setupResp.StatusCode)
 	}
@@ -197,7 +197,7 @@ func TestEventsEndpointStreamsThroughMiddleware(t *testing.T) {
 	if err != nil {
 		t.Fatalf("events: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want 200 (SSE setup likely broken by a writer wrapper)", resp.StatusCode)
@@ -215,7 +215,7 @@ func TestAuthEndpointsAreUngated(t *testing.T) {
 	if err != nil {
 		t.Fatalf("status: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("status = %d, want 200", resp.StatusCode)
 	}

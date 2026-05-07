@@ -10,6 +10,8 @@ import (
 	"database/sql"
 	"fmt"
 
+	// modernc.org/sqlite is registered as the "sqlite" driver via init();
+	// this package owns the import so domain packages don't each need it.
 	_ "modernc.org/sqlite"
 )
 

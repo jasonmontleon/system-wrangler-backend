@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+// Package auth implements local-account authentication: bcrypt password
+// hashing, HMAC-signed session cookies, and the HTTP handlers for setup,
+// login, logout, profile, and password change.
 package auth
 
 import (
@@ -32,6 +35,8 @@ func NewService(store UserStore, secret []byte, secureCookie bool) *Service {
 	}
 }
 
+// Register attaches the unauthenticated auth endpoints (status, setup,
+// login, logout) to mux.
 func (s *Service) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/auth/status", s.handleStatus)
 	mux.HandleFunc("POST /api/auth/setup", s.handleSetup)

@@ -104,6 +104,8 @@ func (s *SQLiteAuthStore) userColumns() (map[string]struct{}, error) {
 	return cols, nil
 }
 
+// NewSQLiteAuthStore initializes the users + meta schema on db (creating or
+// migrating columns as needed) and returns a store that owns those tables.
 func NewSQLiteAuthStore(db *sql.DB) (*SQLiteAuthStore, error) {
 	if _, err := db.Exec(schema); err != nil {
 		return nil, fmt.Errorf("auth: schema: %w", err)
@@ -119,6 +121,8 @@ func NewSQLiteAuthStore(db *sql.DB) (*SQLiteAuthStore, error) {
 	return s, nil
 }
 
+// Count returns the number of user rows. The setup flow uses zero as the
+// signal that the install is uninitialized.
 func (s *SQLiteAuthStore) Count() (int, error) {
 	var n int
 	if err := s.db.QueryRow(`SELECT COUNT(*) FROM users`).Scan(&n); err != nil {
@@ -127,6 +131,8 @@ func (s *SQLiteAuthStore) Count() (int, error) {
 	return n, nil
 }
 
+// Create inserts a new user with the given username and bcrypt hash.
+// Returns ErrUserExists on a unique-constraint conflict.
 func (s *SQLiteAuthStore) Create(username, hash string) (User, error) {
 	username = strings.TrimSpace(username)
 	if len(username) < MinUsernameLen {
@@ -154,6 +160,8 @@ func (s *SQLiteAuthStore) Create(username, hash string) (User, error) {
 
 const userSelect = `SELECT id, username, password_hash, email, theme, created_at FROM users`
 
+// GetByUsername returns the user and its bcrypt hash, or ErrUserNotFound
+// if no row matches.
 func (s *SQLiteAuthStore) GetByUsername(username string) (User, string, error) {
 	row := s.db.QueryRow(userSelect+` WHERE username = ?`, username)
 	u, hash, err := scanUser(row)
@@ -163,6 +171,7 @@ func (s *SQLiteAuthStore) GetByUsername(username string) (User, string, error) {
 	return u, hash, err
 }
 
+// GetByID returns the user with the given ID, or ErrUserNotFound.
 func (s *SQLiteAuthStore) GetByID(id string) (User, error) {
 	row := s.db.QueryRow(userSelect+` WHERE id = ?`, id)
 	u, _, err := scanUser(row)
@@ -228,6 +237,8 @@ func (s *SQLiteAuthStore) UpdatePassword(id, hash string) error {
 	return nil
 }
 
+// LoadSecret reads a key from the meta table. The bool reports whether a
+// row existed; err is non-nil only on a real DB error.
 func (s *SQLiteAuthStore) LoadSecret(key string) ([]byte, bool, error) {
 	var val []byte
 	err := s.db.QueryRow(`SELECT value FROM meta WHERE key = ?`, key).Scan(&val)
@@ -240,6 +251,7 @@ func (s *SQLiteAuthStore) LoadSecret(key string) ([]byte, bool, error) {
 	return val, true, nil
 }
 
+// SaveSecret upserts a key into the meta table.
 func (s *SQLiteAuthStore) SaveSecret(key string, val []byte) error {
 	_, err := s.db.Exec(
 		`INSERT INTO meta (key, value) VALUES (?, ?)

@@ -4,6 +4,7 @@ package auth
 
 import (
 	"errors"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -26,7 +27,7 @@ func newTestAuthStore(t *testing.T) *SQLiteAuthStore {
 	var n int
 	s.NewID = func() string {
 		n++
-		return "user-" + string(rune('0'+n))
+		return fmt.Sprintf("user-%d", n)
 	}
 	s.Now = func() time.Time {
 		return time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
