@@ -47,6 +47,10 @@ type Probe struct {
 	Workers  int
 	Now      func() time.Time
 	Logger   *slog.Logger
+	// Trigger fires an immediate Tick when received. Optional; nil disables
+	// the case (a nil channel never selects). Use a buffered channel of
+	// size 1 so non-blocking sends drop cleanly when a tick is in flight.
+	Trigger chan struct{}
 }
 
 // Run probes all known systems immediately, then on every Interval until ctx is
@@ -69,6 +73,8 @@ func (p *Probe) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
+			p.Tick(ctx)
+		case <-p.Trigger:
 			p.Tick(ctx)
 		}
 	}

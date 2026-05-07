@@ -12,6 +12,11 @@ import (
 // Handler bundles the HTTP endpoints for systems.
 type Handler struct {
 	Store Store
+	// OnCreate fires after a successful create. Optional; nil is skipped.
+	// The probe loop's Trigger channel is the canonical caller — wiring
+	// it here lets a freshly-added system be probed within seconds
+	// instead of waiting up to a full Interval for the next scheduled tick.
+	OnCreate func()
 }
 
 func NewHandler(s Store) *Handler { return &Handler{Store: s} }
@@ -56,6 +61,9 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "create failed")
 		slog.Error("systems create", "err", err)
 		return
+	}
+	if h.OnCreate != nil {
+		h.OnCreate()
 	}
 	w.Header().Set("Location", "/api/systems/"+sys.ID)
 	writeJSON(w, http.StatusCreated, sys)

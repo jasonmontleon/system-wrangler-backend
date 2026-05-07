@@ -58,22 +58,24 @@ func main() {
 	}
 	authSvc := auth.NewService(authStore, secret, useTLS)
 
-	srv := &http.Server{
-		Addr:              addr,
-		Handler:           withLogging(newMux(store, authStore, authSvc, secret)),
-		ReadHeaderTimeout: 5 * time.Second,
-	}
-
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
-
 	probe := &systems.Probe{
 		Store:    store,
 		Prober:   systems.TCPProber{Port: "22", Timeout: 3 * time.Second},
 		Interval: 30 * time.Second,
 		Timeout:  5 * time.Second,
 		Workers:  10,
+		Trigger:  make(chan struct{}, 1),
 	}
+
+	srv := &http.Server{
+		Addr:              addr,
+		Handler:           withLogging(newMux(store, authStore, authSvc, secret, triggerProbe(probe))),
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
 	probeDone := make(chan struct{})
 	go func() {
 		probe.Run(ctx)
@@ -105,12 +107,14 @@ func main() {
 	<-probeDone
 }
 
-func newMux(store systems.Store, users auth.UserStore, authSvc *auth.Service, secret []byte) *http.ServeMux {
+func newMux(store systems.Store, users auth.UserStore, authSvc *auth.Service, secret []byte, onSystemCreate func()) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", handleHealth)
 	authSvc.Register(mux)
 	requireUser := auth.RequireUser(secret, users, time.Now)
-	systems.NewHandler(store).Register(mux, requireUser)
+	sysHandler := systems.NewHandler(store)
+	sysHandler.OnCreate = onSystemCreate
+	sysHandler.Register(mux, requireUser)
 	// Catchall for unmatched /api/* — without this they fall through to the
 	// SPA handler and get index.html as a misleading 200. The SPA handler
 	// is registered without a method so /api/ stays unambiguously more
@@ -118,6 +122,17 @@ func newMux(store systems.Store, users auth.UserStore, authSvc *auth.Service, se
 	mux.HandleFunc("/api/", handleAPINotFound)
 	mux.Handle("/", spaHandler())
 	return mux
+}
+
+// triggerProbe returns a non-blocking sender for p.Trigger; drops cleanly
+// when a tick is already in flight (channel buffer is 1).
+func triggerProbe(p *systems.Probe) func() {
+	return func() {
+		select {
+		case p.Trigger <- struct{}{}:
+		default:
+		}
+	}
 }
 
 func handleHealth(w http.ResponseWriter, _ *http.Request) {

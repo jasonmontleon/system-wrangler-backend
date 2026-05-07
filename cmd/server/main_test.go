@@ -41,7 +41,7 @@ func newTestMux(t *testing.T) http.Handler {
 		t.Fatalf("LoadOrInitSecret: %v", err)
 	}
 	svc := auth.NewService(authStore, secret, false)
-	return newMux(invStore, authStore, svc, secret)
+	return newMux(invStore, authStore, svc, secret, nil)
 }
 
 func TestHandleHealth(t *testing.T) {

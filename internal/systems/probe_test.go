@@ -153,6 +153,52 @@ func TestProbeRunStopsOnContextCancel(t *testing.T) {
 	}
 }
 
+func TestProbeRunHandlesTrigger(t *testing.T) {
+	store := newTestStore()
+	_, _ = store.Create(SystemInput{Name: "x", Hostname: "10.0.0.1"})
+	prober := &fakeProber{result: map[string]error{"10.0.0.1": nil}}
+	p := &Probe{
+		Store:  store,
+		Prober: prober,
+		// Far-future interval so only the initial Tick + Trigger can fire.
+		Interval: time.Hour,
+		Timeout:  time.Second,
+		Workers:  4,
+		Logger:   newQuietLogger(),
+		Trigger:  make(chan struct{}, 1),
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		p.Run(ctx)
+		close(done)
+	}()
+
+	// The initial Tick at startup probes once.
+	waitForCalls(t, prober, 1)
+
+	// Sending on Trigger fires another Tick.
+	p.Trigger <- struct{}{}
+	waitForCalls(t, prober, 2)
+
+	cancel()
+	<-done
+}
+
+func waitForCalls(t *testing.T, p *fakeProber, want int32) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if atomic.LoadInt32(&p.calls) >= want {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("calls = %d, want >= %d within timeout", atomic.LoadInt32(&p.calls), want)
+}
+
 // Sanity check: Probe.Run honours nil Logger / Now / Workers defaults.
 func TestProbeRunDefaults(t *testing.T) {
 	store := newTestStore()

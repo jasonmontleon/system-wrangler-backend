@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -28,6 +29,45 @@ func decodeJSON(t *testing.T, r io.Reader, v any) {
 	t.Helper()
 	if err := json.NewDecoder(r).Decode(v); err != nil {
 		t.Fatalf("decode: %v", err)
+	}
+}
+
+func TestHandlerOnCreateFiresOnSuccessOnly(t *testing.T) {
+	var called atomic.Int32
+	store := newTestStore()
+	h := NewHandler(store)
+	h.OnCreate = func() { called.Add(1) }
+	mux := http.NewServeMux()
+	h.Register(mux, nil)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	// Successful create fires the callback.
+	resp, err := http.Post(srv.URL+"/api/systems", "application/json",
+		strings.NewReader(`{"name":"x","hostname":"y"}`))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("status = %d, want 201", resp.StatusCode)
+	}
+	if got := called.Load(); got != 1 {
+		t.Errorf("after success: called = %d, want 1", got)
+	}
+
+	// Validation failure does NOT fire the callback.
+	resp2, err := http.Post(srv.URL+"/api/systems", "application/json",
+		strings.NewReader(`{"name":"","hostname":"y"}`))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	resp2.Body.Close()
+	if resp2.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", resp2.StatusCode)
+	}
+	if got := called.Load(); got != 1 {
+		t.Errorf("after validation error: called = %d, want still 1", got)
 	}
 }
 
