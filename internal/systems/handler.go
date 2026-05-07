@@ -13,10 +13,13 @@ import (
 type Handler struct {
 	Store Store
 	// OnCreate fires after a successful create. Optional; nil is skipped.
-	// The probe loop's Trigger channel is the canonical caller — wiring
-	// it here lets a freshly-added system be probed within seconds
-	// instead of waiting up to a full Interval for the next scheduled tick.
+	// Wired to (a) the probe Trigger so a freshly-added system is probed
+	// within seconds instead of after a full Interval, and (b) the event
+	// hub so SPAs see new systems without manual refresh.
 	OnCreate func()
+	// OnDelete fires after a successful delete. Optional; same wiring
+	// purpose for SPA refresh.
+	OnDelete func()
 }
 
 func NewHandler(s Store) *Handler { return &Handler{Store: s} }
@@ -94,6 +97,9 @@ func (h *Handler) delete(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "delete failed")
 		slog.Error("systems delete", "err", err, "id", id)
 		return
+	}
+	if h.OnDelete != nil {
+		h.OnDelete()
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

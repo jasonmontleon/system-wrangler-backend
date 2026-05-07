@@ -32,6 +32,47 @@ func decodeJSON(t *testing.T, r io.Reader, v any) {
 	}
 }
 
+func TestHandlerOnDeleteFiresOnSuccessOnly(t *testing.T) {
+	var called atomic.Int32
+	store := newTestStore()
+	h := NewHandler(store)
+	h.OnDelete = func() { called.Add(1) }
+	mux := http.NewServeMux()
+	h.Register(mux, nil)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	sys, _ := store.Create(SystemInput{Name: "x", Hostname: "y"})
+
+	// Successful delete fires the callback.
+	req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/api/systems/"+sys.ID, nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", resp.StatusCode)
+	}
+	if got := called.Load(); got != 1 {
+		t.Errorf("after success: called = %d, want 1", got)
+	}
+
+	// Second delete (404) does NOT fire the callback.
+	req2, _ := http.NewRequest(http.MethodDelete, srv.URL+"/api/systems/"+sys.ID, nil)
+	resp2, err := http.DefaultClient.Do(req2)
+	if err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	resp2.Body.Close()
+	if resp2.StatusCode != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", resp2.StatusCode)
+	}
+	if got := called.Load(); got != 1 {
+		t.Errorf("after 404: called = %d, want still 1", got)
+	}
+}
+
 func TestHandlerOnCreateFiresOnSuccessOnly(t *testing.T) {
 	var called atomic.Int32
 	store := newTestStore()

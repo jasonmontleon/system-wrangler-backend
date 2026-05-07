@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -51,6 +52,10 @@ type Probe struct {
 	// the case (a nil channel never selects). Use a buffered channel of
 	// size 1 so non-blocking sends drop cleanly when a tick is in flight.
 	Trigger chan struct{}
+	// OnChange fires once at the end of a Tick if any system's status
+	// transitioned. Optional; nil is skipped. Wired to the event hub so
+	// SPAs refresh without polling.
+	OnChange func()
 }
 
 // Run probes all known systems immediately, then on every Interval until ctx is
@@ -81,7 +86,8 @@ func (p *Probe) Run(ctx context.Context) {
 }
 
 // Tick runs one probe cycle across all systems. Exposed for tests; Run calls
-// it on its schedule.
+// it on its schedule. Calls OnChange (if set) once at the end if any
+// system transitioned status this cycle.
 func (p *Probe) Tick(ctx context.Context) {
 	systems, err := p.Store.List()
 	if err != nil {
@@ -90,6 +96,7 @@ func (p *Probe) Tick(ctx context.Context) {
 	}
 	sem := make(chan struct{}, p.Workers)
 	var wg sync.WaitGroup
+	var changes atomic.Int32
 	for _, h := range systems {
 		select {
 		case <-ctx.Done():
@@ -104,10 +111,20 @@ func (p *Probe) Tick(ctx context.Context) {
 			probeCtx, cancel := context.WithTimeout(ctx, p.Timeout)
 			defer cancel()
 			ok := p.Prober.Probe(probeCtx, h.Hostname) == nil
+			newStatus := StatusUnreachable
+			if ok {
+				newStatus = StatusReachable
+			}
+			if h.Status != newStatus {
+				changes.Add(1)
+			}
 			if err := p.Store.UpdateProbe(h.ID, ok, p.Now()); err != nil {
 				p.Logger.Error("probe update", "err", err, "id", h.ID)
 			}
 		}(h)
 	}
 	wg.Wait()
+	if changes.Load() > 0 && p.OnChange != nil {
+		p.OnChange()
+	}
 }

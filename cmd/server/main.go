@@ -16,6 +16,7 @@ import (
 
 	"system-wrangler-backend/internal/auth"
 	"system-wrangler-backend/internal/database"
+	"system-wrangler-backend/internal/events"
 	"system-wrangler-backend/internal/systems"
 	"system-wrangler-backend/web"
 )
@@ -58,6 +59,11 @@ func main() {
 	}
 	authSvc := auth.NewService(authStore, secret, useTLS)
 
+	hub := events.NewHub(slog.Default())
+	broadcastSystemsChanged := func() {
+		hub.Broadcast(events.Event{Type: "systems.changed"})
+	}
+
 	probe := &systems.Probe{
 		Store:    store,
 		Prober:   systems.TCPProber{Port: "22", Timeout: 3 * time.Second},
@@ -65,11 +71,17 @@ func main() {
 		Timeout:  5 * time.Second,
 		Workers:  10,
 		Trigger:  make(chan struct{}, 1),
+		OnChange: broadcastSystemsChanged,
+	}
+
+	onCreate := func() {
+		triggerProbe(probe)()
+		broadcastSystemsChanged()
 	}
 
 	srv := &http.Server{
 		Addr:              addr,
-		Handler:           withLogging(newMux(store, authStore, authSvc, secret, triggerProbe(probe))),
+		Handler:           withLogging(newMux(store, authStore, authSvc, secret, hub, onCreate, broadcastSystemsChanged)),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
@@ -107,14 +119,18 @@ func main() {
 	<-probeDone
 }
 
-func newMux(store systems.Store, users auth.UserStore, authSvc *auth.Service, secret []byte, onSystemCreate func()) *http.ServeMux {
+func newMux(store systems.Store, users auth.UserStore, authSvc *auth.Service, secret []byte, hub *events.Hub, onSystemCreate, onSystemDelete func()) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", handleHealth)
 	authSvc.Register(mux)
 	requireUser := auth.RequireUser(secret, users, time.Now)
 	sysHandler := systems.NewHandler(store)
 	sysHandler.OnCreate = onSystemCreate
+	sysHandler.OnDelete = onSystemDelete
 	sysHandler.Register(mux, requireUser)
+	if hub != nil {
+		mux.Handle("GET /api/events", requireUser(events.SSEHandler(hub)))
+	}
 	// Catchall for unmatched /api/* — without this they fall through to the
 	// SPA handler and get index.html as a misleading 200. The SPA handler
 	// is registered without a method so /api/ stays unambiguously more
@@ -193,6 +209,19 @@ func (s *statusWriter) WriteHeader(code int) {
 	s.status = code
 	s.ResponseWriter.WriteHeader(code)
 }
+
+// Flush forwards to the underlying writer so SSE / chunked streaming keeps
+// working through this wrapper. http.ResponseWriter doesn't include Flush,
+// so embedding alone wouldn't promote it.
+func (s *statusWriter) Flush() {
+	if f, ok := s.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+// Compile-time check: the SSE handler type-asserts to http.Flusher; if this
+// stops compiling the wrapper has regressed.
+var _ http.Flusher = (*statusWriter)(nil)
 
 func envOr(key, def string) string {
 	if v := os.Getenv(key); v != "" {

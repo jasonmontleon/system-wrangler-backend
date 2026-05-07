@@ -153,6 +153,45 @@ func TestProbeRunStopsOnContextCancel(t *testing.T) {
 	}
 }
 
+func TestProbeTickFiresOnChangeOnTransition(t *testing.T) {
+	store := newTestStore()
+	_, _ = store.Create(SystemInput{Name: "up", Hostname: "10.0.0.1"})
+	prober := &fakeProber{result: map[string]error{"10.0.0.1": nil}}
+
+	var changed atomic.Int32
+	p := &Probe{
+		Store:    store,
+		Prober:   prober,
+		Interval: time.Hour,
+		Timeout:  time.Second,
+		Workers:  4,
+		Now:      time.Now,
+		Logger:   newQuietLogger(),
+		OnChange: func() { changed.Add(1) },
+	}
+
+	// First tick: Unprobed -> Reachable is a transition. OnChange fires.
+	p.Tick(context.Background())
+	if got := changed.Load(); got != 1 {
+		t.Errorf("after first tick: OnChange called %d times, want 1", got)
+	}
+
+	// Second tick: Reachable -> Reachable, no transition. OnChange does not fire.
+	p.Tick(context.Background())
+	if got := changed.Load(); got != 1 {
+		t.Errorf("after stable tick: OnChange called %d times, want still 1", got)
+	}
+
+	// Flip the prober result to fail; Reachable -> Unreachable is a transition.
+	prober.mu.Lock()
+	prober.result["10.0.0.1"] = errors.New("conn refused")
+	prober.mu.Unlock()
+	p.Tick(context.Background())
+	if got := changed.Load(); got != 2 {
+		t.Errorf("after transition tick: OnChange called %d times, want 2", got)
+	}
+}
+
 func TestProbeRunHandlesTrigger(t *testing.T) {
 	store := newTestStore()
 	_, _ = store.Create(SystemInput{Name: "x", Hostname: "10.0.0.1"})

@@ -14,6 +14,7 @@ import (
 
 	"system-wrangler-backend/internal/auth"
 	"system-wrangler-backend/internal/database"
+	"system-wrangler-backend/internal/events"
 	"system-wrangler-backend/internal/systems"
 )
 
@@ -41,7 +42,8 @@ func newTestMux(t *testing.T) http.Handler {
 		t.Fatalf("LoadOrInitSecret: %v", err)
 	}
 	svc := auth.NewService(authStore, secret, false)
-	return newMux(invStore, authStore, svc, secret, nil)
+	hub := events.NewHub(nil)
+	return newMux(invStore, authStore, svc, secret, hub, nil, nil)
 }
 
 func TestHandleHealth(t *testing.T) {
@@ -167,6 +169,41 @@ func TestUnknownAPIReturnsJSON404(t *testing.T) {
 				t.Error("error field missing")
 			}
 		})
+	}
+}
+
+// TestEventsEndpointStreamsThroughMiddleware guards against a regression
+// where statusWriter (the withLogging wrapper) silently shadows
+// http.Flusher, causing the SSE handler's type assertion to fail and the
+// response to come back as 500.
+func TestEventsEndpointStreamsThroughMiddleware(t *testing.T) {
+	srv := httptest.NewServer(withLogging(newTestMux(t)))
+	defer srv.Close()
+
+	jar, _ := cookiejar.New(nil)
+	client := &http.Client{Jar: jar}
+	setupResp, err := client.Post(srv.URL+"/api/auth/setup", "application/json",
+		strings.NewReader(`{"username":"admin","password":"correctpassword"}`))
+	if err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	setupResp.Body.Close()
+	if setupResp.StatusCode != http.StatusCreated {
+		t.Fatalf("setup status = %d", setupResp.StatusCode)
+	}
+
+	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/events", nil)
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("events: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (SSE setup likely broken by a writer wrapper)", resp.StatusCode)
+	}
+	if got := resp.Header.Get("Content-Type"); got != "text/event-stream" {
+		t.Errorf("Content-Type = %q, want text/event-stream", got)
 	}
 }
 
