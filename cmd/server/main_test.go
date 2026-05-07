@@ -130,6 +130,46 @@ func TestSystemsReachableAfterSetup(t *testing.T) {
 	}
 }
 
+func TestUnknownAPIReturnsJSON404(t *testing.T) {
+	srv := httptest.NewServer(withLogging(newTestMux(t)))
+	defer srv.Close()
+
+	tests := []struct {
+		name   string
+		method string
+		path   string
+	}{
+		{"unknown GET", http.MethodGet, "/api/nope"},
+		{"unknown POST", http.MethodPost, "/api/also-nope"},
+		{"wrong method on known route", http.MethodPost, "/api/health"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req, _ := http.NewRequest(tt.method, srv.URL+tt.path, nil)
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("do: %v", err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusNotFound {
+				t.Errorf("status = %d, want 404", resp.StatusCode)
+			}
+			if ct := resp.Header.Get("Content-Type"); ct != "application/json" {
+				t.Errorf("content-type = %q, want application/json", ct)
+			}
+			var body struct {
+				Error string `json:"error"`
+			}
+			if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if body.Error == "" {
+				t.Error("error field missing")
+			}
+		})
+	}
+}
+
 func TestAuthEndpointsAreUngated(t *testing.T) {
 	srv := httptest.NewServer(withLogging(newTestMux(t)))
 	defer srv.Close()

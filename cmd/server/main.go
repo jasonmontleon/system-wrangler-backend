@@ -111,13 +111,24 @@ func newMux(store systems.Store, users auth.UserStore, authSvc *auth.Service, se
 	authSvc.Register(mux)
 	requireUser := auth.RequireUser(secret, users, time.Now)
 	systems.NewHandler(store).Register(mux, requireUser)
-	mux.Handle("GET /", spaHandler())
+	// Catchall for unmatched /api/* — without this they fall through to the
+	// SPA handler and get index.html as a misleading 200. The SPA handler
+	// is registered without a method so /api/ stays unambiguously more
+	// specific for any method (Go's ServeMux conflicts otherwise).
+	mux.HandleFunc("/api/", handleAPINotFound)
+	mux.Handle("/", spaHandler())
 	return mux
 }
 
 func handleHealth(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write([]byte(`{"status":"ok"}`))
+}
+
+func handleAPINotFound(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusNotFound)
+	_, _ = w.Write([]byte(`{"error":"not found"}`))
 }
 
 func spaHandler() http.Handler {
