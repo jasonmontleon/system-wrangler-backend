@@ -19,6 +19,9 @@ type UserStore interface {
 	Create(username, passwordHash string) (User, error)
 	GetByUsername(username string) (User, string, error)
 	GetByID(id string) (User, error)
+	GetHashByID(id string) (string, error)
+	UpdateProfile(id, email, theme string) (User, error)
+	UpdatePassword(id, passwordHash string) error
 }
 
 // SecretStore is the small slice of the meta table that the session-signing
@@ -41,6 +44,8 @@ CREATE TABLE IF NOT EXISTS users (
     id            TEXT PRIMARY KEY,
     username      TEXT NOT NULL UNIQUE,
     password_hash TEXT NOT NULL,
+    email         TEXT NOT NULL DEFAULT '',
+    theme         TEXT NOT NULL DEFAULT '',
     created_at    INTEGER NOT NULL
 ) STRICT;
 
@@ -50,15 +55,68 @@ CREATE TABLE IF NOT EXISTS meta (
 ) STRICT;
 `
 
+// migrate adds email/theme columns when upgrading from a pre-existing schema
+// that lacked them. SQLite's ALTER TABLE ADD COLUMN is cheap and idempotent
+// when guarded by an introspection check.
+func (s *SQLiteAuthStore) migrate() error {
+	cols, err := s.userColumns()
+	if err != nil {
+		return err
+	}
+	for _, c := range []struct{ name, ddl string }{
+		{"email", `ALTER TABLE users ADD COLUMN email TEXT NOT NULL DEFAULT ''`},
+		{"theme", `ALTER TABLE users ADD COLUMN theme TEXT NOT NULL DEFAULT ''`},
+	} {
+		if _, ok := cols[c.name]; ok {
+			continue
+		}
+		if _, err := s.db.Exec(c.ddl); err != nil {
+			return fmt.Errorf("auth: migrate %s: %w", c.name, err)
+		}
+	}
+	return nil
+}
+
+func (s *SQLiteAuthStore) userColumns() (map[string]struct{}, error) {
+	rows, err := s.db.Query(`PRAGMA table_info(users)`)
+	if err != nil {
+		return nil, fmt.Errorf("auth: pragma table_info: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	cols := map[string]struct{}{}
+	for rows.Next() {
+		var (
+			cid     int
+			name    string
+			ctype   string
+			notnull int
+			dflt    sql.NullString
+			pk      int
+		)
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			return nil, fmt.Errorf("auth: pragma scan: %w", err)
+		}
+		cols[name] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("auth: pragma rows: %w", err)
+	}
+	return cols, nil
+}
+
 func NewSQLiteAuthStore(db *sql.DB) (*SQLiteAuthStore, error) {
 	if _, err := db.Exec(schema); err != nil {
 		return nil, fmt.Errorf("auth: schema: %w", err)
 	}
-	return &SQLiteAuthStore{
+	s := &SQLiteAuthStore{
 		db:    db,
 		NewID: func() string { return uuid.NewString() },
 		Now:   time.Now,
-	}, nil
+	}
+	if err := s.migrate(); err != nil {
+		return nil, err
+	}
+	return s, nil
 }
 
 func (s *SQLiteAuthStore) Count() (int, error) {
@@ -80,7 +138,7 @@ func (s *SQLiteAuthStore) Create(username, hash string) (User, error) {
 		CreatedAt: s.Now().UTC(),
 	}
 	_, err := s.db.Exec(
-		`INSERT INTO users (id, username, password_hash, created_at) VALUES (?, ?, ?, ?)`,
+		`INSERT INTO users (id, username, password_hash, email, theme, created_at) VALUES (?, ?, ?, '', '', ?)`,
 		u.ID, u.Username, hash, u.CreatedAt.UnixNano(),
 	)
 	if err != nil {
@@ -94,11 +152,10 @@ func (s *SQLiteAuthStore) Create(username, hash string) (User, error) {
 	return u, nil
 }
 
+const userSelect = `SELECT id, username, password_hash, email, theme, created_at FROM users`
+
 func (s *SQLiteAuthStore) GetByUsername(username string) (User, string, error) {
-	row := s.db.QueryRow(
-		`SELECT id, username, password_hash, created_at FROM users WHERE username = ?`,
-		username,
-	)
+	row := s.db.QueryRow(userSelect+` WHERE username = ?`, username)
 	u, hash, err := scanUser(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return User{}, "", ErrUserNotFound
@@ -107,15 +164,68 @@ func (s *SQLiteAuthStore) GetByUsername(username string) (User, string, error) {
 }
 
 func (s *SQLiteAuthStore) GetByID(id string) (User, error) {
-	row := s.db.QueryRow(
-		`SELECT id, username, password_hash, created_at FROM users WHERE id = ?`,
-		id,
-	)
+	row := s.db.QueryRow(userSelect+` WHERE id = ?`, id)
 	u, _, err := scanUser(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return User{}, ErrUserNotFound
 	}
 	return u, err
+}
+
+// GetHashByID returns the bcrypt hash for the user with the given ID. Used
+// by the change-password flow to verify the current password without
+// retrieving the full user record.
+func (s *SQLiteAuthStore) GetHashByID(id string) (string, error) {
+	var hash string
+	err := s.db.QueryRow(`SELECT password_hash FROM users WHERE id = ?`, id).Scan(&hash)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", ErrUserNotFound
+	}
+	if err != nil {
+		return "", fmt.Errorf("auth: load hash: %w", err)
+	}
+	return hash, nil
+}
+
+// UpdateProfile sets email and theme on the user row, returning the
+// resulting User. ErrUserNotFound is returned if no row matches id.
+func (s *SQLiteAuthStore) UpdateProfile(id, email, theme string) (User, error) {
+	email = strings.TrimSpace(email)
+	if !ValidTheme(theme) {
+		return User{}, fmt.Errorf("%w: invalid theme", ErrInvalid)
+	}
+	res, err := s.db.Exec(
+		`UPDATE users SET email = ?, theme = ? WHERE id = ?`,
+		email, theme, id,
+	)
+	if err != nil {
+		return User{}, fmt.Errorf("auth: update profile: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return User{}, fmt.Errorf("auth: rows affected: %w", err)
+	}
+	if n == 0 {
+		return User{}, ErrUserNotFound
+	}
+	return s.GetByID(id)
+}
+
+// UpdatePassword replaces the bcrypt hash on the user row. ErrUserNotFound
+// is returned if no row matches id.
+func (s *SQLiteAuthStore) UpdatePassword(id, hash string) error {
+	res, err := s.db.Exec(`UPDATE users SET password_hash = ? WHERE id = ?`, hash, id)
+	if err != nil {
+		return fmt.Errorf("auth: update password: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("auth: rows affected: %w", err)
+	}
+	if n == 0 {
+		return ErrUserNotFound
+	}
+	return nil
 }
 
 func (s *SQLiteAuthStore) LoadSecret(key string) ([]byte, bool, error) {
@@ -152,7 +262,7 @@ func scanUser(r rowScanner) (User, string, error) {
 		hash      string
 		createdNs int64
 	)
-	if err := r.Scan(&u.ID, &u.Username, &hash, &createdNs); err != nil {
+	if err := r.Scan(&u.ID, &u.Username, &hash, &u.Email, &u.Theme, &createdNs); err != nil {
 		return User{}, "", err
 	}
 	u.CreatedAt = time.Unix(0, createdNs).UTC()

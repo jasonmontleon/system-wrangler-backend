@@ -12,6 +12,8 @@ import (
 type User struct {
 	ID        string    `json:"id"`
 	Username  string    `json:"username"`
+	Email     string    `json:"email"`
+	Theme     string    `json:"theme"`
 	CreatedAt time.Time `json:"createdAt"`
 }
 
@@ -24,6 +26,13 @@ const MinPasswordLen = 8
 // otherwise free-form (no email validation in v1).
 const MinUsernameLen = 1
 
+// Theme values persisted on a user. Empty string means "no preference set"
+// and the client should fall back to its default.
+const (
+	ThemeLight = "light"
+	ThemeDark  = "dark"
+)
+
 // Sentinel errors usable across the package and by callers.
 var (
 	ErrInvalid       = errors.New("auth: invalid input")
@@ -32,3 +41,9 @@ var (
 	ErrUserExists    = errors.New("auth: username already taken")
 	ErrSetupComplete = errors.New("auth: setup already complete")
 )
+
+// ValidTheme reports whether s is a permitted theme value. The empty string
+// is allowed and means "use the client default".
+func ValidTheme(s string) bool {
+	return s == "" || s == ThemeLight || s == ThemeDark
+}

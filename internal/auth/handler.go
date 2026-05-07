@@ -39,6 +39,14 @@ func (s *Service) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/auth/logout", s.handleLogout)
 }
 
+// RegisterProtected wires the endpoints that require an authenticated user.
+// The middleware is supplied by the caller so the auth package doesn't need
+// to construct it itself.
+func (s *Service) RegisterProtected(mux *http.ServeMux, requireUser func(http.Handler) http.Handler) {
+	mux.Handle("PATCH /api/auth/profile", requireUser(http.HandlerFunc(s.handleUpdateProfile)))
+	mux.Handle("POST /api/auth/password", requireUser(http.HandlerFunc(s.handleChangePassword)))
+}
+
 type credentials struct {
 	Username string `json:"username"`
 	Password string `json:"password"`
@@ -150,6 +158,99 @@ func (s *Service) handleLogout(w http.ResponseWriter, _ *http.Request) {
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   -1,
 	})
+	w.WriteHeader(http.StatusNoContent)
+}
+
+type profileRequest struct {
+	Email string `json:"email"`
+	Theme string `json:"theme"`
+}
+
+func (s *Service) handleUpdateProfile(w http.ResponseWriter, r *http.Request) {
+	u, ok := UserFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	var req profileRequest
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+	if !ValidTheme(req.Theme) {
+		writeError(w, http.StatusBadRequest, "invalid theme")
+		return
+	}
+	updated, err := s.Store.UpdateProfile(u.ID, req.Email, req.Theme)
+	if err != nil {
+		if errors.Is(err, ErrInvalid) {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if errors.Is(err, ErrUserNotFound) {
+			writeError(w, http.StatusNotFound, "user not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "update failed")
+		slog.Error("auth update profile", "err", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, updated)
+}
+
+type passwordChangeRequest struct {
+	CurrentPassword string `json:"currentPassword"`
+	NewPassword     string `json:"newPassword"`
+}
+
+func (s *Service) handleChangePassword(w http.ResponseWriter, r *http.Request) {
+	u, ok := UserFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	var req passwordChangeRequest
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+	if req.CurrentPassword == "" || req.NewPassword == "" {
+		writeError(w, http.StatusBadRequest, "current and new password required")
+		return
+	}
+	hash, err := s.Store.GetHashByID(u.ID)
+	if err != nil {
+		if errors.Is(err, ErrUserNotFound) {
+			writeError(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "password change failed")
+		slog.Error("auth change password load", "err", err)
+		return
+	}
+	if err := VerifyPassword(hash, req.CurrentPassword); err != nil {
+		writeError(w, http.StatusUnauthorized, "current password incorrect")
+		return
+	}
+	newHash, err := HashPassword(req.NewPassword)
+	if err != nil {
+		if errors.Is(err, ErrInvalid) {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "hash failed")
+		slog.Error("auth change password hash", "err", err)
+		return
+	}
+	if err := s.Store.UpdatePassword(u.ID, newHash); err != nil {
+		writeError(w, http.StatusInternalServerError, "password change failed")
+		slog.Error("auth change password update", "err", err)
+		return
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 

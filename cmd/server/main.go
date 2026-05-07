@@ -124,6 +124,7 @@ func newMux(store systems.Store, users auth.UserStore, authSvc *auth.Service, se
 	mux.HandleFunc("GET /api/health", handleHealth)
 	authSvc.Register(mux)
 	requireUser := auth.RequireUser(secret, users, time.Now)
+	authSvc.RegisterProtected(mux, requireUser)
 	sysHandler := systems.NewHandler(store)
 	sysHandler.OnCreate = onSystemCreate
 	sysHandler.OnDelete = onSystemDelete

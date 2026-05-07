@@ -116,7 +116,9 @@ func TestLoginAndStatusFlow(t *testing.T) {
 
 	// Seed a user with a real bcrypt hash.
 	hash, _ := HashPassword("correctpassword")
-	store.Create("alice", hash)
+	if _, err := store.Create("alice", hash); err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
 
 	// Wrong password.
 	resp, err := http.Post(srv.URL+"/api/auth/login", "application/json",
@@ -283,6 +285,335 @@ func TestSetupCreateConflict(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusInternalServerError {
 		t.Errorf("status = %d, want 500", resp.StatusCode)
+	}
+}
+
+// newProtectedTestServer wires both Register and RegisterProtected behind
+// the real RequireUser middleware so profile/password endpoints can be
+// exercised end-to-end.
+func newProtectedTestServer(t *testing.T) (*httptest.Server, *Service, *stubUserStore) {
+	t.Helper()
+	store := &stubUserStore{}
+	svc := NewService(store, testSecret, false)
+	now := time.Date(2026, 5, 6, 12, 0, 0, 0, time.UTC)
+	svc.Now = func() time.Time { return now }
+	mux := http.NewServeMux()
+	svc.Register(mux)
+	mw := RequireUser(testSecret, store, func() time.Time { return now })
+	svc.RegisterProtected(mux, mw)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv, svc, store
+}
+
+func loggedInClient(t *testing.T, srv *httptest.Server, username string) *http.Client {
+	t.Helper()
+	jar, _ := cookiejar.New(nil)
+	client := &http.Client{Jar: jar}
+	resp, err := client.Post(srv.URL+"/api/auth/login", "application/json",
+		strings.NewReader(`{"username":"`+username+`","password":"correctpassword"}`))
+	if err != nil {
+		t.Fatalf("login: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("login status = %d", resp.StatusCode)
+	}
+	return client
+}
+
+func TestUpdateProfileHappyPath(t *testing.T) {
+	srv, _, store := newProtectedTestServer(t)
+	hash, _ := HashPassword("correctpassword")
+	if _, err := store.Create("alice", hash); err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+	client := loggedInClient(t, srv, "alice")
+
+	req, _ := http.NewRequest(http.MethodPatch, srv.URL+"/api/auth/profile",
+		strings.NewReader(`{"email":"alice@example.com","theme":"light"}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("patch: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, body=%s", resp.StatusCode, body)
+	}
+	var got User
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Email != "alice@example.com" || got.Theme != "light" {
+		t.Errorf("got %+v", got)
+	}
+}
+
+func TestUpdateProfileRequiresAuth(t *testing.T) {
+	srv, _, _ := newProtectedTestServer(t)
+	req, _ := http.NewRequest(http.MethodPatch, srv.URL+"/api/auth/profile",
+		strings.NewReader(`{"email":"x","theme":"dark"}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("patch: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("status = %d, want 401", resp.StatusCode)
+	}
+}
+
+func TestUpdateProfileValidation(t *testing.T) {
+	srv, _, store := newProtectedTestServer(t)
+	hash, _ := HashPassword("correctpassword")
+	if _, err := store.Create("alice", hash); err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+	client := loggedInClient(t, srv, "alice")
+
+	tests := []struct {
+		name string
+		body string
+		want int
+	}{
+		{"bad json", `not json`, http.StatusBadRequest},
+		{"unknown field", `{"email":"a","theme":"dark","extra":1}`, http.StatusBadRequest},
+		{"invalid theme", `{"email":"a","theme":"neon"}`, http.StatusBadRequest},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req, _ := http.NewRequest(http.MethodPatch, srv.URL+"/api/auth/profile",
+				strings.NewReader(tt.body))
+			req.Header.Set("Content-Type", "application/json")
+			resp, err := client.Do(req)
+			if err != nil {
+				t.Fatalf("patch: %v", err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != tt.want {
+				t.Errorf("status = %d, want %d", resp.StatusCode, tt.want)
+			}
+		})
+	}
+}
+
+func TestUpdateProfileStoreFailure(t *testing.T) {
+	srv, _, store := newProtectedTestServer(t)
+	hash, _ := HashPassword("correctpassword")
+	if _, err := store.Create("alice", hash); err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+	client := loggedInClient(t, srv, "alice")
+
+	store.failOn = "UpdateProfile"
+	store.err = errors.New("db down")
+
+	req, _ := http.NewRequest(http.MethodPatch, srv.URL+"/api/auth/profile",
+		strings.NewReader(`{"email":"a","theme":"dark"}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("patch: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", resp.StatusCode)
+	}
+}
+
+func TestUpdateProfileUserGone(t *testing.T) {
+	srv, _, store := newProtectedTestServer(t)
+	hash, _ := HashPassword("correctpassword")
+	if _, err := store.Create("alice", hash); err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+	client := loggedInClient(t, srv, "alice")
+
+	store.failOn = "UpdateProfile"
+	store.err = ErrUserNotFound
+
+	req, _ := http.NewRequest(http.MethodPatch, srv.URL+"/api/auth/profile",
+		strings.NewReader(`{"email":"a","theme":"dark"}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("patch: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", resp.StatusCode)
+	}
+}
+
+func TestChangePasswordHappyPath(t *testing.T) {
+	srv, _, store := newProtectedTestServer(t)
+	hash, _ := HashPassword("correctpassword")
+	if _, err := store.Create("alice", hash); err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+	client := loggedInClient(t, srv, "alice")
+
+	resp, err := client.Post(srv.URL+"/api/auth/password", "application/json",
+		strings.NewReader(`{"currentPassword":"correctpassword","newPassword":"newsecretpw"}`))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, body=%s", resp.StatusCode, body)
+	}
+	// Confirm we can log in with the new password and not the old one.
+	resp2, _ := http.Post(srv.URL+"/api/auth/login", "application/json",
+		strings.NewReader(`{"username":"alice","password":"correctpassword"}`))
+	_ = resp2.Body.Close()
+	if resp2.StatusCode != http.StatusUnauthorized {
+		t.Errorf("old pw login status = %d, want 401", resp2.StatusCode)
+	}
+	resp3, _ := http.Post(srv.URL+"/api/auth/login", "application/json",
+		strings.NewReader(`{"username":"alice","password":"newsecretpw"}`))
+	_ = resp3.Body.Close()
+	if resp3.StatusCode != http.StatusOK {
+		t.Errorf("new pw login status = %d, want 200", resp3.StatusCode)
+	}
+}
+
+func TestChangePasswordRequiresCurrent(t *testing.T) {
+	srv, _, store := newProtectedTestServer(t)
+	hash, _ := HashPassword("correctpassword")
+	if _, err := store.Create("alice", hash); err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+	client := loggedInClient(t, srv, "alice")
+
+	resp, err := client.Post(srv.URL+"/api/auth/password", "application/json",
+		strings.NewReader(`{"currentPassword":"wrongone","newPassword":"newsecretpw"}`))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("status = %d, want 401", resp.StatusCode)
+	}
+}
+
+func TestChangePasswordValidation(t *testing.T) {
+	srv, _, store := newProtectedTestServer(t)
+	hash, _ := HashPassword("correctpassword")
+	if _, err := store.Create("alice", hash); err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+	client := loggedInClient(t, srv, "alice")
+
+	tests := []struct {
+		name string
+		body string
+		want int
+	}{
+		{"bad json", `not json`, http.StatusBadRequest},
+		{"missing fields", `{"currentPassword":""}`, http.StatusBadRequest},
+		{"unknown field", `{"currentPassword":"a","newPassword":"b","x":1}`, http.StatusBadRequest},
+		{"too short", `{"currentPassword":"correctpassword","newPassword":"short"}`, http.StatusBadRequest},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp, err := client.Post(srv.URL+"/api/auth/password", "application/json",
+				strings.NewReader(tt.body))
+			if err != nil {
+				t.Fatalf("post: %v", err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != tt.want {
+				t.Errorf("status = %d, want %d", resp.StatusCode, tt.want)
+			}
+		})
+	}
+}
+
+func TestChangePasswordRequiresAuth(t *testing.T) {
+	srv, _, _ := newProtectedTestServer(t)
+	resp, err := http.Post(srv.URL+"/api/auth/password", "application/json",
+		strings.NewReader(`{"currentPassword":"a","newPassword":"correctpassword"}`))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("status = %d, want 401", resp.StatusCode)
+	}
+}
+
+func TestChangePasswordHashLoadFails(t *testing.T) {
+	srv, _, store := newProtectedTestServer(t)
+	hash, _ := HashPassword("correctpassword")
+	if _, err := store.Create("alice", hash); err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+	client := loggedInClient(t, srv, "alice")
+
+	store.failOn = "GetHashByID"
+	store.err = errors.New("db down")
+	resp, err := client.Post(srv.URL+"/api/auth/password", "application/json",
+		strings.NewReader(`{"currentPassword":"correctpassword","newPassword":"newsecretpw"}`))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", resp.StatusCode)
+	}
+}
+
+func TestChangePasswordUpdateFails(t *testing.T) {
+	srv, _, store := newProtectedTestServer(t)
+	hash, _ := HashPassword("correctpassword")
+	if _, err := store.Create("alice", hash); err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+	client := loggedInClient(t, srv, "alice")
+
+	store.failOn = "UpdatePassword"
+	store.err = errors.New("db down")
+	resp, err := client.Post(srv.URL+"/api/auth/password", "application/json",
+		strings.NewReader(`{"currentPassword":"correctpassword","newPassword":"newsecretpw"}`))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", resp.StatusCode)
+	}
+}
+
+// TestProtectedHandlersWithoutContext exercises the (very narrow) defensive
+// branch where the protected handler is invoked without RequireUser having
+// stamped a user onto the context. In production that's impossible — but
+// we keep the explicit 401 so a misconfigured mux fails closed.
+func TestProtectedHandlersWithoutContext(t *testing.T) {
+	store := &stubUserStore{}
+	svc := NewService(store, testSecret, false)
+
+	tests := []struct {
+		name    string
+		handler http.HandlerFunc
+		method  string
+		body    string
+	}{
+		{"profile", svc.handleUpdateProfile, http.MethodPatch, `{"email":"a","theme":"dark"}`},
+		{"password", svc.handleChangePassword, http.MethodPost, `{"currentPassword":"a","newPassword":"correctpassword"}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(tt.method, "/x", strings.NewReader(tt.body))
+			w := httptest.NewRecorder()
+			tt.handler(w, req)
+			if w.Code != http.StatusUnauthorized {
+				t.Errorf("status = %d, want 401", w.Code)
+			}
+		})
 	}
 }
 

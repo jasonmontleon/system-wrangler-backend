@@ -61,6 +61,43 @@ func (s *stubUserStore) GetByID(id string) (User, error) {
 	}
 	return u, nil
 }
+func (s *stubUserStore) GetHashByID(id string) (string, error) {
+	if s.failOn == "GetHashByID" {
+		return "", s.err
+	}
+	u, ok := s.users[id]
+	if !ok {
+		return "", ErrUserNotFound
+	}
+	return s.hashes[u.Username], nil
+}
+func (s *stubUserStore) UpdateProfile(id, email, theme string) (User, error) {
+	if s.failOn == "UpdateProfile" {
+		return User{}, s.err
+	}
+	u, ok := s.users[id]
+	if !ok {
+		return User{}, ErrUserNotFound
+	}
+	if !ValidTheme(theme) {
+		return User{}, ErrInvalid
+	}
+	u.Email = email
+	u.Theme = theme
+	s.users[id] = u
+	return u, nil
+}
+func (s *stubUserStore) UpdatePassword(id, hash string) error {
+	if s.failOn == "UpdatePassword" {
+		return s.err
+	}
+	u, ok := s.users[id]
+	if !ok {
+		return ErrUserNotFound
+	}
+	s.hashes[u.Username] = hash
+	return nil
+}
 
 func TestRequireUserAllowsValidCookie(t *testing.T) {
 	store := &stubUserStore{}

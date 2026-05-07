@@ -143,11 +143,155 @@ func TestAuthStoreErrorsOnClosedDB(t *testing.T) {
 	if _, err := s.GetByID("u"); err == nil {
 		t.Error("GetByID on closed DB: want error")
 	}
+	if _, err := s.GetHashByID("u"); err == nil {
+		t.Error("GetHashByID on closed DB: want error")
+	}
+	if _, err := s.UpdateProfile("u", "e", "dark"); err == nil {
+		t.Error("UpdateProfile on closed DB: want error")
+	}
+	if err := s.UpdatePassword("u", "h"); err == nil {
+		t.Error("UpdatePassword on closed DB: want error")
+	}
 	if _, _, err := s.LoadSecret("k"); err == nil {
 		t.Error("LoadSecret on closed DB: want error")
 	}
 	if err := s.SaveSecret("k", []byte("v")); err == nil {
 		t.Error("SaveSecret on closed DB: want error")
+	}
+}
+
+func TestAuthStoreUpdateProfile(t *testing.T) {
+	s := newTestAuthStore(t)
+	u, err := s.Create("alice", "h")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	updated, err := s.UpdateProfile(u.ID, "alice@example.com", "light")
+	if err != nil {
+		t.Fatalf("UpdateProfile: %v", err)
+	}
+	if updated.Email != "alice@example.com" || updated.Theme != "light" {
+		t.Errorf("got %+v", updated)
+	}
+	got, err := s.GetByID(u.ID)
+	if err != nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	if got.Email != "alice@example.com" || got.Theme != "light" {
+		t.Errorf("persisted = %+v", got)
+	}
+}
+
+func TestAuthStoreUpdateProfileTrimsEmail(t *testing.T) {
+	s := newTestAuthStore(t)
+	u, _ := s.Create("alice", "h")
+	updated, err := s.UpdateProfile(u.ID, "  alice@example.com  ", "")
+	if err != nil {
+		t.Fatalf("UpdateProfile: %v", err)
+	}
+	if updated.Email != "alice@example.com" {
+		t.Errorf("email = %q", updated.Email)
+	}
+}
+
+func TestAuthStoreUpdateProfileInvalidTheme(t *testing.T) {
+	s := newTestAuthStore(t)
+	u, _ := s.Create("alice", "h")
+	if _, err := s.UpdateProfile(u.ID, "", "neon"); !errors.Is(err, ErrInvalid) {
+		t.Errorf("err = %v, want ErrInvalid", err)
+	}
+}
+
+func TestAuthStoreUpdateProfileMissingUser(t *testing.T) {
+	s := newTestAuthStore(t)
+	if _, err := s.UpdateProfile("ghost", "", "dark"); !errors.Is(err, ErrUserNotFound) {
+		t.Errorf("err = %v, want ErrUserNotFound", err)
+	}
+}
+
+func TestAuthStoreUpdatePassword(t *testing.T) {
+	s := newTestAuthStore(t)
+	u, _ := s.Create("alice", "old-hash")
+	if err := s.UpdatePassword(u.ID, "new-hash"); err != nil {
+		t.Fatalf("UpdatePassword: %v", err)
+	}
+	hash, err := s.GetHashByID(u.ID)
+	if err != nil {
+		t.Fatalf("GetHashByID: %v", err)
+	}
+	if hash != "new-hash" {
+		t.Errorf("hash = %q, want %q", hash, "new-hash")
+	}
+}
+
+func TestAuthStoreUpdatePasswordMissing(t *testing.T) {
+	s := newTestAuthStore(t)
+	if err := s.UpdatePassword("ghost", "h"); !errors.Is(err, ErrUserNotFound) {
+		t.Errorf("err = %v, want ErrUserNotFound", err)
+	}
+}
+
+func TestAuthStoreGetHashByIDMissing(t *testing.T) {
+	s := newTestAuthStore(t)
+	if _, err := s.GetHashByID("ghost"); !errors.Is(err, ErrUserNotFound) {
+		t.Errorf("err = %v, want ErrUserNotFound", err)
+	}
+}
+
+// TestAuthStoreMigrateIdempotent re-opens the store on the same DB so the
+// "column already present" branch in migrate runs.
+func TestAuthStoreMigrateIdempotent(t *testing.T) {
+	dsn := "file:" + filepath.Join(t.TempDir(), "auth.db")
+	db, err := database.Open(dsn)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := NewSQLiteAuthStore(db); err != nil {
+		t.Fatalf("first NewSQLiteAuthStore: %v", err)
+	}
+	if _, err := NewSQLiteAuthStore(db); err != nil {
+		t.Fatalf("second NewSQLiteAuthStore: %v", err)
+	}
+}
+
+// TestAuthStoreMigratesLegacySchema sets up a database with the original
+// users table (no email/theme columns), then opens it through
+// NewSQLiteAuthStore and exercises the new fields end-to-end.
+func TestAuthStoreMigratesLegacySchema(t *testing.T) {
+	dsn := "file:" + filepath.Join(t.TempDir(), "auth.db")
+	db, err := database.Open(dsn)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := db.Exec(`CREATE TABLE users (
+        id TEXT PRIMARY KEY,
+        username TEXT NOT NULL UNIQUE,
+        password_hash TEXT NOT NULL,
+        created_at INTEGER NOT NULL
+    ) STRICT`); err != nil {
+		t.Fatalf("legacy schema: %v", err)
+	}
+	if _, err := db.Exec(
+		`INSERT INTO users (id, username, password_hash, created_at) VALUES (?, ?, ?, ?)`,
+		"u1", "alice", "h", int64(0),
+	); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	s, err := NewSQLiteAuthStore(db)
+	if err != nil {
+		t.Fatalf("NewSQLiteAuthStore: %v", err)
+	}
+	got, err := s.GetByID("u1")
+	if err != nil {
+		t.Fatalf("GetByID after migrate: %v", err)
+	}
+	if got.Username != "alice" || got.Email != "" || got.Theme != "" {
+		t.Errorf("migrated user = %+v", got)
+	}
+	if _, err := s.UpdateProfile("u1", "alice@x", "dark"); err != nil {
+		t.Fatalf("UpdateProfile after migrate: %v", err)
 	}
 }
 
