@@ -4,11 +4,13 @@ go 1.25.0
 
 require (
 	github.com/google/uuid v1.6.0
+	github.com/pquerna/otp v1.5.0
 	golang.org/x/crypto v0.50.0
 	modernc.org/sqlite v1.50.0
 )
 
 require (
+	github.com/boombuler/barcode v1.0.1-0.20190219062509-6c824513bacc // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect

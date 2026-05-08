@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: Apache-2.0
 
 package auth
 
@@ -81,6 +81,46 @@ func TestSignSessionEmptySecret(t *testing.T) {
 func TestVerifySessionEmptySecret(t *testing.T) {
 	if _, err := VerifySession(nil, time.Now(), "x.y"); err == nil {
 		t.Error("want error for empty secret")
+	}
+}
+
+func TestSignTokenRejectsEmptyPurpose(t *testing.T) {
+	if _, err := SignToken(testSecret, "", TokenClaims{UID: "u"}, time.Now().Add(time.Minute)); err == nil {
+		t.Error("want error for empty purpose")
+	}
+}
+
+func TestVerifyTokenRejectsPurposeMismatch(t *testing.T) {
+	now := time.Date(2026, 5, 6, 12, 0, 0, 0, time.UTC)
+	tok, err := SignToken(testSecret, PurposeTOTPChallenge,
+		TokenClaims{UID: "user-1", Nonce: "abc"}, now.Add(5*time.Minute))
+	if err != nil {
+		t.Fatalf("SignToken: %v", err)
+	}
+	// A challenge token must not pass session verification.
+	if _, err := VerifySession(testSecret, now, tok); !errors.Is(err, ErrUnauthorized) {
+		t.Errorf("session verify of challenge token err = %v, want ErrUnauthorized", err)
+	}
+	// And vice versa: a session token must not pass challenge verification.
+	stok, _ := SignSession(testSecret, "user-1", now.Add(time.Hour))
+	if _, err := VerifyToken(testSecret, now, PurposeTOTPChallenge, stok); !errors.Is(err, ErrUnauthorized) {
+		t.Errorf("challenge verify of session token err = %v, want ErrUnauthorized", err)
+	}
+}
+
+func TestTokenRoundTripCarriesAllClaims(t *testing.T) {
+	now := time.Date(2026, 5, 6, 12, 0, 0, 0, time.UTC)
+	in := TokenClaims{UID: "u", DeviceID: "d", Epoch: 7, Nonce: "n"}
+	tok, err := SignToken(testSecret, PurposeTrustedDevice, in, now.Add(time.Hour))
+	if err != nil {
+		t.Fatalf("SignToken: %v", err)
+	}
+	got, err := VerifyToken(testSecret, now, PurposeTrustedDevice, tok)
+	if err != nil {
+		t.Fatalf("VerifyToken: %v", err)
+	}
+	if got != in {
+		t.Errorf("claims = %+v, want %+v", got, in)
 	}
 }
 

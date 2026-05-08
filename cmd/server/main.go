@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: Apache-2.0
 
 // Command server is the System Wrangler HTTP entrypoint. It wires the
 // SQLite-backed stores, auth service, systems probe, and SSE hub into a
@@ -60,7 +60,16 @@ func main() {
 		slog.Error("load session secret", "err", err)
 		os.Exit(1)
 	}
+	kek, err := auth.LoadOrInitKEK(authStore)
+	if err != nil {
+		slog.Error("load totp kek", "err", err)
+		os.Exit(1)
+	}
 	authSvc := auth.NewService(authStore, secret, useTLS)
+	authSvc.TOTPStore = authStore
+	authSvc.RecoveryStore = authStore
+	authSvc.DeviceStore = authStore
+	authSvc.KEK = kek
 
 	hub := events.NewHub(slog.Default())
 	broadcastSystemsChanged := func() {
@@ -128,6 +137,7 @@ func newMux(store systems.Store, users auth.UserStore, authSvc *auth.Service, se
 	authSvc.Register(mux)
 	requireUser := auth.RequireUser(secret, users, time.Now)
 	authSvc.RegisterProtected(mux, requireUser)
+	authSvc.RegisterTOTP(mux, requireUser)
 	sysHandler := systems.NewHandler(store)
 	sysHandler.OnCreate = onSystemCreate
 	sysHandler.OnDelete = onSystemDelete

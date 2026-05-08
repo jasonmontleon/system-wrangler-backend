@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: Apache-2.0
 
 package auth
 
@@ -8,13 +8,16 @@ import (
 )
 
 // User is the public-facing representation of an account. The bcrypt hash is
-// kept in the store and never put on a User.
+// kept in the store and never put on a User. TotpEnabled mirrors the column
+// of the same name so the frontend can render the "Two-factor authentication"
+// card with the correct state on first paint.
 type User struct {
-	ID        string    `json:"id"`
-	Username  string    `json:"username"`
-	Email     string    `json:"email"`
-	Theme     string    `json:"theme"`
-	CreatedAt time.Time `json:"createdAt"`
+	ID          string    `json:"id"`
+	Username    string    `json:"username"`
+	Email       string    `json:"email"`
+	Theme       string    `json:"theme"`
+	CreatedAt   time.Time `json:"createdAt"`
+	TotpEnabled bool      `json:"totpEnabled"`
 }
 
 // MinPasswordLen is the only password policy v1 enforces. We deliberately

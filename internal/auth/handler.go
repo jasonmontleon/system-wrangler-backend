@@ -1,8 +1,9 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: Apache-2.0
 
 // Package auth implements local-account authentication: bcrypt password
-// hashing, HMAC-signed session cookies, and the HTTP handlers for setup,
-// login, logout, profile, and password change.
+// hashing, HMAC-signed session cookies, optional TOTP second factor with
+// recovery codes and a "remember this browser" trusted-device cookie, and
+// the HTTP handlers for setup, login, logout, profile, and password change.
 package auth
 
 import (
@@ -12,15 +13,25 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/google/uuid"
 )
 
-// Service holds the shared state used by the auth HTTP endpoints.
+// Service holds the shared state used by the auth HTTP endpoints. The TOTP-,
+// Recovery-, and Device- stores plus KEK are optional: when nil, login skips
+// the second-factor flow entirely (used by older tests and by stub callers).
+// Production wiring in cmd/server/main.go always supplies all of them.
 type Service struct {
-	Store        UserStore
-	Secret       []byte
-	SessionTTL   time.Duration
-	SecureCookie bool
-	Now          func() time.Time
+	Store         UserStore
+	TOTPStore     TOTPStore
+	RecoveryStore RecoveryStore
+	DeviceStore   DeviceStore
+	Secret        []byte
+	KEK           []byte
+	SessionTTL    time.Duration
+	SecureCookie  bool
+	Now           func() time.Time
+	NewID         func() string
 }
 
 // NewService fills in sensible defaults; callers can still override fields
@@ -32,6 +43,7 @@ func NewService(store UserStore, secret []byte, secureCookie bool) *Service {
 		SessionTTL:   DefaultSessionTTL,
 		SecureCookie: secureCookie,
 		Now:          time.Now,
+		NewID:        func() string { return uuid.NewString() },
 	}
 }
 
@@ -145,12 +157,165 @@ func (s *Service) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "invalid credentials")
 		return
 	}
-	if err := s.issueCookie(w, u.ID); err != nil {
-		writeError(w, http.StatusInternalServerError, "session failed")
-		slog.Error("auth login cookie", "err", err)
+	// If TOTP isn't wired (older tests, minimal callers) skip the second
+	// factor entirely and behave like the original single-step flow.
+	if s.TOTPStore == nil {
+		if err := s.issueCookie(w, u.ID); err != nil {
+			writeError(w, http.StatusInternalServerError, "session failed")
+			slog.Error("auth login cookie", "err", err)
+			return
+		}
+		writeJSON(w, http.StatusOK, u)
 		return
 	}
-	writeJSON(w, http.StatusOK, u)
+	state, err := s.TOTPStore.GetTOTPState(u.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "login failed")
+		slog.Error("auth login totp state", "err", err, "user_id", u.ID)
+		return
+	}
+	if !state.Enabled {
+		if err := s.issueCookie(w, u.ID); err != nil {
+			writeError(w, http.StatusInternalServerError, "session failed")
+			slog.Error("auth login cookie", "err", err)
+			return
+		}
+		writeJSON(w, http.StatusOK, u)
+		return
+	}
+	// TOTP enabled. If the request carries a valid trusted-device cookie
+	// whose epoch matches the user's current epoch, skip the second factor.
+	if s.honorTrustedDevice(r, u.ID, state.Epoch) {
+		if err := s.issueCookie(w, u.ID); err != nil {
+			writeError(w, http.StatusInternalServerError, "session failed")
+			slog.Error("auth login cookie", "err", err)
+			return
+		}
+		writeJSON(w, http.StatusOK, u)
+		return
+	}
+	// Otherwise issue a short-lived challenge cookie and return totpRequired.
+	if err := s.issueChallengeCookie(w, u.ID); err != nil {
+		writeError(w, http.StatusInternalServerError, "challenge failed")
+		slog.Error("auth login challenge", "err", err, "user_id", u.ID)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"totpRequired": true})
+}
+
+// honorTrustedDevice returns true iff the request carries a trusted-device
+// cookie that verifies (signed, not expired) AND points at a row whose
+// user/epoch match AND has not itself expired. On success, last_used_at is
+// touched so the device list reflects the activity.
+func (s *Service) honorTrustedDevice(r *http.Request, userID string, currentEpoch int64) bool {
+	if s.DeviceStore == nil {
+		return false
+	}
+	c, err := r.Cookie(TrustedDeviceCookie)
+	if err != nil {
+		return false
+	}
+	claims, err := VerifyToken(s.Secret, s.Now(), PurposeTrustedDevice, c.Value)
+	if err != nil {
+		return false
+	}
+	if claims.UID != userID {
+		return false
+	}
+	if claims.Epoch != currentEpoch {
+		return false
+	}
+	d, err := s.DeviceStore.GetDevice(claims.DeviceID)
+	if err != nil {
+		return false
+	}
+	if d.UserID != userID || d.TOTPEpoch != currentEpoch {
+		return false
+	}
+	if !s.Now().Before(d.ExpiresAt) {
+		return false
+	}
+	if err := s.DeviceStore.TouchDevice(d.ID, s.Now()); err != nil {
+		// Touch failure is logged but doesn't fail the trust — the cookie
+		// is still valid, the row just won't reflect this use.
+		slog.Warn("auth touch device", "err", err, "device_id", d.ID)
+	}
+	return true
+}
+
+// issueChallengeCookie writes a short-lived signed cookie that binds the
+// second-factor request to this user. The nonce is currently informational
+// (logged on issue, ignored on verify) — included so the cookie isn't
+// trivially identical for the same user across logins.
+func (s *Service) issueChallengeCookie(w http.ResponseWriter, userID string) error {
+	exp := s.Now().Add(TOTPChallengeTTL)
+	tok, err := SignToken(s.Secret, PurposeTOTPChallenge,
+		TokenClaims{UID: userID, Nonce: s.NewID()}, exp)
+	if err != nil {
+		return err
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name:     TOTPChallengeCookie,
+		Value:    tok,
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   s.SecureCookie,
+		SameSite: http.SameSiteLaxMode,
+		Expires:  exp,
+		MaxAge:   int(TOTPChallengeTTL.Seconds()),
+	})
+	return nil
+}
+
+// clearChallengeCookie deletes the challenge cookie. Always called on a
+// failed verify so a poisoned cookie can't wedge the user, and on success
+// once the real session cookie has been issued.
+func (s *Service) clearChallengeCookie(w http.ResponseWriter) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     TOTPChallengeCookie,
+		Value:    "",
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   s.SecureCookie,
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   -1,
+	})
+}
+
+// issueTrustedDeviceCookie writes a 30-day signed cookie referencing a
+// trusted-devices row. Caller must have inserted the row first.
+func (s *Service) issueTrustedDeviceCookie(w http.ResponseWriter, deviceID, userID string, epoch int64) error {
+	exp := s.Now().Add(TrustedDeviceTTL)
+	tok, err := SignToken(s.Secret, PurposeTrustedDevice,
+		TokenClaims{UID: userID, DeviceID: deviceID, Epoch: epoch}, exp)
+	if err != nil {
+		return err
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name:     TrustedDeviceCookie,
+		Value:    tok,
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   s.SecureCookie,
+		SameSite: http.SameSiteLaxMode,
+		Expires:  exp,
+		MaxAge:   int(TrustedDeviceTTL.Seconds()),
+	})
+	return nil
+}
+
+// clearTrustedDeviceCookie deletes the long-lived trust cookie. Used by
+// the disable-TOTP flow alongside the row-level wipe in DisableTOTP.
+func (s *Service) clearTrustedDeviceCookie(w http.ResponseWriter) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     TrustedDeviceCookie,
+		Value:    "",
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   s.SecureCookie,
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   -1,
+	})
 }
 
 func (s *Service) handleLogout(w http.ResponseWriter, _ *http.Request) {
@@ -163,6 +328,10 @@ func (s *Service) handleLogout(w http.ResponseWriter, _ *http.Request) {
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   -1,
 	})
+	// Clear the challenge cookie too so a partial-login state doesn't survive
+	// a logout. The trusted-device cookie is *not* cleared here — that's the
+	// whole point of "remember this browser": survives logout/login.
+	s.clearChallengeCookie(w)
 	w.WriteHeader(http.StatusNoContent)
 }
 
