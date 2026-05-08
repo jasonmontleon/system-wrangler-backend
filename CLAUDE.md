@@ -10,17 +10,16 @@ Module path is `system-wrangler-backend` (placeholder). If/when the project move
 to a hosted git remote, update `go.mod` and the import in `cmd/server/main.go`
 together.
 
-## License (AGPL-3.0-or-later)
+## License (Apache-2.0)
 
 - Every new source file MUST begin with this header, on its own line, followed
   by a blank line:
   ```go
-  // SPDX-License-Identifier: AGPL-3.0-or-later
+  // SPDX-License-Identifier: Apache-2.0
   ```
-- Do not add dependencies under licenses incompatible with AGPL (proprietary,
-  or GPL-only-without-or-later).
-- The running UI surfaces a "Source" link for AGPL §13 compliance. Don't remove
-  the equivalent in the frontend without first verifying replacement.
+- Do not add dependencies under licenses that conflict with Apache-2.0
+  redistribution (e.g. GPL/AGPL/LGPL — these would impose copyleft on the
+  combined work).
 
 ## First-time setup
 

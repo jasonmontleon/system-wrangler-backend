@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: Apache-2.0
 
 // Package database opens the shared SQLite handle used by every domain
 // package. Each domain (inventory, auth) owns its own table set and runs its
