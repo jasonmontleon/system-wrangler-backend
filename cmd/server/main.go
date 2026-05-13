@@ -19,6 +19,9 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/google/uuid"
+
+	"system-wrangler-backend/internal/audit"
 	"system-wrangler-backend/internal/auth"
 	"system-wrangler-backend/internal/database"
 	"system-wrangler-backend/internal/events"
@@ -84,11 +87,17 @@ func main() {
 		}
 		return
 	}
+	auditStore, err := audit.NewSQLiteStore(db)
+	if err != nil {
+		slog.Error("init audit store", "err", err)
+		os.Exit(1)
+	}
 	authSvc := auth.NewService(authStore, secret, useTLS)
 	authSvc.TOTPStore = authStore
 	authSvc.RecoveryStore = authStore
 	authSvc.DeviceStore = authStore
 	authSvc.Vault = vault
+	authSvc.Audit = auditStore
 
 	hub := events.NewHub(slog.Default())
 	broadcastSystemsChanged := func() {
@@ -111,8 +120,12 @@ func main() {
 	}
 
 	srv := &http.Server{
-		Addr:              addr,
-		Handler:           withLogging(newMux(store, authStore, authSvc, secret, hub, onCreate, broadcastSystemsChanged)),
+		Addr: addr,
+		Handler: withRequestMeta(
+			withLogging(
+				newMux(store, authStore, authSvc, secret, hub, auditStore, onCreate, broadcastSystemsChanged),
+			),
+		),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
@@ -150,7 +163,7 @@ func main() {
 	<-probeDone
 }
 
-func newMux(store systems.Store, users auth.UserStore, authSvc *auth.Service, secret []byte, hub *events.Hub, onSystemCreate, onSystemDelete func()) *http.ServeMux {
+func newMux(store systems.Store, users auth.UserStore, authSvc *auth.Service, secret []byte, hub *events.Hub, auditStore *audit.Store, onSystemCreate, onSystemDelete func()) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", handleHealth)
 	authSvc.Register(mux)
@@ -161,6 +174,9 @@ func newMux(store systems.Store, users auth.UserStore, authSvc *auth.Service, se
 	sysHandler.OnCreate = onSystemCreate
 	sysHandler.OnDelete = onSystemDelete
 	sysHandler.Register(mux, requireUser)
+	if auditStore != nil {
+		audit.NewHandler(auditStore).Register(mux, requireUser)
+	}
 	if hub != nil {
 		mux.Handle("GET /api/events", requireUser(events.SSEHandler(hub)))
 	}
@@ -232,7 +248,22 @@ func withLogging(next http.Handler) http.Handler {
 			"path", r.URL.Path,
 			"status", rw.status,
 			"duration_ms", strconv.FormatInt(time.Since(start).Milliseconds(), 10),
+			"request_id", audit.RequestIDFromContext(r.Context()),
 		)
+	})
+}
+
+// withRequestMeta stamps a per-request UUID and the client IP onto the
+// request context where the audit package reads them. The UUID is also
+// echoed back as the X-Request-ID response header so operators can
+// correlate a UI report with the matching audit row.
+func withRequestMeta(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id := uuid.NewString()
+		w.Header().Set("X-Request-ID", id)
+		ctx := audit.WithRequestID(r.Context(), id)
+		ctx = audit.WithRemoteAddr(ctx, r.RemoteAddr)
+		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
 

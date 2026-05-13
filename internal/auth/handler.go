@@ -7,6 +7,7 @@
 package auth
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"system-wrangler-backend/internal/audit"
 	"system-wrangler-backend/internal/secrets"
 )
 
@@ -31,10 +33,14 @@ type Service struct {
 	DeviceStore   DeviceStore
 	Secret        []byte
 	Vault         *secrets.Vault
-	SessionTTL    time.Duration
-	SecureCookie  bool
-	Now           func() time.Time
-	NewID         func() string
+	// Audit is optional: when nil, handlers skip audit emission (older
+	// tests and stub callers run without it). Production wiring in
+	// cmd/server/main.go always supplies it.
+	Audit        *audit.Store
+	SessionTTL   time.Duration
+	SecureCookie bool
+	Now          func() time.Time
+	NewID        func() string
 }
 
 // NewService fills in sensible defaults; callers can still override fields
@@ -76,6 +82,62 @@ type statusResponse struct {
 	SetupRequired bool  `json:"setupRequired"`
 	Authenticated bool  `json:"authenticated"`
 	User          *User `json:"user,omitempty"`
+}
+
+// logAudit is the nil-safe shim every handler calls instead of touching
+// s.Audit directly. Audit emission failures are logged but never block
+// the user-facing response — losing one audit row is preferable to
+// breaking login when SQLite hiccups, and the request-log middleware
+// still records the request.
+func (s *Service) logAudit(ctx context.Context, e audit.Event) {
+	if s.Audit == nil {
+		return
+	}
+	if err := s.Audit.Log(ctx, e); err != nil {
+		slog.Error("auth audit log", "err", err, "action", e.Action)
+	}
+}
+
+// logLoginFailed emits auth.login.failed with attempted_username and the
+// reason ("no_user" or "wrong_password"). The actor stays
+// Unauthenticated because the user has not been resolved.
+func (s *Service) logLoginFailed(ctx context.Context, attemptedUsername, reason string) {
+	d := audit.NewDetail()
+	_ = d.SetSafe("attempted_username", attemptedUsername)
+	_ = d.SetSafe("reason", reason)
+	s.logAudit(ctx, audit.Event{
+		Action:  "auth.login.failed",
+		Outcome: audit.Failure,
+		Detail:  d,
+	})
+}
+
+// finishLogin issues the session cookie, emits auth.login, and writes the
+// user JSON. Used by every successful first-factor path so the audit
+// emission can't drift between branches. method is "password",
+// "trusted_device", or "totp" depending on which path completed.
+func (s *Service) finishLogin(w http.ResponseWriter, r *http.Request, u User, method string) {
+	if err := s.issueCookie(w, u.ID); err != nil {
+		writeError(w, http.StatusInternalServerError, "session failed")
+		slog.Error("auth login cookie", "err", err)
+		return
+	}
+	ctx := audit.WithActor(r.Context(), audit.Actor{
+		Kind:  audit.ActorUser,
+		ID:    u.ID,
+		Label: u.Username,
+	})
+	d := audit.NewDetail()
+	_ = d.SetSafe("method", method)
+	s.logAudit(ctx, audit.Event{
+		Action:      "auth.login",
+		Outcome:     audit.Success,
+		TargetKind:  "user",
+		TargetID:    u.ID,
+		TargetLabel: u.Username,
+		Detail:      d,
+	})
+	writeJSON(w, http.StatusOK, u)
 }
 
 func (s *Service) handleStatus(w http.ResponseWriter, r *http.Request) {
@@ -135,6 +197,22 @@ func (s *Service) handleSetup(w http.ResponseWriter, r *http.Request) {
 		slog.Error("auth setup cookie", "err", err)
 		return
 	}
+	// Setup is unauthenticated by definition (count was zero before this
+	// request), so the actor on the audit row is the user that just got
+	// created — they are the only user in existence. Same shape as
+	// auth.login for consistency.
+	ctx := audit.WithActor(r.Context(), audit.Actor{
+		Kind:  audit.ActorUser,
+		ID:    u.ID,
+		Label: u.Username,
+	})
+	s.logAudit(ctx, audit.Event{
+		Action:      "auth.setup",
+		Outcome:     audit.Success,
+		TargetKind:  "user",
+		TargetID:    u.ID,
+		TargetLabel: u.Username,
+	})
 	writeJSON(w, http.StatusCreated, u)
 }
 
@@ -149,6 +227,7 @@ func (s *Service) handleLogin(w http.ResponseWriter, r *http.Request) {
 		// Don't disclose whether the username exists — return 401 in both
 		// the "no such user" and "wrong password" branches.
 		if errors.Is(err, ErrUserNotFound) {
+			s.logLoginFailed(r.Context(), creds.Username, "no_user")
 			writeError(w, http.StatusUnauthorized, "invalid credentials")
 			return
 		}
@@ -157,18 +236,14 @@ func (s *Service) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := VerifyPassword(hash, creds.Password); err != nil {
+		s.logLoginFailed(r.Context(), creds.Username, "wrong_password")
 		writeError(w, http.StatusUnauthorized, "invalid credentials")
 		return
 	}
 	// If TOTP isn't wired (older tests, minimal callers) skip the second
 	// factor entirely and behave like the original single-step flow.
 	if s.TOTPStore == nil {
-		if err := s.issueCookie(w, u.ID); err != nil {
-			writeError(w, http.StatusInternalServerError, "session failed")
-			slog.Error("auth login cookie", "err", err)
-			return
-		}
-		writeJSON(w, http.StatusOK, u)
+		s.finishLogin(w, r, u, "password")
 		return
 	}
 	state, err := s.TOTPStore.GetTOTPState(u.ID)
@@ -178,23 +253,13 @@ func (s *Service) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !state.Enabled {
-		if err := s.issueCookie(w, u.ID); err != nil {
-			writeError(w, http.StatusInternalServerError, "session failed")
-			slog.Error("auth login cookie", "err", err)
-			return
-		}
-		writeJSON(w, http.StatusOK, u)
+		s.finishLogin(w, r, u, "password")
 		return
 	}
 	// TOTP enabled. If the request carries a valid trusted-device cookie
 	// whose epoch matches the user's current epoch, skip the second factor.
 	if s.honorTrustedDevice(r, u.ID, state.Epoch) {
-		if err := s.issueCookie(w, u.ID); err != nil {
-			writeError(w, http.StatusInternalServerError, "session failed")
-			slog.Error("auth login cookie", "err", err)
-			return
-		}
-		writeJSON(w, http.StatusOK, u)
+		s.finishLogin(w, r, u, "trusted_device")
 		return
 	}
 	// Otherwise issue a short-lived challenge cookie and return totpRequired.
@@ -321,7 +386,11 @@ func (s *Service) clearTrustedDeviceCookie(w http.ResponseWriter) {
 	})
 }
 
-func (s *Service) handleLogout(w http.ResponseWriter, _ *http.Request) {
+func (s *Service) handleLogout(w http.ResponseWriter, r *http.Request) {
+	// Resolve the user from the session cookie before clearing it so the
+	// audit row has a real actor; a logout with no cookie still succeeds
+	// (idempotent), it just emits an unauthenticated row.
+	u, hadSession := s.userFromCookie(r)
 	http.SetCookie(w, &http.Cookie{
 		Name:     CookieName,
 		Value:    "",
@@ -335,6 +404,20 @@ func (s *Service) handleLogout(w http.ResponseWriter, _ *http.Request) {
 	// a logout. The trusted-device cookie is *not* cleared here — that's the
 	// whole point of "remember this browser": survives logout/login.
 	s.clearChallengeCookie(w)
+	if hadSession {
+		ctx := audit.WithActor(r.Context(), audit.Actor{
+			Kind:  audit.ActorUser,
+			ID:    u.ID,
+			Label: u.Username,
+		})
+		s.logAudit(ctx, audit.Event{
+			Action:      "auth.logout",
+			Outcome:     audit.Success,
+			TargetKind:  "user",
+			TargetID:    u.ID,
+			TargetLabel: u.Username,
+		})
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 

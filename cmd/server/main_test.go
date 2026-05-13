@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"system-wrangler-backend/internal/audit"
 	"system-wrangler-backend/internal/auth"
 	"system-wrangler-backend/internal/database"
 	"system-wrangler-backend/internal/events"
@@ -41,9 +42,14 @@ func newTestMux(t *testing.T) http.Handler {
 	if err != nil {
 		t.Fatalf("LoadOrInitSecret: %v", err)
 	}
+	auditStore, err := audit.NewSQLiteStore(db)
+	if err != nil {
+		t.Fatalf("audit.NewSQLiteStore: %v", err)
+	}
 	svc := auth.NewService(authStore, secret, false)
+	svc.Audit = auditStore
 	hub := events.NewHub(nil)
-	return newMux(invStore, authStore, svc, secret, hub, nil, nil)
+	return newMux(invStore, authStore, svc, secret, hub, auditStore, nil, nil)
 }
 
 func TestHandleHealth(t *testing.T) {

@@ -7,6 +7,8 @@ import (
 	"errors"
 	"net/http"
 	"time"
+
+	"system-wrangler-backend/internal/audit"
 )
 
 type ctxKey int
@@ -54,7 +56,13 @@ func RequireUser(secret []byte, store UserStore, now func() time.Time) func(http
 				http.Error(w, `{"error":"auth lookup failed"}`, http.StatusInternalServerError)
 				return
 			}
-			next.ServeHTTP(w, r.WithContext(WithUser(r.Context(), u)))
+			ctx := WithUser(r.Context(), u)
+			ctx = audit.WithActor(ctx, audit.Actor{
+				Kind:  audit.ActorUser,
+				ID:    u.ID,
+				Label: u.Username,
+			})
+			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
 }
