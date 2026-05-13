@@ -16,12 +16,15 @@ import (
 // handlers depend on this interface; tests use stubs to avoid SQLite.
 type UserStore interface {
 	Count() (int, error)
+	CountEnabled() (int, error)
 	Create(username, passwordHash string) (User, error)
 	GetByUsername(username string) (User, string, error)
 	GetByID(id string) (User, error)
 	GetHashByID(id string) (string, error)
 	UpdateProfile(id, email, theme string) (User, error)
 	UpdatePassword(id, passwordHash string) error
+	ListUsers() ([]User, error)
+	SetDisabled(id string, disabled bool, now time.Time) (User, error)
 }
 
 // TOTPState is the row-level shape returned by GetTOTPState — one round-trip
@@ -137,6 +140,7 @@ func (s *SQLiteAuthStore) migrate() error {
 		{"totp_confirmed_at", `ALTER TABLE users ADD COLUMN totp_confirmed_at INTEGER`},
 		{"totp_epoch", `ALTER TABLE users ADD COLUMN totp_epoch INTEGER NOT NULL DEFAULT 0`},
 		{"totp_last_step", `ALTER TABLE users ADD COLUMN totp_last_step INTEGER NOT NULL DEFAULT 0`},
+		{"disabled_at", `ALTER TABLE users ADD COLUMN disabled_at INTEGER`},
 	} {
 		if _, ok := cols[c.name]; ok {
 			continue
@@ -202,6 +206,17 @@ func (s *SQLiteAuthStore) Count() (int, error) {
 	return n, nil
 }
 
+// CountEnabled returns the number of users whose disabled_at is NULL. The
+// admin handler uses this to refuse a disable that would leave the install
+// with zero enabled users (and therefore no one who can log in).
+func (s *SQLiteAuthStore) CountEnabled() (int, error) {
+	var n int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM users WHERE disabled_at IS NULL`).Scan(&n); err != nil {
+		return 0, fmt.Errorf("auth: count enabled users: %w", err)
+	}
+	return n, nil
+}
+
 // Create inserts a new user with the given username and bcrypt hash.
 // Returns ErrUserExists on a unique-constraint conflict.
 func (s *SQLiteAuthStore) Create(username, hash string) (User, error) {
@@ -229,7 +244,7 @@ func (s *SQLiteAuthStore) Create(username, hash string) (User, error) {
 	return u, nil
 }
 
-const userSelect = `SELECT id, username, password_hash, email, theme, created_at, totp_enabled FROM users`
+const userSelect = `SELECT id, username, password_hash, email, theme, created_at, totp_enabled, disabled_at FROM users`
 
 // GetByUsername returns the user and its bcrypt hash, or ErrUserNotFound
 // if no row matches.
@@ -715,11 +730,70 @@ func scanUser(r rowScanner) (User, string, error) {
 		hash        string
 		createdNs   int64
 		totpEnabled int64
+		disabledNs  sql.NullInt64
 	)
-	if err := r.Scan(&u.ID, &u.Username, &hash, &u.Email, &u.Theme, &createdNs, &totpEnabled); err != nil {
+	if err := r.Scan(&u.ID, &u.Username, &hash, &u.Email, &u.Theme, &createdNs, &totpEnabled, &disabledNs); err != nil {
 		return User{}, "", err
 	}
 	u.CreatedAt = time.Unix(0, createdNs).UTC()
 	u.TotpEnabled = totpEnabled == 1
+	if disabledNs.Valid {
+		t := time.Unix(0, disabledNs.Int64).UTC()
+		u.Disabled = true
+		u.DisabledAt = &t
+	}
 	return u, hash, nil
+}
+
+// ListUsers returns all user rows ordered by creation time, oldest first.
+// Both enabled and disabled users are included — the admin UI surfaces
+// disabled rows so they can be reactivated.
+func (s *SQLiteAuthStore) ListUsers() ([]User, error) {
+	rows, err := s.db.Query(userSelect + ` ORDER BY created_at ASC`)
+	if err != nil {
+		return nil, fmt.Errorf("auth: list users: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	out := []User{}
+	for rows.Next() {
+		u, _, err := scanUser(rows)
+		if err != nil {
+			return nil, fmt.Errorf("auth: scan user: %w", err)
+		}
+		out = append(out, u)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("auth: list users rows: %w", err)
+	}
+	return out, nil
+}
+
+// SetDisabled flips a user's disabled_at column. disabled=true stamps now,
+// disabled=false clears the column. Idempotent — disabling an already
+// disabled user (or enabling an enabled one) succeeds and returns the
+// current row. ErrUserNotFound when no row matches id.
+func (s *SQLiteAuthStore) SetDisabled(id string, disabled bool, now time.Time) (User, error) {
+	var (
+		res sql.Result
+		err error
+	)
+	if disabled {
+		res, err = s.db.Exec(
+			`UPDATE users SET disabled_at = ? WHERE id = ?`,
+			now.UTC().UnixNano(), id,
+		)
+	} else {
+		res, err = s.db.Exec(`UPDATE users SET disabled_at = NULL WHERE id = ?`, id)
+	}
+	if err != nil {
+		return User{}, fmt.Errorf("auth: set disabled: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return User{}, fmt.Errorf("auth: rows affected: %w", err)
+	}
+	if n == 0 {
+		return User{}, ErrUserNotFound
+	}
+	return s.GetByID(id)
 }

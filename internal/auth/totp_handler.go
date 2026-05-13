@@ -182,6 +182,11 @@ func (s *Service) handleTOTPVerify(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "challenge invalid")
 		return
 	}
+	if u.Disabled {
+		s.clearChallengeCookie(w)
+		writeError(w, http.StatusUnauthorized, "challenge invalid")
+		return
+	}
 	state, err := s.TOTPStore.GetTOTPState(u.ID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "verify failed")

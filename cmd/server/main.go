@@ -170,6 +170,7 @@ func newMux(store systems.Store, users auth.UserStore, authSvc *auth.Service, se
 	requireUser := auth.RequireUser(secret, users, time.Now)
 	authSvc.RegisterProtected(mux, requireUser)
 	authSvc.RegisterTOTP(mux, requireUser)
+	authSvc.RegisterAdmin(mux, requireUser)
 	sysHandler := systems.NewHandler(store)
 	sysHandler.OnCreate = onSystemCreate
 	sysHandler.OnDelete = onSystemDelete

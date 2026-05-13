@@ -240,6 +240,11 @@ func (s *Service) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "invalid credentials")
 		return
 	}
+	if u.Disabled {
+		s.logLoginFailed(r.Context(), creds.Username, "disabled")
+		writeError(w, http.StatusUnauthorized, "invalid credentials")
+		return
+	}
 	// If TOTP isn't wired (older tests, minimal callers) skip the second
 	// factor entirely and behave like the original single-step flow.
 	if s.TOTPStore == nil {

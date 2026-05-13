@@ -6,17 +6,19 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
 
 // stubUserStore lets us drive RequireUser without SQLite.
 type stubUserStore struct {
-	users  map[string]User
-	hashes map[string]string
-	count  int
-	failOn string
-	err    error
+	users             map[string]User
+	hashes            map[string]string
+	count             int
+	failOn            string
+	err               error
+	forceCountEnabled *int // when non-nil, CountEnabled returns this value
 }
 
 func (s *stubUserStore) Count() (int, error) {
@@ -25,9 +27,28 @@ func (s *stubUserStore) Count() (int, error) {
 	}
 	return s.count, nil
 }
+func (s *stubUserStore) CountEnabled() (int, error) {
+	if s.failOn == "CountEnabled" {
+		return 0, s.err
+	}
+	if s.forceCountEnabled != nil {
+		return *s.forceCountEnabled, nil
+	}
+	n := 0
+	for _, u := range s.users {
+		if !u.Disabled {
+			n++
+		}
+	}
+	return n, nil
+}
 func (s *stubUserStore) Create(username, hash string) (User, error) {
 	if s.failOn == "Create" {
 		return User{}, s.err
+	}
+	username = strings.TrimSpace(username)
+	if len(username) < MinUsernameLen {
+		return User{}, ErrInvalid
 	}
 	if s.users == nil {
 		s.users = map[string]User{}
@@ -97,6 +118,34 @@ func (s *stubUserStore) UpdatePassword(id, hash string) error {
 	}
 	s.hashes[u.Username] = hash
 	return nil
+}
+func (s *stubUserStore) ListUsers() ([]User, error) {
+	if s.failOn == "ListUsers" {
+		return nil, s.err
+	}
+	out := []User{}
+	for _, u := range s.users {
+		out = append(out, u)
+	}
+	return out, nil
+}
+func (s *stubUserStore) SetDisabled(id string, disabled bool, now time.Time) (User, error) {
+	if s.failOn == "SetDisabled" {
+		return User{}, s.err
+	}
+	u, ok := s.users[id]
+	if !ok {
+		return User{}, ErrUserNotFound
+	}
+	u.Disabled = disabled
+	if disabled {
+		t := now.UTC()
+		u.DisabledAt = &t
+	} else {
+		u.DisabledAt = nil
+	}
+	s.users[id] = u
+	return u, nil
 }
 
 func TestRequireUserAllowsValidCookie(t *testing.T) {

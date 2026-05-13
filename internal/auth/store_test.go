@@ -159,6 +159,15 @@ func TestAuthStoreErrorsOnClosedDB(t *testing.T) {
 	if err := s.SaveSecret("k", []byte("v")); err == nil {
 		t.Error("SaveSecret on closed DB: want error")
 	}
+	if _, err := s.CountEnabled(); err == nil {
+		t.Error("CountEnabled on closed DB: want error")
+	}
+	if _, err := s.ListUsers(); err == nil {
+		t.Error("ListUsers on closed DB: want error")
+	}
+	if _, err := s.SetDisabled("u", true, time.Now()); err == nil {
+		t.Error("SetDisabled on closed DB: want error")
+	}
 }
 
 func TestAuthStoreUpdateProfile(t *testing.T) {
@@ -336,4 +345,65 @@ func TestAuthStoreSecretRoundTrip(t *testing.T) {
 	if string(got) != string([]byte{9}) {
 		t.Errorf("after upsert got %v, want [9]", got)
 	}
+}
+
+func TestAuthStoreListUsersAndDisabled(t *testing.T) {
+	s := newTestAuthStore(t)
+	a, err := s.Create("alice", "h")
+	if err != nil {
+		t.Fatalf("Create alice: %v", err)
+	}
+	b, err := s.Create("bob", "h")
+	if err != nil {
+		t.Fatalf("Create bob: %v", err)
+	}
+
+	users, err := s.ListUsers()
+	if err != nil {
+		t.Fatalf("ListUsers: %v", err)
+	}
+	if len(users) != 2 {
+		t.Fatalf("len = %d, want 2", len(users))
+	}
+	for _, u := range users {
+		if u.Disabled || u.DisabledAt != nil {
+			t.Errorf("fresh user %s: Disabled=%v DisabledAt=%v", u.Username, u.Disabled, u.DisabledAt)
+		}
+	}
+
+	enabled, err := s.CountEnabled()
+	if err != nil {
+		t.Fatalf("CountEnabled: %v", err)
+	}
+	if enabled != 2 {
+		t.Errorf("CountEnabled = %d, want 2", enabled)
+	}
+
+	when := time.Date(2026, 5, 6, 12, 0, 0, 0, time.UTC)
+	updated, err := s.SetDisabled(b.ID, true, when)
+	if err != nil {
+		t.Fatalf("SetDisabled true: %v", err)
+	}
+	if !updated.Disabled || updated.DisabledAt == nil {
+		t.Errorf("after disable: Disabled=%v DisabledAt=%v", updated.Disabled, updated.DisabledAt)
+	}
+	enabled, _ = s.CountEnabled()
+	if enabled != 1 {
+		t.Errorf("CountEnabled after disable = %d, want 1", enabled)
+	}
+
+	// Re-enable.
+	reEnabled, err := s.SetDisabled(b.ID, false, when)
+	if err != nil {
+		t.Fatalf("SetDisabled false: %v", err)
+	}
+	if reEnabled.Disabled || reEnabled.DisabledAt != nil {
+		t.Errorf("after re-enable: %+v", reEnabled)
+	}
+
+	// Missing user.
+	if _, err := s.SetDisabled("ghost", true, when); !errors.Is(err, ErrUserNotFound) {
+		t.Errorf("SetDisabled ghost err = %v, want ErrUserNotFound", err)
+	}
+	_ = a
 }

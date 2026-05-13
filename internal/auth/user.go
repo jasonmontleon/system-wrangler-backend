@@ -10,14 +10,18 @@ import (
 // User is the public-facing representation of an account. The bcrypt hash is
 // kept in the store and never put on a User. TotpEnabled mirrors the column
 // of the same name so the frontend can render the "Two-factor authentication"
-// card with the correct state on first paint.
+// card with the correct state on first paint. Disabled is true when
+// disabled_at is non-null — disabled users keep their row (so audit
+// references stay valid) but cannot log in.
 type User struct {
-	ID          string    `json:"id"`
-	Username    string    `json:"username"`
-	Email       string    `json:"email"`
-	Theme       string    `json:"theme"`
-	CreatedAt   time.Time `json:"createdAt"`
-	TotpEnabled bool      `json:"totpEnabled"`
+	ID          string     `json:"id"`
+	Username    string     `json:"username"`
+	Email       string     `json:"email"`
+	Theme       string     `json:"theme"`
+	CreatedAt   time.Time  `json:"createdAt"`
+	TotpEnabled bool       `json:"totpEnabled"`
+	Disabled    bool       `json:"disabled"`
+	DisabledAt  *time.Time `json:"disabledAt,omitempty"`
 }
 
 // MinPasswordLen is the only password policy v1 enforces. We deliberately
@@ -43,6 +47,8 @@ var (
 	ErrUserNotFound  = errors.New("auth: user not found")
 	ErrUserExists    = errors.New("auth: username already taken")
 	ErrSetupComplete = errors.New("auth: setup already complete")
+	ErrUserDisabled  = errors.New("auth: user disabled")
+	ErrLastEnabled   = errors.New("auth: cannot disable the last enabled user")
 )
 
 // ValidTheme reports whether s is a permitted theme value. The empty string

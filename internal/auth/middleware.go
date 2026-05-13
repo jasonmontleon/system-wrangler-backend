@@ -56,6 +56,10 @@ func RequireUser(secret []byte, store UserStore, now func() time.Time) func(http
 				http.Error(w, `{"error":"auth lookup failed"}`, http.StatusInternalServerError)
 				return
 			}
+			if u.Disabled {
+				writeUnauthorized(w)
+				return
+			}
 			ctx := WithUser(r.Context(), u)
 			ctx = audit.WithActor(ctx, audit.Actor{
 				Kind:  audit.ActorUser,
