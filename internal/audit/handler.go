@@ -36,8 +36,8 @@ func (h *Handler) Register(mux *http.ServeMux, mw func(http.Handler) http.Handle
 
 // listResponse is the JSON shape returned by GET /api/admin/audit.
 // Next.AfterMs / Next.AfterId are the keyset cursor to feed back in as
-// ?after_ms=&after_id= for the next page. Next is omitted when fewer
-// than limit rows were returned (i.e. the end of the result set).
+// ?after_ms=&after_id= for the next page. Next is omitted when the
+// current page is the tail of the result set.
 type listResponse struct {
 	Records []Record `json:"records"`
 	Next    *cursor  `json:"next,omitempty"`
@@ -94,21 +94,14 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "after_id and after_ms must be set together")
 		return
 	}
-	recs, err := h.Store.ListQuery(q)
+	recs, hasMore, err := h.Store.ListQuery(q)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "list failed")
 		slog.Error("audit list", "err", err)
 		return
 	}
 	resp := listResponse{Records: recs}
-	effLimit := q.Limit
-	if effLimit <= 0 {
-		effLimit = DefaultLimit
-	}
-	if effLimit > MaxLimit {
-		effLimit = MaxLimit
-	}
-	if len(recs) == effLimit {
+	if hasMore && len(recs) > 0 {
 		last := recs[len(recs)-1]
 		resp.Next = &cursor{
 			AfterMillis: last.OccurredAt.UnixMilli(),

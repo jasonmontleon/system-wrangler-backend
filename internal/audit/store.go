@@ -199,8 +199,10 @@ const MaxLimit = 500
 
 // ListQuery returns up to q.Limit records (default 50, cap 500) matching
 // q, ordered newest-first. Keyset pagination on (occurred_at, id) keeps
-// cost flat as the table grows.
-func (s *Store) ListQuery(q Query) ([]Record, error) {
+// cost flat as the table grows. The hasMore return is true iff at least
+// one more record exists beyond the returned slice — callers use it to
+// decide whether to expose a next-page cursor.
+func (s *Store) ListQuery(q Query) ([]Record, bool, error) {
 	where, args := buildWhere(q)
 	limit := q.Limit
 	if limit <= 0 {
@@ -213,24 +215,30 @@ func (s *Store) ListQuery(q Query) ([]Record, error) {
 	// placeholders — user input lands in `args`, never in the SQL string.
 	// gosec G202 can't see that constraint statically.
 	sqlStr := buildSelect(where) //nolint:gosec
-	args = append(args, limit)
+	// Probe one row past the visible limit so we can tell whether a next
+	// page exists without a second round-trip.
+	args = append(args, limit+1)
 	rows, err := s.db.Query(sqlStr, args...)
 	if err != nil {
-		return nil, fmt.Errorf("audit: list: %w", err)
+		return nil, false, fmt.Errorf("audit: list: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
 	out := []Record{}
 	for rows.Next() {
 		r, err := scanRecord(rows)
 		if err != nil {
-			return nil, fmt.Errorf("audit: scan: %w", err)
+			return nil, false, fmt.Errorf("audit: scan: %w", err)
 		}
 		out = append(out, r)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("audit: list rows: %w", err)
+		return nil, false, fmt.Errorf("audit: list rows: %w", err)
 	}
-	return out, nil
+	hasMore := len(out) > limit
+	if hasMore {
+		out = out[:limit]
+	}
+	return out, hasMore, nil
 }
 
 // buildSelect splices a buildWhere clause into the list query.

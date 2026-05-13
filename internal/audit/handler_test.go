@@ -129,7 +129,7 @@ func TestHandlerGet_OkAndNotFound(t *testing.T) {
 	if err := s.Log(context.Background(), Event{Action: "x", Outcome: Success}); err != nil {
 		t.Fatal(err)
 	}
-	recs, _ := s.ListQuery(Query{})
+	recs, _, _ := s.ListQuery(Query{})
 	id := recs[0].ID
 
 	w := httptest.NewRecorder()
@@ -166,6 +166,33 @@ func TestHandlerList_SinceUntilParse(t *testing.T) {
 	_ = json.NewDecoder(w.Body).Decode(&resp)
 	if len(resp.Records) != 1 {
 		t.Errorf("since/until window: got %d rows", len(resp.Records))
+	}
+}
+
+func TestHandlerList_ExactTailOmitsNext(t *testing.T) {
+	// Regression: when the page size exactly matches the remaining rows,
+	// the response must not advertise a next-page cursor — otherwise the
+	// UI exposes a "Next" button that lands on an empty page.
+	_, s, mux := newTestHandler(t)
+	for k := 0; k < 25; k++ {
+		if err := s.Log(context.Background(), Event{Action: "x", Outcome: Success}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/admin/audit?limit=25", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", w.Code, w.Body.String())
+	}
+	var resp listResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Records) != 25 {
+		t.Errorf("records = %d, want 25", len(resp.Records))
+	}
+	if resp.Next != nil {
+		t.Errorf("next on exact-tail page: %+v, want nil", resp.Next)
 	}
 }
 

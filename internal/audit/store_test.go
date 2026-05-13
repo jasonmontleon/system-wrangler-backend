@@ -76,7 +76,7 @@ func TestLog_WritesRow(t *testing.T) {
 		t.Fatalf("Log: %v", err)
 	}
 
-	recs, err := s.ListQuery(Query{})
+	recs, _, err := s.ListQuery(Query{})
 	if err != nil {
 		t.Fatalf("ListQuery: %v", err)
 	}
@@ -122,7 +122,7 @@ func TestLog_DefaultsUnauthenticatedActor(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Log: %v", err)
 	}
-	recs, _ := s.ListQuery(Query{})
+	recs, _, _ := s.ListQuery(Query{})
 	if len(recs) != 1 || recs[0].ActorKind != ActorUnauthenticated {
 		t.Errorf("expected one unauthenticated row, got %+v", recs)
 	}
@@ -142,7 +142,7 @@ func TestLogTx_CommitWritesRow(t *testing.T) {
 	if err := tx.Commit(); err != nil {
 		t.Fatalf("Commit: %v", err)
 	}
-	recs, _ := s.ListQuery(Query{})
+	recs, _, _ := s.ListQuery(Query{})
 	if len(recs) != 1 {
 		t.Errorf("want 1 row after commit, got %d", len(recs))
 	}
@@ -162,7 +162,7 @@ func TestLogTx_RollbackDropsRow(t *testing.T) {
 	if err := tx.Rollback(); err != nil {
 		t.Fatalf("Rollback: %v", err)
 	}
-	recs, _ := s.ListQuery(Query{})
+	recs, _, _ := s.ListQuery(Query{})
 	if len(recs) != 0 {
 		t.Errorf("want 0 rows after rollback, got %d", len(recs))
 	}
@@ -190,7 +190,7 @@ func TestGet_RoundTrip(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Log: %v", err)
 	}
-	recs, _ := s.ListQuery(Query{})
+	recs, _, _ := s.ListQuery(Query{})
 	r, err := s.Get(recs[0].ID)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
@@ -218,7 +218,7 @@ func TestListQuery_Filters(t *testing.T) {
 	}
 	mustLog(Event{Action: "auth.login.failed", Outcome: Failure})
 
-	all, err := s.ListQuery(Query{})
+	all, _, err := s.ListQuery(Query{})
 	if err != nil {
 		t.Fatalf("list all: %v", err)
 	}
@@ -232,31 +232,31 @@ func TestListQuery_Filters(t *testing.T) {
 	}
 
 	// actor filter
-	rs, _ := s.ListQuery(Query{ActorID: "u-alice"})
+	rs, _, _ := s.ListQuery(Query{ActorID: "u-alice"})
 	if len(rs) != 1 || rs[0].Action != "system.create" {
 		t.Errorf("actor filter: %+v", rs)
 	}
 
 	// action exact
-	rs, _ = s.ListQuery(Query{Action: "system.delete"})
+	rs, _, _ = s.ListQuery(Query{Action: "system.delete"})
 	if len(rs) != 1 || rs[0].ActorID != "u-bob" {
 		t.Errorf("action exact: %+v", rs)
 	}
 
 	// action prefix
-	rs, _ = s.ListQuery(Query{Action: "system.*"})
+	rs, _, _ = s.ListQuery(Query{Action: "system.*"})
 	if len(rs) != 2 {
 		t.Errorf("action prefix system.*: %d rows", len(rs))
 	}
 
 	// outcome
-	rs, _ = s.ListQuery(Query{Outcome: Failure})
+	rs, _, _ = s.ListQuery(Query{Outcome: Failure})
 	if len(rs) != 1 || rs[0].Action != "auth.login.failed" {
 		t.Errorf("outcome failure: %+v", rs)
 	}
 
 	// target
-	rs, _ = s.ListQuery(Query{TargetKind: "system", TargetID: "sys-1"})
+	rs, _, _ = s.ListQuery(Query{TargetKind: "system", TargetID: "sys-1"})
 	if len(rs) != 2 {
 		t.Errorf("target sys-1: %d rows", len(rs))
 	}
@@ -276,7 +276,7 @@ func TestListQuery_TimeWindow(t *testing.T) {
 		}
 	}
 	// since = t0 + 1min, until = t0 + 2min -> exactly the middle row
-	rs, _ := s.ListQuery(Query{
+	rs, _, _ := s.ListQuery(Query{
 		Since: t0.Add(1 * time.Minute),
 		Until: t0.Add(2 * time.Minute),
 	})
@@ -296,13 +296,41 @@ func TestListQuery_LimitCapped(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	rs, _ := s.ListQuery(Query{Limit: 2})
+	rs, hasMore, _ := s.ListQuery(Query{Limit: 2})
 	if len(rs) != 2 {
 		t.Errorf("limit=2: got %d", len(rs))
 	}
-	rs, _ = s.ListQuery(Query{Limit: 10000}) // capped at MaxLimit; with 5 rows still returns 5
+	if !hasMore {
+		t.Error("limit=2 over 5 rows: hasMore = false, want true")
+	}
+	rs, hasMore, _ = s.ListQuery(Query{Limit: 10000}) // capped at MaxLimit; with 5 rows still returns 5
 	if len(rs) != 5 {
 		t.Errorf("limit oversize: got %d, want 5", len(rs))
+	}
+	if hasMore {
+		t.Error("limit oversize over 5 rows: hasMore = true, want false")
+	}
+}
+
+func TestListQuery_HasMoreOnExactTail(t *testing.T) {
+	// Regression: a page that exactly fills the limit at the tail of the
+	// table must report hasMore=false, so the API does not advertise a
+	// next-page cursor that would land on an empty page.
+	s := newTestStore(t)
+	for k := 0; k < 5; k++ {
+		if err := s.Log(context.Background(), Event{Action: "x", Outcome: Success}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rs, hasMore, err := s.ListQuery(Query{Limit: 5})
+	if err != nil {
+		t.Fatalf("ListQuery: %v", err)
+	}
+	if len(rs) != 5 {
+		t.Errorf("len = %d, want 5", len(rs))
+	}
+	if hasMore {
+		t.Error("hasMore = true on exact-tail page, want false")
 	}
 }
 
@@ -313,21 +341,27 @@ func TestListQuery_KeysetPagination(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	page1, err := s.ListQuery(Query{Limit: 3})
+	page1, hasMore1, err := s.ListQuery(Query{Limit: 3})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(page1) != 3 {
 		t.Fatalf("page1 size = %d, want 3", len(page1))
 	}
+	if !hasMore1 {
+		t.Error("page1 hasMore = false, want true")
+	}
 	cursorMs := page1[2].OccurredAt.UnixMilli()
 	cursorID := page1[2].ID
-	page2, err := s.ListQuery(Query{Limit: 3, AfterMillis: cursorMs, AfterID: cursorID})
+	page2, hasMore2, err := s.ListQuery(Query{Limit: 3, AfterMillis: cursorMs, AfterID: cursorID})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(page2) != 3 {
 		t.Fatalf("page2 size = %d, want 3", len(page2))
+	}
+	if !hasMore2 {
+		t.Error("page2 hasMore = false, want true")
 	}
 	// pages must not overlap
 	seen := map[string]bool{}
@@ -337,9 +371,12 @@ func TestListQuery_KeysetPagination(t *testing.T) {
 		}
 		seen[r.ID] = true
 	}
-	page3, _ := s.ListQuery(Query{Limit: 3, AfterMillis: page2[len(page2)-1].OccurredAt.UnixMilli(), AfterID: page2[len(page2)-1].ID})
+	page3, hasMore3, _ := s.ListQuery(Query{Limit: 3, AfterMillis: page2[len(page2)-1].OccurredAt.UnixMilli(), AfterID: page2[len(page2)-1].ID})
 	if len(page3) != 1 {
 		t.Errorf("page3 size = %d, want 1 (tail)", len(page3))
+	}
+	if hasMore3 {
+		t.Error("page3 hasMore = true, want false (tail)")
 	}
 }
 
