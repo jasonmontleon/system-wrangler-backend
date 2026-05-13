@@ -14,15 +14,21 @@ import (
 // RegisterAdmin attaches the user-administration endpoints to mux behind
 // the supplied authenticated-user middleware. In v1 every authenticated
 // user is admin (per project_tenancy.md), so requireUser alone gates
-// these — revisit once roles ship.
+// these — revisit once roles ship. Admin endpoints sit behind
+// RequireFreshPassword for the same reason every other protected
+// surface does: an account flagged for password rotation can't reach
+// for admin tooling.
 func (s *Service) RegisterAdmin(mux *http.ServeMux, requireUser func(http.Handler) http.Handler) {
 	if requireUser == nil {
 		requireUser = func(next http.Handler) http.Handler { return next }
 	}
-	mux.Handle("GET /api/admin/users", requireUser(http.HandlerFunc(s.handleListUsers)))
-	mux.Handle("POST /api/admin/users", requireUser(http.HandlerFunc(s.handleCreateUser)))
-	mux.Handle("PATCH /api/admin/users/{id}", requireUser(http.HandlerFunc(s.handleUpdateUser)))
-	mux.Handle("DELETE /api/admin/users/{id}", requireUser(http.HandlerFunc(s.handleDeleteUser)))
+	fresh := func(h http.Handler) http.Handler { return requireUser(RequireFreshPassword(h)) }
+	mux.Handle("GET /api/admin/users", fresh(http.HandlerFunc(s.handleListUsers)))
+	mux.Handle("POST /api/admin/users", fresh(http.HandlerFunc(s.handleCreateUser)))
+	mux.Handle("PATCH /api/admin/users/{id}", fresh(http.HandlerFunc(s.handleUpdateUser)))
+	mux.Handle("DELETE /api/admin/users/{id}", fresh(http.HandlerFunc(s.handleDeleteUser)))
+	mux.Handle("POST /api/admin/users/{id}/password", fresh(http.HandlerFunc(s.handleAdminResetPassword)))
+	mux.Handle("POST /api/admin/users/{id}/totp/reset", fresh(http.HandlerFunc(s.handleAdminResetTOTP)))
 }
 
 func (s *Service) handleListUsers(w http.ResponseWriter, _ *http.Request) {
@@ -211,6 +217,124 @@ func (s *Service) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 	}
 	s.logAudit(r.Context(), audit.Event{
 		Action:      "user.delete",
+		Outcome:     audit.Success,
+		TargetKind:  "user",
+		TargetID:    target.ID,
+		TargetLabel: target.Username,
+	})
+	w.WriteHeader(http.StatusNoContent)
+}
+
+type adminResetPasswordRequest struct {
+	Password string `json:"password"`
+}
+
+func (s *Service) handleAdminResetPassword(w http.ResponseWriter, r *http.Request) {
+	actor, ok := UserFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	id := r.PathValue("id")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "user id required")
+		return
+	}
+	// Self-reset is a UX trap — the admin would type a new password
+	// and the server would immediately set must_change_password on
+	// them, forcing a redundant rotation. Route them to the regular
+	// change-password flow instead.
+	if id == actor.ID {
+		writeError(w, http.StatusBadRequest, "use /api/auth/password to change your own password")
+		return
+	}
+	var req adminResetPasswordRequest
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+	target, err := s.Store.GetByID(id)
+	if err != nil {
+		if errors.Is(err, ErrUserNotFound) {
+			writeError(w, http.StatusNotFound, "user not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "lookup failed")
+		slog.Error("admin reset password lookup", "err", err)
+		return
+	}
+	hash, err := HashPassword(req.Password)
+	if err != nil {
+		if errors.Is(err, ErrInvalid) {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "hash failed")
+		slog.Error("admin reset password hash", "err", err)
+		return
+	}
+	if err := s.Store.AdminSetPassword(id, hash); err != nil {
+		if errors.Is(err, ErrUserNotFound) {
+			writeError(w, http.StatusNotFound, "user not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "reset failed")
+		slog.Error("admin reset password", "err", err)
+		return
+	}
+	s.logAudit(r.Context(), audit.Event{
+		Action:      "auth.admin.password_reset",
+		Outcome:     audit.Success,
+		TargetKind:  "user",
+		TargetID:    target.ID,
+		TargetLabel: target.Username,
+	})
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Service) handleAdminResetTOTP(w http.ResponseWriter, r *http.Request) {
+	actor, ok := UserFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	id := r.PathValue("id")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "user id required")
+		return
+	}
+	// Self-reset is forbidden for the same reason as password reset:
+	// admins who can still log in should use the regular disable flow
+	// at /api/auth/totp, which requires their own password + code.
+	// The admin-reset path bypasses that and is meant for an operator
+	// helping a user who's lost their authenticator.
+	if id == actor.ID {
+		writeError(w, http.StatusBadRequest, "use /api/auth/totp to disable your own 2FA")
+		return
+	}
+	target, err := s.Store.GetByID(id)
+	if err != nil {
+		if errors.Is(err, ErrUserNotFound) {
+			writeError(w, http.StatusNotFound, "user not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "lookup failed")
+		slog.Error("admin reset totp lookup", "err", err)
+		return
+	}
+	if err := s.Store.AdminResetTOTP(id); err != nil {
+		if errors.Is(err, ErrUserNotFound) {
+			writeError(w, http.StatusNotFound, "user not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "reset failed")
+		slog.Error("admin reset totp", "err", err)
+		return
+	}
+	s.logAudit(r.Context(), audit.Event{
+		Action:      "auth.admin.totp_reset",
 		Outcome:     audit.Success,
 		TargetKind:  "user",
 		TargetID:    target.ID,

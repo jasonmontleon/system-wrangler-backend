@@ -26,6 +26,10 @@ type UserStore interface {
 	ListUsers() ([]User, error)
 	SetDisabled(id string, disabled bool, now time.Time) (User, error)
 	Delete(id string) error
+	RecordLoginFailure(id string, lockedUntil *time.Time) (int, error)
+	ClearLoginFailures(id string) error
+	AdminSetPassword(id, passwordHash string) error
+	AdminResetTOTP(id string) error
 }
 
 // TOTPState is the row-level shape returned by GetTOTPState — one round-trip
@@ -142,6 +146,9 @@ func (s *SQLiteAuthStore) migrate() error {
 		{"totp_epoch", `ALTER TABLE users ADD COLUMN totp_epoch INTEGER NOT NULL DEFAULT 0`},
 		{"totp_last_step", `ALTER TABLE users ADD COLUMN totp_last_step INTEGER NOT NULL DEFAULT 0`},
 		{"disabled_at", `ALTER TABLE users ADD COLUMN disabled_at INTEGER`},
+		{"failed_attempts", `ALTER TABLE users ADD COLUMN failed_attempts INTEGER NOT NULL DEFAULT 0`},
+		{"locked_until", `ALTER TABLE users ADD COLUMN locked_until INTEGER`},
+		{"must_change_password", `ALTER TABLE users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0`},
 	} {
 		if _, ok := cols[c.name]; ok {
 			continue
@@ -245,7 +252,7 @@ func (s *SQLiteAuthStore) Create(username, hash string) (User, error) {
 	return u, nil
 }
 
-const userSelect = `SELECT id, username, password_hash, email, theme, created_at, totp_enabled, disabled_at FROM users`
+const userSelect = `SELECT id, username, password_hash, email, theme, created_at, totp_enabled, disabled_at, failed_attempts, locked_until, must_change_password FROM users`
 
 // GetByUsername returns the user and its bcrypt hash, or ErrUserNotFound
 // if no row matches.
@@ -307,10 +314,21 @@ func (s *SQLiteAuthStore) UpdateProfile(id, email, theme string) (User, error) {
 	return s.GetByID(id)
 }
 
-// UpdatePassword replaces the bcrypt hash on the user row. ErrUserNotFound
-// is returned if no row matches id.
+// UpdatePassword replaces the bcrypt hash on the user row, clears the
+// must_change_password flag, and resets the lockout counters. The
+// caller is expected to have already verified the user's current
+// credential — this is the "user is voluntarily setting their own
+// password" path. ErrUserNotFound is returned if no row matches id.
 func (s *SQLiteAuthStore) UpdatePassword(id, hash string) error {
-	res, err := s.db.Exec(`UPDATE users SET password_hash = ? WHERE id = ?`, hash, id)
+	res, err := s.db.Exec(
+		`UPDATE users
+		   SET password_hash = ?,
+		       must_change_password = 0,
+		       failed_attempts = 0,
+		       locked_until = NULL
+		 WHERE id = ?`,
+		hash, id,
+	)
 	if err != nil {
 		return fmt.Errorf("auth: update password: %w", err)
 	}
@@ -322,6 +340,136 @@ func (s *SQLiteAuthStore) UpdatePassword(id, hash string) error {
 		return ErrUserNotFound
 	}
 	return nil
+}
+
+// RecordLoginFailure increments failed_attempts on the user row and, if
+// lockedUntil is non-nil, stamps locked_until. Returns the new attempts
+// count so callers can decide whether to lock (the caller computes the
+// policy; the store just persists the result). ErrUserNotFound when
+// no row matches id.
+func (s *SQLiteAuthStore) RecordLoginFailure(id string, lockedUntil *time.Time) (int, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, fmt.Errorf("auth: begin record failure: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	var n int
+	switch err := tx.QueryRow(`SELECT failed_attempts FROM users WHERE id = ?`, id).Scan(&n); {
+	case errors.Is(err, sql.ErrNoRows):
+		return 0, ErrUserNotFound
+	case err != nil:
+		return 0, fmt.Errorf("auth: read failures: %w", err)
+	}
+	n++
+	if lockedUntil != nil {
+		_, err = tx.Exec(
+			`UPDATE users SET failed_attempts = ?, locked_until = ? WHERE id = ?`,
+			n, lockedUntil.UTC().UnixNano(), id,
+		)
+	} else {
+		_, err = tx.Exec(
+			`UPDATE users SET failed_attempts = ? WHERE id = ?`,
+			n, id,
+		)
+	}
+	if err != nil {
+		return 0, fmt.Errorf("auth: write failure: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("auth: commit failure: %w", err)
+	}
+	return n, nil
+}
+
+// ClearLoginFailures resets failed_attempts to 0 and clears locked_until.
+// Called on every successful authentication path (password+TOTP, recovery
+// code, trusted device) and by admin override endpoints. Idempotent —
+// clearing an already-clear row succeeds.
+func (s *SQLiteAuthStore) ClearLoginFailures(id string) error {
+	res, err := s.db.Exec(
+		`UPDATE users SET failed_attempts = 0, locked_until = NULL WHERE id = ?`,
+		id,
+	)
+	if err != nil {
+		return fmt.Errorf("auth: clear failures: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("auth: rows affected: %w", err)
+	}
+	if n == 0 {
+		return ErrUserNotFound
+	}
+	return nil
+}
+
+// AdminSetPassword overwrites a user's bcrypt hash, sets the
+// must_change_password flag so the user is forced through the
+// change-password flow at next login, and clears lockout counters. All
+// in a single transaction.
+func (s *SQLiteAuthStore) AdminSetPassword(id, hash string) error {
+	res, err := s.db.Exec(
+		`UPDATE users
+		   SET password_hash = ?,
+		       must_change_password = 1,
+		       failed_attempts = 0,
+		       locked_until = NULL
+		 WHERE id = ?`,
+		hash, id,
+	)
+	if err != nil {
+		return fmt.Errorf("auth: admin set password: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("auth: rows affected: %w", err)
+	}
+	if n == 0 {
+		return ErrUserNotFound
+	}
+	return nil
+}
+
+// AdminResetTOTP clears every TOTP-related column (including bumping the
+// epoch so existing trusted-device cookies fail), deletes the user's
+// recovery codes and trusted-device rows, and clears lockout counters.
+// All in one transaction so partial failure can't leave a user with a
+// TOTP secret but no recovery codes (or vice versa).
+func (s *SQLiteAuthStore) AdminResetTOTP(id string) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("auth: begin admin reset totp: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	res, err := tx.Exec(
+		`UPDATE users
+		   SET totp_enabled = 0,
+		       totp_secret = NULL, totp_secret_nonce = NULL, totp_secret_version = NULL,
+		       totp_pending_secret = NULL, totp_pending_secret_nonce = NULL, totp_pending_secret_version = NULL,
+		       totp_confirmed_at = NULL, totp_last_step = 0,
+		       totp_epoch = totp_epoch + 1,
+		       failed_attempts = 0,
+		       locked_until = NULL
+		 WHERE id = ?`,
+		id,
+	)
+	if err != nil {
+		return fmt.Errorf("auth: admin reset totp: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("auth: rows affected: %w", err)
+	}
+	if n == 0 {
+		return ErrUserNotFound
+	}
+	if _, err := tx.Exec(`DELETE FROM recovery_codes WHERE user_id = ?`, id); err != nil {
+		return fmt.Errorf("auth: admin reset totp recovery: %w", err)
+	}
+	if _, err := tx.Exec(`DELETE FROM trusted_devices WHERE user_id = ?`, id); err != nil {
+		return fmt.Errorf("auth: admin reset totp devices: %w", err)
+	}
+	return tx.Commit()
 }
 
 // LoadSecret reads a key from the meta table. The bool reports whether a
@@ -727,13 +875,16 @@ type rowScanner interface {
 
 func scanUser(r rowScanner) (User, string, error) {
 	var (
-		u           User
-		hash        string
-		createdNs   int64
-		totpEnabled int64
-		disabledNs  sql.NullInt64
+		u              User
+		hash           string
+		createdNs      int64
+		totpEnabled    int64
+		disabledNs     sql.NullInt64
+		failedAttempts int64
+		lockedUntilNs  sql.NullInt64
+		mustChangePwd  int64
 	)
-	if err := r.Scan(&u.ID, &u.Username, &hash, &u.Email, &u.Theme, &createdNs, &totpEnabled, &disabledNs); err != nil {
+	if err := r.Scan(&u.ID, &u.Username, &hash, &u.Email, &u.Theme, &createdNs, &totpEnabled, &disabledNs, &failedAttempts, &lockedUntilNs, &mustChangePwd); err != nil {
 		return User{}, "", err
 	}
 	u.CreatedAt = time.Unix(0, createdNs).UTC()
@@ -743,6 +894,12 @@ func scanUser(r rowScanner) (User, string, error) {
 		u.Disabled = true
 		u.DisabledAt = &t
 	}
+	u.FailedAttempts = int(failedAttempts)
+	if lockedUntilNs.Valid {
+		t := time.Unix(0, lockedUntilNs.Int64).UTC()
+		u.LockedUntil = &t
+	}
+	u.MustChangePassword = mustChangePwd == 1
 	return u, hash, nil
 }
 

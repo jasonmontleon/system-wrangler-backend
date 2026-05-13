@@ -14,13 +14,18 @@ import (
 // RegisterTOTP wires the protected TOTP/device endpoints onto mux. Mirrors
 // the pattern used by RegisterProtected: the caller supplies the same
 // requireUser middleware so we never reach inside this package for it.
+// All TOTP-related management endpoints sit behind RequireFreshPassword
+// — a user under the must_change_password flag can't enroll, disable,
+// or fiddle with trusted devices until they rotate the password.
+// /totp/verify is the pre-session step and runs without RequireUser.
 func (s *Service) RegisterTOTP(mux *http.ServeMux, requireUser func(http.Handler) http.Handler) {
+	fresh := func(h http.Handler) http.Handler { return requireUser(RequireFreshPassword(h)) }
 	mux.HandleFunc("POST /api/auth/totp/verify", s.handleTOTPVerify)
-	mux.Handle("POST /api/auth/totp/setup", requireUser(http.HandlerFunc(s.handleTOTPSetup)))
-	mux.Handle("POST /api/auth/totp/confirm", requireUser(http.HandlerFunc(s.handleTOTPConfirm)))
-	mux.Handle("DELETE /api/auth/totp", requireUser(http.HandlerFunc(s.handleTOTPDisable)))
-	mux.Handle("GET /api/auth/devices", requireUser(http.HandlerFunc(s.handleListDevices)))
-	mux.Handle("DELETE /api/auth/devices/{id}", requireUser(http.HandlerFunc(s.handleRevokeDevice)))
+	mux.Handle("POST /api/auth/totp/setup", fresh(http.HandlerFunc(s.handleTOTPSetup)))
+	mux.Handle("POST /api/auth/totp/confirm", fresh(http.HandlerFunc(s.handleTOTPConfirm)))
+	mux.Handle("DELETE /api/auth/totp", fresh(http.HandlerFunc(s.handleTOTPDisable)))
+	mux.Handle("GET /api/auth/devices", fresh(http.HandlerFunc(s.handleListDevices)))
+	mux.Handle("DELETE /api/auth/devices/{id}", fresh(http.HandlerFunc(s.handleRevokeDevice)))
 }
 
 type totpSetupResponse struct {
@@ -149,6 +154,9 @@ type totpVerifyRequest struct {
 }
 
 func (s *Service) handleTOTPVerify(w http.ResponseWriter, r *http.Request) {
+	if !s.throttleAllow(w, r) {
+		return
+	}
 	if !s.totpReady() {
 		writeError(w, http.StatusServiceUnavailable, "totp not configured")
 		return
@@ -187,6 +195,11 @@ func (s *Service) handleTOTPVerify(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "challenge invalid")
 		return
 	}
+	// Capture lockout state for the conditional reveal — same
+	// pattern as handleLogin. A wrong code on a locked account
+	// stays opaque; a correct code reveals the lock window so the
+	// legitimate user knows when to retry.
+	wasLocked := u.LockedUntil != nil && s.Now().Before(*u.LockedUntil)
 	state, err := s.TOTPStore.GetTOTPState(u.ID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "verify failed")
@@ -203,10 +216,34 @@ func (s *Service) handleTOTPVerify(w http.ResponseWriter, r *http.Request) {
 		// Don't clear the challenge cookie on a wrong code — let the user
 		// retry within the 5-min window. Failure to verify on a *valid*
 		// challenge is a normal user mistake, not a poisoned cookie.
+		// Bumps the per-account counter and the per-IP throttle so a
+		// known-password attacker can't brute-force the 6-digit code
+		// space. Skip the per-account bump when the account is already
+		// locked — the lockout already covers the brute-force concern.
+		if wasLocked {
+			if s.LoginThrottle != nil {
+				s.LoginThrottle.Record(clientIP(r))
+			}
+		} else {
+			s.recordLoginFailure(r, u)
+		}
+		s.logLoginFailed(r.Context(), u.Username, "wrong_code")
 		writeError(w, http.StatusUnauthorized, "invalid code")
 		return
 	}
+	if wasLocked {
+		// Correct code on a locked account: reveal the lockout
+		// window. Challenge cookie cleared so the user can't keep
+		// re-submitting; they restart the flow when the lock expires.
+		s.clearChallengeCookie(w)
+		s.logLoginFailed(r.Context(), u.Username, "locked")
+		writeLockedResponse(w, *u.LockedUntil)
+		return
+	}
 	s.clearChallengeCookie(w)
+	if err := s.Store.ClearLoginFailures(u.ID); err != nil {
+		slog.Warn("auth clear failures", "err", err, "user_id", u.ID)
+	}
 	if req.RememberDevice && s.DeviceStore != nil {
 		if err := s.rememberDevice(w, r, u.ID, state.Epoch); err != nil {
 			// Failure to persist trust is non-fatal — log and proceed with

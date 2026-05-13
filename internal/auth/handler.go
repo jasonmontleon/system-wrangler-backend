@@ -12,6 +12,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -36,11 +37,101 @@ type Service struct {
 	// Audit is optional: when nil, handlers skip audit emission (older
 	// tests and stub callers run without it). Production wiring in
 	// cmd/server/main.go always supplies it.
-	Audit        *audit.Store
-	SessionTTL   time.Duration
-	SecureCookie bool
-	Now          func() time.Time
-	NewID        func() string
+	Audit *audit.Store
+	// LoginThrottle is the per-IP rate limiter applied to /login and
+	// /totp/verify. nil disables the per-IP layer entirely (the
+	// per-account lockout still runs).
+	LoginThrottle *Throttle
+	SessionTTL    time.Duration
+	SecureCookie  bool
+	Now           func() time.Time
+	NewID         func() string
+}
+
+// Lockout policy constants. After LockoutThreshold consecutive failed
+// auth attempts the account is locked for a duration that doubles each
+// further failure, capped at LockoutMaxDuration. Counters reset on any
+// successful authentication or any admin-initiated reset.
+const (
+	LockoutThreshold    = 5
+	LockoutBaseDuration = 1 * time.Minute
+	LockoutMaxDuration  = 15 * time.Minute
+)
+
+// lockDuration returns how long an account that has just had its
+// `attempts`-th consecutive failure should be locked, or zero if it's
+// still below the threshold. The shift is bounded so callers that pass
+// a huge attempts value (e.g. someone hammering after the cap) don't
+// trigger an integer overflow.
+func lockDuration(attempts int) time.Duration {
+	if attempts < LockoutThreshold {
+		return 0
+	}
+	shift := uint(attempts - LockoutThreshold)
+	if shift > 8 {
+		shift = 8
+	}
+	dur := LockoutBaseDuration << shift
+	if dur > LockoutMaxDuration {
+		dur = LockoutMaxDuration
+	}
+	return dur
+}
+
+// throttleAllow checks the per-IP throttle and writes a 429 with
+// Retry-After if exceeded. Returns true if the caller can proceed.
+// Safe with a nil throttle.
+func (s *Service) throttleAllow(w http.ResponseWriter, r *http.Request) bool {
+	if s.LoginThrottle == nil {
+		return true
+	}
+	wait := s.LoginThrottle.Check(clientIP(r))
+	if wait <= 0 {
+		return true
+	}
+	secs := int(wait.Seconds())
+	if secs < 1 {
+		secs = 1
+	}
+	w.Header().Set("Retry-After", strconv.Itoa(secs))
+	writeError(w, http.StatusTooManyRequests, "too many attempts, try again later")
+	return false
+}
+
+// recordLoginFailure handles both halves of a failed-credential event:
+// the per-IP throttle gets a tick (so a single source can be quenched
+// even if it spreads across accounts), and the per-account counter on
+// the user row bumps. user may be the zero value for "no such user" —
+// in that case only the throttle is touched.
+func (s *Service) recordLoginFailure(r *http.Request, user User) {
+	if s.LoginThrottle != nil {
+		s.LoginThrottle.Record(clientIP(r))
+	}
+	if user.ID == "" {
+		return
+	}
+	attempts := user.FailedAttempts + 1
+	var locked *time.Time
+	if dur := lockDuration(attempts); dur > 0 {
+		t := s.Now().Add(dur).UTC()
+		locked = &t
+	}
+	if _, err := s.Store.RecordLoginFailure(user.ID, locked); err != nil {
+		slog.Error("auth record failure", "err", err, "user_id", user.ID)
+	}
+	if locked != nil {
+		d := audit.NewDetail()
+		_ = d.SetSafe("attempts", attempts)
+		_ = d.SetSafe("locked_until", locked.Format(time.RFC3339))
+		s.logAudit(r.Context(), audit.Event{
+			Action:      "auth.account.locked",
+			Outcome:     audit.Success,
+			TargetKind:  "user",
+			TargetID:    user.ID,
+			TargetLabel: user.Username,
+			Detail:      d,
+		})
+	}
 }
 
 // NewService fills in sensible defaults; callers can still override fields
@@ -67,9 +158,13 @@ func (s *Service) Register(mux *http.ServeMux) {
 
 // RegisterProtected wires the endpoints that require an authenticated user.
 // The middleware is supplied by the caller so the auth package doesn't need
-// to construct it itself.
+// to construct it itself. Every protected endpoint except the password
+// change is wrapped with RequireFreshPassword so a user with the
+// must_change_password flag set is bounced until they rotate the
+// admin-supplied password.
 func (s *Service) RegisterProtected(mux *http.ServeMux, requireUser func(http.Handler) http.Handler) {
-	mux.Handle("PATCH /api/auth/profile", requireUser(http.HandlerFunc(s.handleUpdateProfile)))
+	fresh := func(h http.Handler) http.Handler { return requireUser(RequireFreshPassword(h)) }
+	mux.Handle("PATCH /api/auth/profile", fresh(http.HandlerFunc(s.handleUpdateProfile)))
 	mux.Handle("POST /api/auth/password", requireUser(http.HandlerFunc(s.handleChangePassword)))
 }
 
@@ -116,11 +211,17 @@ func (s *Service) logLoginFailed(ctx context.Context, attemptedUsername, reason 
 // user JSON. Used by every successful first-factor path so the audit
 // emission can't drift between branches. method is "password",
 // "trusted_device", or "totp" depending on which path completed.
+// Successful login also clears the per-account lockout counters — by
+// the time we reach this function the user has proven they're the
+// account holder, so any stale failure history is meaningless.
 func (s *Service) finishLogin(w http.ResponseWriter, r *http.Request, u User, method string) {
 	if err := s.issueCookie(w, u.ID); err != nil {
 		writeError(w, http.StatusInternalServerError, "session failed")
 		slog.Error("auth login cookie", "err", err)
 		return
+	}
+	if err := s.Store.ClearLoginFailures(u.ID); err != nil {
+		slog.Warn("auth clear failures", "err", err, "user_id", u.ID)
 	}
 	ctx := audit.WithActor(r.Context(), audit.Actor{
 		Kind:  audit.ActorUser,
@@ -217,6 +318,9 @@ func (s *Service) handleSetup(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Service) handleLogin(w http.ResponseWriter, r *http.Request) {
+	if !s.throttleAllow(w, r) {
+		return
+	}
 	creds, err := decodeCredentials(r)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -227,6 +331,9 @@ func (s *Service) handleLogin(w http.ResponseWriter, r *http.Request) {
 		// Don't disclose whether the username exists — return 401 in both
 		// the "no such user" and "wrong password" branches.
 		if errors.Is(err, ErrUserNotFound) {
+			// No per-account row to bump, but a spray attack across many
+			// usernames still trips the per-IP throttle.
+			s.recordLoginFailure(r, User{})
 			s.logLoginFailed(r.Context(), creds.Username, "no_user")
 			writeError(w, http.StatusUnauthorized, "invalid credentials")
 			return
@@ -235,9 +342,37 @@ func (s *Service) handleLogin(w http.ResponseWriter, r *http.Request) {
 		slog.Error("auth login lookup", "err", err)
 		return
 	}
+	// Capture the lockout state observed at lookup time so we can
+	// reveal it *after* the password check succeeds — the conditional
+	// reveal pattern means a wrong password on a locked account stays
+	// opaque (no enumeration), but a user who types the right password
+	// gets a useful "locked until X" message. VerifyPassword is run
+	// unconditionally because skipping it on a locked account would
+	// short-circuit the only branch where reveal is safe.
+	wasLocked := u.LockedUntil != nil && s.Now().Before(*u.LockedUntil)
 	if err := VerifyPassword(hash, creds.Password); err != nil {
+		if wasLocked {
+			// Don't bump the per-account counter on an already-locked
+			// account — the lockout is the whole point. The per-IP
+			// throttle still ticks so a spraying source gets quenched.
+			if s.LoginThrottle != nil {
+				s.LoginThrottle.Record(clientIP(r))
+			}
+		} else {
+			s.recordLoginFailure(r, u)
+		}
 		s.logLoginFailed(r.Context(), creds.Username, "wrong_password")
 		writeError(w, http.StatusUnauthorized, "invalid credentials")
+		return
+	}
+	if wasLocked {
+		// Password was correct but the account is still in the
+		// lockout window. The user has proven account ownership, so
+		// revealing the lock state leaks nothing they couldn't see by
+		// waiting it out — and tells them when to try again. No
+		// session cookie issued.
+		s.logLoginFailed(r.Context(), creds.Username, "locked")
+		writeLockedResponse(w, *u.LockedUntil)
 		return
 	}
 	if u.Disabled {
@@ -577,6 +712,19 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 	if err := json.NewEncoder(w).Encode(body); err != nil {
 		slog.Error("auth json encode", "err", err)
 	}
+}
+
+// writeLockedResponse emits the structured 423 body used by both
+// /login and /totp/verify when correct credentials land on a locked
+// account. The lockedUntil timestamp is RFC3339 so the frontend can
+// render a relative countdown.
+func writeLockedResponse(w http.ResponseWriter, lockedUntil time.Time) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusLocked)
+	_ = json.NewEncoder(w).Encode(map[string]string{
+		"error":       "account locked",
+		"lockedUntil": lockedUntil.UTC().Format(time.RFC3339),
+	})
 }
 
 func writeError(w http.ResponseWriter, status int, msg string) {

@@ -98,6 +98,7 @@ func main() {
 	authSvc.DeviceStore = authStore
 	authSvc.Vault = vault
 	authSvc.Audit = auditStore
+	authSvc.LoginThrottle = auth.NewThrottle(time.Minute, 10, time.Now)
 
 	hub := events.NewHub(slog.Default())
 	broadcastSystemsChanged := func() {

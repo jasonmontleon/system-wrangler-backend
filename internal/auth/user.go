@@ -12,16 +12,24 @@ import (
 // of the same name so the frontend can render the "Two-factor authentication"
 // card with the correct state on first paint. Disabled is true when
 // disabled_at is non-null — disabled users keep their row (so audit
-// references stay valid) but cannot log in.
+// references stay valid) but cannot log in. FailedAttempts and LockedUntil
+// surface the lockout state so the admin UI can show "locked until 12:34".
+// MustChangePassword is set by the admin password-reset path; the frontend
+// uses it to force the user through the change-password flow, and the
+// RequireFreshPassword middleware refuses every protected endpoint except
+// /api/auth/password until the flag clears.
 type User struct {
-	ID          string     `json:"id"`
-	Username    string     `json:"username"`
-	Email       string     `json:"email"`
-	Theme       string     `json:"theme"`
-	CreatedAt   time.Time  `json:"createdAt"`
-	TotpEnabled bool       `json:"totpEnabled"`
-	Disabled    bool       `json:"disabled"`
-	DisabledAt  *time.Time `json:"disabledAt,omitempty"`
+	ID                 string     `json:"id"`
+	Username           string     `json:"username"`
+	Email              string     `json:"email"`
+	Theme              string     `json:"theme"`
+	CreatedAt          time.Time  `json:"createdAt"`
+	TotpEnabled        bool       `json:"totpEnabled"`
+	Disabled           bool       `json:"disabled"`
+	DisabledAt         *time.Time `json:"disabledAt,omitempty"`
+	FailedAttempts     int        `json:"failedAttempts,omitempty"`
+	LockedUntil        *time.Time `json:"lockedUntil,omitempty"`
+	MustChangePassword bool       `json:"mustChangePassword"`
 }
 
 // MinPasswordLen is the only password policy v1 enforces. We deliberately
@@ -42,13 +50,15 @@ const (
 
 // Sentinel errors usable across the package and by callers.
 var (
-	ErrInvalid       = errors.New("auth: invalid input")
-	ErrUnauthorized  = errors.New("auth: unauthorized")
-	ErrUserNotFound  = errors.New("auth: user not found")
-	ErrUserExists    = errors.New("auth: username already taken")
-	ErrSetupComplete = errors.New("auth: setup already complete")
-	ErrUserDisabled  = errors.New("auth: user disabled")
-	ErrLastEnabled   = errors.New("auth: cannot disable the last enabled user")
+	ErrInvalid          = errors.New("auth: invalid input")
+	ErrUnauthorized     = errors.New("auth: unauthorized")
+	ErrUserNotFound     = errors.New("auth: user not found")
+	ErrUserExists       = errors.New("auth: username already taken")
+	ErrSetupComplete    = errors.New("auth: setup already complete")
+	ErrUserDisabled     = errors.New("auth: user disabled")
+	ErrLastEnabled      = errors.New("auth: cannot disable the last enabled user")
+	ErrAccountLocked    = errors.New("auth: account locked")
+	ErrPasswordRequired = errors.New("auth: password change required")
 )
 
 // ValidTheme reports whether s is a permitted theme value. The empty string

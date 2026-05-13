@@ -76,3 +76,19 @@ func writeUnauthorized(w http.ResponseWriter) {
 	w.WriteHeader(http.StatusUnauthorized)
 	_, _ = w.Write([]byte(`{"error":"unauthorized"}`))
 }
+
+// RequireFreshPassword wraps next so that any user whose
+// must_change_password flag is set is bounced with 403 until they
+// rotate the admin-supplied password via /api/auth/password. Must run
+// after RequireUser since it reads the User from the request context.
+func RequireFreshPassword(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if u, ok := UserFromContext(r.Context()); ok && u.MustChangePassword {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`{"error":"password change required"}`))
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}

@@ -21,6 +21,18 @@ type stubUserStore struct {
 	forceCountEnabled *int // when non-nil, CountEnabled returns this value
 }
 
+func (s *stubUserStore) get(id string) (User, bool) {
+	u, ok := s.users[id]
+	return u, ok
+}
+
+func (s *stubUserStore) put(u User) {
+	if s.users == nil {
+		s.users = map[string]User{}
+	}
+	s.users[u.ID] = u
+}
+
 func (s *stubUserStore) Count() (int, error) {
 	if s.failOn == "Count" {
 		return 0, s.err
@@ -117,6 +129,10 @@ func (s *stubUserStore) UpdatePassword(id, hash string) error {
 		return ErrUserNotFound
 	}
 	s.hashes[u.Username] = hash
+	u.MustChangePassword = false
+	u.FailedAttempts = 0
+	u.LockedUntil = nil
+	s.users[id] = u
 	return nil
 }
 func (s *stubUserStore) ListUsers() ([]User, error) {
@@ -159,6 +175,68 @@ func (s *stubUserStore) SetDisabled(id string, disabled bool, now time.Time) (Us
 	}
 	s.users[id] = u
 	return u, nil
+}
+
+func (s *stubUserStore) RecordLoginFailure(id string, lockedUntil *time.Time) (int, error) {
+	if s.failOn == "RecordLoginFailure" {
+		return 0, s.err
+	}
+	u, ok := s.users[id]
+	if !ok {
+		return 0, ErrUserNotFound
+	}
+	u.FailedAttempts++
+	if lockedUntil != nil {
+		t := lockedUntil.UTC()
+		u.LockedUntil = &t
+	}
+	s.users[id] = u
+	return u.FailedAttempts, nil
+}
+
+func (s *stubUserStore) ClearLoginFailures(id string) error {
+	if s.failOn == "ClearLoginFailures" {
+		return s.err
+	}
+	u, ok := s.users[id]
+	if !ok {
+		return ErrUserNotFound
+	}
+	u.FailedAttempts = 0
+	u.LockedUntil = nil
+	s.users[id] = u
+	return nil
+}
+
+func (s *stubUserStore) AdminSetPassword(id, hash string) error {
+	if s.failOn == "AdminSetPassword" {
+		return s.err
+	}
+	u, ok := s.users[id]
+	if !ok {
+		return ErrUserNotFound
+	}
+	s.hashes[u.Username] = hash
+	u.MustChangePassword = true
+	u.FailedAttempts = 0
+	u.LockedUntil = nil
+	s.users[id] = u
+	return nil
+}
+
+func (s *stubUserStore) AdminResetTOTP(id string) error {
+	if s.failOn == "AdminResetTOTP" {
+		return s.err
+	}
+	u, ok := s.users[id]
+	if !ok {
+		return ErrUserNotFound
+	}
+	u.TotpEnabled = false
+	u.FailedAttempts = 0
+	u.LockedUntil = nil
+	s.users[id] = u
+	return nil
 }
 
 func TestRequireUserAllowsValidCookie(t *testing.T) {
