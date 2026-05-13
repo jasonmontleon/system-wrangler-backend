@@ -8,6 +8,8 @@ package main
 import (
 	"context"
 	"errors"
+	"flag"
+	"fmt"
 	"io/fs"
 	"log/slog"
 	"net/http"
@@ -20,11 +22,16 @@ import (
 	"system-wrangler-backend/internal/auth"
 	"system-wrangler-backend/internal/database"
 	"system-wrangler-backend/internal/events"
+	"system-wrangler-backend/internal/secrets"
 	"system-wrangler-backend/internal/systems"
 	"system-wrangler-backend/web"
 )
 
 func main() {
+	rotateKeys := flag.Bool("rotate-keys", false,
+		"re-seal every encrypted secret under SW_MASTER_KEY_FILE and exit; SW_MASTER_KEY_FILE_PREVIOUS must point at the outgoing key")
+	flag.Parse()
+
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
 
 	addr := ":" + envOr("PORT", "8080")
@@ -60,16 +67,28 @@ func main() {
 		slog.Error("load session secret", "err", err)
 		os.Exit(1)
 	}
-	kek, err := auth.LoadOrInitKEK(authStore)
+	vault, err := secrets.NewVault()
 	if err != nil {
-		slog.Error("load totp kek", "err", err)
+		fmt.Fprintln(os.Stderr, secrets.FatalMessage())
+		slog.Error("load master key", "err", err)
 		os.Exit(1)
+	}
+	if err := authStore.MigrateLegacyTOTPSecrets(vault); err != nil {
+		slog.Error("migrate legacy totp", "err", err)
+		os.Exit(1)
+	}
+	if *rotateKeys {
+		if _, err := authStore.RotateKeys(vault); err != nil {
+			slog.Error("rotate keys", "err", err)
+			os.Exit(1)
+		}
+		return
 	}
 	authSvc := auth.NewService(authStore, secret, useTLS)
 	authSvc.TOTPStore = authStore
 	authSvc.RecoveryStore = authStore
 	authSvc.DeviceStore = authStore
-	authSvc.KEK = kek
+	authSvc.Vault = vault
 
 	hub := events.NewHub(slog.Default())
 	broadcastSystemsChanged := func() {

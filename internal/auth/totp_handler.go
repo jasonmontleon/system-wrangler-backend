@@ -45,13 +45,13 @@ func (s *Service) handleTOTPSetup(w http.ResponseWriter, r *http.Request) {
 		slog.Error("totp setup generate", "err", err, "user_id", u.ID)
 		return
 	}
-	ct, err := Encrypt(s.KEK, secret)
+	sealed, err := SealWith(s.Vault, secret)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "totp setup failed")
-		slog.Error("totp setup encrypt", "err", err, "user_id", u.ID)
+		slog.Error("totp setup seal", "err", err, "user_id", u.ID)
 		return
 	}
-	if err := s.TOTPStore.SetPendingSecret(u.ID, ct); err != nil {
+	if err := s.TOTPStore.SetPendingSecret(u.ID, sealed); err != nil {
 		writeError(w, http.StatusInternalServerError, "totp setup failed")
 		slog.Error("totp setup persist", "err", err, "user_id", u.ID)
 		return
@@ -100,11 +100,11 @@ func (s *Service) handleTOTPConfirm(w http.ResponseWriter, r *http.Request) {
 		slog.Error("totp confirm state", "err", err, "user_id", u.ID)
 		return
 	}
-	if len(state.Pending) == 0 {
+	if state.Pending.IsZero() {
 		writeError(w, http.StatusBadRequest, "no pending enrollment; call /totp/setup first")
 		return
 	}
-	secret, err := Decrypt(s.KEK, state.Pending)
+	secret, err := OpenWith(s.Vault, state.Pending)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "totp confirm failed")
 		slog.Error("totp confirm decrypt", "err", err, "user_id", u.ID)
@@ -188,7 +188,7 @@ func (s *Service) handleTOTPVerify(w http.ResponseWriter, r *http.Request) {
 		slog.Error("totp verify state", "err", err, "user_id", u.ID)
 		return
 	}
-	if !state.Enabled || len(state.Secret) == 0 {
+	if !state.Enabled || state.Secret.IsZero() {
 		s.clearChallengeCookie(w)
 		writeError(w, http.StatusUnauthorized, "challenge invalid")
 		return
@@ -225,7 +225,7 @@ func (s *Service) handleTOTPVerify(w http.ResponseWriter, r *http.Request) {
 // (verified, viaRecovery). On success the matching credential has already
 // been consumed (step bumped or row marked used).
 func (s *Service) tryVerifyCode(userID string, state TOTPState, code string) (bool, bool) {
-	secret, err := Decrypt(s.KEK, state.Secret)
+	secret, err := OpenWith(s.Vault, state.Secret)
 	if err == nil {
 		step, err := VerifyTOTPCode(secret, code, s.Now(), state.LastStep)
 		if err == nil {
@@ -305,11 +305,11 @@ func (s *Service) handleTOTPDisable(w http.ResponseWriter, r *http.Request) {
 		slog.Error("totp disable state", "err", err, "user_id", u.ID)
 		return
 	}
-	if !state.Enabled || len(state.Secret) == 0 {
+	if !state.Enabled || state.Secret.IsZero() {
 		writeError(w, http.StatusBadRequest, "totp not enabled")
 		return
 	}
-	secret, err := Decrypt(s.KEK, state.Secret)
+	secret, err := OpenWith(s.Vault, state.Secret)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "disable failed")
 		slog.Error("totp disable decrypt", "err", err, "user_id", u.ID)
@@ -378,8 +378,8 @@ func (s *Service) handleRevokeDevice(w http.ResponseWriter, r *http.Request) {
 }
 
 // totpReady reports whether the Service has the dependencies needed to run
-// the TOTP path: a TOTP store, a recovery store, and a KEK. Without any of
-// these we return 503 rather than panic on a nil deref.
+// the TOTP path: a TOTP store, a recovery store, and a Vault. Without any
+// of these we return 503 rather than panic on a nil deref.
 func (s *Service) totpReady() bool {
-	return s.TOTPStore != nil && s.RecoveryStore != nil && len(s.KEK) == kekSize
+	return s.TOTPStore != nil && s.RecoveryStore != nil && s.Vault != nil
 }

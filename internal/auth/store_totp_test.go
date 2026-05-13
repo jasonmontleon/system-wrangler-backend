@@ -8,13 +8,20 @@ import (
 	"time"
 )
 
+// fakeSealed builds a Sealed value with the given ciphertext bytes and a
+// 12-byte zero nonce / version=1. Used by store-level tests that don't care
+// about real crypto — the store only persists and reads back blobs.
+func fakeSealed(ct string) Sealed {
+	return Sealed{Ciphertext: []byte(ct), Nonce: make([]byte, 12), Version: 1}
+}
+
 func TestTOTPStorePendingActivateGet(t *testing.T) {
 	s := newTestAuthStore(t)
 	u, err := s.Create("alice", "h")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	if err := s.SetPendingSecret(u.ID, []byte("pending-ct")); err != nil {
+	if err := s.SetPendingSecret(u.ID, fakeSealed("pending-ct")); err != nil {
 		t.Fatalf("SetPendingSecret: %v", err)
 	}
 	state, err := s.GetTOTPState(u.ID)
@@ -24,12 +31,15 @@ func TestTOTPStorePendingActivateGet(t *testing.T) {
 	if state.Enabled {
 		t.Error("enabled before confirm")
 	}
-	if string(state.Pending) != "pending-ct" {
-		t.Errorf("pending = %q", state.Pending)
+	if string(state.Pending.Ciphertext) != "pending-ct" {
+		t.Errorf("pending = %q", state.Pending.Ciphertext)
+	}
+	if state.Pending.Version != 1 {
+		t.Errorf("pending version = %d, want 1", state.Pending.Version)
 	}
 
 	confirmedAt := time.Date(2026, 5, 6, 12, 0, 0, 0, time.UTC)
-	if err := s.ActivateTOTP(u.ID, []byte("active-ct"), confirmedAt); err != nil {
+	if err := s.ActivateTOTP(u.ID, fakeSealed("active-ct"), confirmedAt); err != nil {
 		t.Fatalf("ActivateTOTP: %v", err)
 	}
 	state, err = s.GetTOTPState(u.ID)
@@ -39,11 +49,14 @@ func TestTOTPStorePendingActivateGet(t *testing.T) {
 	if !state.Enabled {
 		t.Error("not enabled after activate")
 	}
-	if string(state.Secret) != "active-ct" {
-		t.Errorf("secret = %q", state.Secret)
+	if string(state.Secret.Ciphertext) != "active-ct" {
+		t.Errorf("secret = %q", state.Secret.Ciphertext)
 	}
-	if state.Pending != nil {
-		t.Errorf("pending should be cleared, got %q", state.Pending)
+	if state.Secret.Version != 1 {
+		t.Errorf("secret version = %d, want 1", state.Secret.Version)
+	}
+	if !state.Pending.IsZero() {
+		t.Errorf("pending should be cleared, got %q", state.Pending.Ciphertext)
 	}
 	if state.Epoch != 0 || state.LastStep != 0 {
 		t.Errorf("epoch=%d lastStep=%d, want 0/0", state.Epoch, state.LastStep)
@@ -52,14 +65,14 @@ func TestTOTPStorePendingActivateGet(t *testing.T) {
 
 func TestSetPendingSecretMissing(t *testing.T) {
 	s := newTestAuthStore(t)
-	if err := s.SetPendingSecret("ghost", []byte("x")); !errors.Is(err, ErrUserNotFound) {
+	if err := s.SetPendingSecret("ghost", fakeSealed("x")); !errors.Is(err, ErrUserNotFound) {
 		t.Errorf("err = %v, want ErrUserNotFound", err)
 	}
 }
 
 func TestActivateTOTPMissing(t *testing.T) {
 	s := newTestAuthStore(t)
-	if err := s.ActivateTOTP("ghost", []byte("x"), time.Now()); !errors.Is(err, ErrUserNotFound) {
+	if err := s.ActivateTOTP("ghost", fakeSealed("x"), time.Now()); !errors.Is(err, ErrUserNotFound) {
 		t.Errorf("err = %v, want ErrUserNotFound", err)
 	}
 }
@@ -74,7 +87,7 @@ func TestGetTOTPStateMissing(t *testing.T) {
 func TestDisableTOTPBumpsEpochAndClearsRelated(t *testing.T) {
 	s := newTestAuthStore(t)
 	u, _ := s.Create("alice", "h")
-	if err := s.ActivateTOTP(u.ID, []byte("ct"), time.Now()); err != nil {
+	if err := s.ActivateTOTP(u.ID, fakeSealed("ct"), time.Now()); err != nil {
 		t.Fatalf("ActivateTOTP: %v", err)
 	}
 	if err := s.InsertRecoveryCodes(u.ID, []string{"hash1", "hash2"}); err != nil {
@@ -95,7 +108,7 @@ func TestDisableTOTPBumpsEpochAndClearsRelated(t *testing.T) {
 	if state.Enabled {
 		t.Error("still enabled after disable")
 	}
-	if state.Secret != nil {
+	if !state.Secret.IsZero() {
 		t.Error("secret not cleared")
 	}
 	if state.Epoch != 1 {

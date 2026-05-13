@@ -15,19 +15,22 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"system-wrangler-backend/internal/secrets"
 )
 
 // Service holds the shared state used by the auth HTTP endpoints. The TOTP-,
-// Recovery-, and Device- stores plus KEK are optional: when nil, login skips
-// the second-factor flow entirely (used by older tests and by stub callers).
-// Production wiring in cmd/server/main.go always supplies all of them.
+// Recovery-, and Device- stores plus Vault are optional: when nil, login
+// skips the second-factor flow entirely (used by older tests and by stub
+// callers). Production wiring in cmd/server/main.go always supplies all of
+// them.
 type Service struct {
 	Store         UserStore
 	TOTPStore     TOTPStore
 	RecoveryStore RecoveryStore
 	DeviceStore   DeviceStore
 	Secret        []byte
-	KEK           []byte
+	Vault         *secrets.Vault
 	SessionTTL    time.Duration
 	SecureCookie  bool
 	Now           func() time.Time

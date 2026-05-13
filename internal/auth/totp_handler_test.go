@@ -17,6 +17,8 @@ import (
 
 	"github.com/pquerna/otp"
 	"github.com/pquerna/otp/totp"
+
+	"system-wrangler-backend/internal/secrets"
 )
 
 // stubTOTPStore is an in-memory TOTPStore for handler-level tests.
@@ -30,23 +32,23 @@ func newStubTOTPStore() *stubTOTPStore {
 	return &stubTOTPStore{state: map[string]TOTPState{}}
 }
 
-func (s *stubTOTPStore) SetPendingSecret(userID string, ct []byte) error {
+func (s *stubTOTPStore) SetPendingSecret(userID string, sealed Sealed) error {
 	if s.failOn == "SetPendingSecret" {
 		return s.err
 	}
 	st := s.state[userID]
-	st.Pending = ct
+	st.Pending = sealed
 	s.state[userID] = st
 	return nil
 }
 
-func (s *stubTOTPStore) ActivateTOTP(userID string, ct []byte, _ time.Time) error {
+func (s *stubTOTPStore) ActivateTOTP(userID string, sealed Sealed, _ time.Time) error {
 	if s.failOn == "ActivateTOTP" {
 		return s.err
 	}
 	st := s.state[userID]
-	st.Secret = ct
-	st.Pending = nil
+	st.Secret = sealed
+	st.Pending = Sealed{}
 	st.Enabled = true
 	st.LastStep = 0
 	s.state[userID] = st
@@ -59,8 +61,8 @@ func (s *stubTOTPStore) DisableTOTP(userID string) error {
 	}
 	st := s.state[userID]
 	st.Enabled = false
-	st.Secret = nil
-	st.Pending = nil
+	st.Secret = Sealed{}
+	st.Pending = Sealed{}
 	st.Epoch++
 	s.state[userID] = st
 	return nil
@@ -218,11 +220,23 @@ func (s *stubDeviceStore) TouchDevice(id string, lastUsed time.Time) error {
 
 // fixedKEK returns a deterministic 32-byte key for tests.
 func fixedKEK() []byte {
-	k := make([]byte, kekSize)
+	k := make([]byte, 32)
 	for i := range k {
 		k[i] = byte(i + 1)
 	}
 	return k
+}
+
+// fixedVault wraps fixedKEK() in a secrets.Vault for handler tests. The
+// returned vault is identical across calls so multiple tests can use the
+// same plaintext-recoverable ciphertext if they need to.
+func fixedVault(t *testing.T) *secrets.Vault {
+	t.Helper()
+	v, err := secrets.NewVaultFromKey(fixedKEK())
+	if err != nil {
+		t.Fatalf("fixedVault: %v", err)
+	}
+	return v
 }
 
 // newTOTPTestServer builds a Service wired with all four stub stores and
@@ -238,7 +252,7 @@ func newTOTPTestServer(t *testing.T) (*httptest.Server, *Service, *stubUserStore
 	svc.TOTPStore = tot
 	svc.RecoveryStore = rec
 	svc.DeviceStore = dev
-	svc.KEK = fixedKEK()
+	svc.Vault = fixedVault(t)
 	now := time.Date(2026, 5, 6, 12, 0, 0, 0, time.UTC)
 	svc.Now = func() time.Time { return now }
 	var nID int
@@ -318,8 +332,11 @@ func TestTOTPSetupAndConfirmHappyPath(t *testing.T) {
 	}
 	// Pending secret should be encrypted, not the raw bytes.
 	state, _ := tot.GetTOTPState(users.users["alice-id"].ID)
-	if string(state.Pending) == string(rawSecret) {
+	if string(state.Pending.Ciphertext) == string(rawSecret) {
 		t.Error("pending secret stored unencrypted")
+	}
+	if state.Pending.Version == 0 || len(state.Pending.Nonce) == 0 {
+		t.Errorf("pending sealed shape incomplete: %+v", state.Pending)
 	}
 	// Confirm with the correct code.
 	code, err := totp.GenerateCodeCustom(setup.Secret, svc.Now(), totp.ValidateOpts{
@@ -349,7 +366,7 @@ func TestTOTPSetupAndConfirmHappyPath(t *testing.T) {
 	if !state.Enabled {
 		t.Error("totp not enabled after confirm")
 	}
-	if state.Pending != nil {
+	if !state.Pending.IsZero() {
 		t.Error("pending not cleared after confirm")
 	}
 	uid := users.users["alice-id"].ID

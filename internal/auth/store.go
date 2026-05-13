@@ -25,12 +25,12 @@ type UserStore interface {
 }
 
 // TOTPState is the row-level shape returned by GetTOTPState — one round-trip
-// for every field the verify path needs (enabled flag, ciphertext secret,
-// ciphertext pending secret, current epoch, last consumed step).
+// for every field the verify path needs (enabled flag, sealed secret, sealed
+// pending secret, current epoch, last consumed step).
 type TOTPState struct {
 	Enabled  bool
-	Secret   []byte
-	Pending  []byte
+	Secret   Sealed
+	Pending  Sealed
 	Epoch    int64
 	LastStep int64
 }
@@ -39,8 +39,8 @@ type TOTPState struct {
 // flow needs. Kept narrow so tests can supply a stub without implementing
 // the whole DeviceStore/RecoveryStore surface.
 type TOTPStore interface {
-	SetPendingSecret(userID string, ciphertext []byte) error
-	ActivateTOTP(userID string, ciphertext []byte, confirmedAt time.Time) error
+	SetPendingSecret(userID string, s Sealed) error
+	ActivateTOTP(userID string, s Sealed, confirmedAt time.Time) error
 	DisableTOTP(userID string) error
 	GetTOTPState(userID string) (TOTPState, error)
 	ConsumeStep(userID string, step int64) error
@@ -128,7 +128,11 @@ func (s *SQLiteAuthStore) migrate() error {
 		{"email", `ALTER TABLE users ADD COLUMN email TEXT NOT NULL DEFAULT ''`},
 		{"theme", `ALTER TABLE users ADD COLUMN theme TEXT NOT NULL DEFAULT ''`},
 		{"totp_secret", `ALTER TABLE users ADD COLUMN totp_secret BLOB`},
+		{"totp_secret_nonce", `ALTER TABLE users ADD COLUMN totp_secret_nonce BLOB`},
+		{"totp_secret_version", `ALTER TABLE users ADD COLUMN totp_secret_version INTEGER`},
 		{"totp_pending_secret", `ALTER TABLE users ADD COLUMN totp_pending_secret BLOB`},
+		{"totp_pending_secret_nonce", `ALTER TABLE users ADD COLUMN totp_pending_secret_nonce BLOB`},
+		{"totp_pending_secret_version", `ALTER TABLE users ADD COLUMN totp_pending_secret_version INTEGER`},
 		{"totp_enabled", `ALTER TABLE users ADD COLUMN totp_enabled INTEGER NOT NULL DEFAULT 0`},
 		{"totp_confirmed_at", `ALTER TABLE users ADD COLUMN totp_confirmed_at INTEGER`},
 		{"totp_epoch", `ALTER TABLE users ADD COLUMN totp_epoch INTEGER NOT NULL DEFAULT 0`},
@@ -331,13 +335,14 @@ func (s *SQLiteAuthStore) SaveSecret(key string, val []byte) error {
 	return nil
 }
 
-// SetPendingSecret stores an encrypted TOTP secret in `totp_pending_secret`.
-// Always overwrites any prior pending secret — re-running enroll without
-// confirming first is an explicit "throw away the old QR" action.
-func (s *SQLiteAuthStore) SetPendingSecret(userID string, ciphertext []byte) error {
+// SetPendingSecret stores an encrypted TOTP secret in `totp_pending_secret`
+// plus its companion nonce and version columns. Always overwrites any prior
+// pending secret — re-running enroll without confirming first is an explicit
+// "throw away the old QR" action.
+func (s *SQLiteAuthStore) SetPendingSecret(userID string, sealed Sealed) error {
 	res, err := s.db.Exec(
-		`UPDATE users SET totp_pending_secret = ? WHERE id = ?`,
-		ciphertext, userID,
+		`UPDATE users SET totp_pending_secret = ?, totp_pending_secret_nonce = ?, totp_pending_secret_version = ? WHERE id = ?`,
+		sealed.Ciphertext, sealed.Nonce, sealed.Version, userID,
 	)
 	if err != nil {
 		return fmt.Errorf("auth: set pending totp: %w", err)
@@ -353,10 +358,11 @@ func (s *SQLiteAuthStore) SetPendingSecret(userID string, ciphertext []byte) err
 }
 
 // ActivateTOTP promotes the pending secret to the active secret in a single
-// transaction: copies pending→secret, NULLs pending, sets enabled=1, stamps
-// confirmed_at, resets last_step to 0. Recovery code insertion is left to
-// the caller — that runs in the same handler but is a separate concern.
-func (s *SQLiteAuthStore) ActivateTOTP(userID string, ciphertext []byte, confirmedAt time.Time) error {
+// transaction: copies pending→secret (including nonce + version), NULLs
+// pending, sets enabled=1, stamps confirmed_at, resets last_step to 0.
+// Recovery code insertion is left to the caller — that runs in the same
+// handler but is a separate concern.
+func (s *SQLiteAuthStore) ActivateTOTP(userID string, sealed Sealed, confirmedAt time.Time) error {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return fmt.Errorf("auth: begin activate totp: %w", err)
@@ -365,10 +371,11 @@ func (s *SQLiteAuthStore) ActivateTOTP(userID string, ciphertext []byte, confirm
 
 	res, err := tx.Exec(
 		`UPDATE users
-		   SET totp_secret = ?, totp_pending_secret = NULL, totp_enabled = 1,
-		       totp_confirmed_at = ?, totp_last_step = 0
+		   SET totp_secret = ?, totp_secret_nonce = ?, totp_secret_version = ?,
+		       totp_pending_secret = NULL, totp_pending_secret_nonce = NULL, totp_pending_secret_version = NULL,
+		       totp_enabled = 1, totp_confirmed_at = ?, totp_last_step = 0
 		 WHERE id = ?`,
-		ciphertext, confirmedAt.UnixNano(), userID,
+		sealed.Ciphertext, sealed.Nonce, sealed.Version, confirmedAt.UnixNano(), userID,
 	)
 	if err != nil {
 		return fmt.Errorf("auth: activate totp: %w", err)
@@ -397,7 +404,9 @@ func (s *SQLiteAuthStore) DisableTOTP(userID string) error {
 
 	res, err := tx.Exec(
 		`UPDATE users
-		   SET totp_enabled = 0, totp_secret = NULL, totp_pending_secret = NULL,
+		   SET totp_enabled = 0,
+		       totp_secret = NULL, totp_secret_nonce = NULL, totp_secret_version = NULL,
+		       totp_pending_secret = NULL, totp_pending_secret_nonce = NULL, totp_pending_secret_version = NULL,
 		       totp_confirmed_at = NULL, totp_last_step = 0,
 		       totp_epoch = totp_epoch + 1
 		 WHERE id = ?`,
@@ -426,17 +435,26 @@ func (s *SQLiteAuthStore) DisableTOTP(userID string) error {
 // query. Returns ErrUserNotFound if the user row is gone.
 func (s *SQLiteAuthStore) GetTOTPState(userID string) (TOTPState, error) {
 	var (
-		enabled  int64
-		secret   []byte
-		pending  []byte
-		epoch    int64
-		lastStep int64
+		enabled      int64
+		secret       []byte
+		secretNonce  []byte
+		secretVer    sql.NullInt64
+		pending      []byte
+		pendingNonce []byte
+		pendingVer   sql.NullInt64
+		epoch        int64
+		lastStep     int64
 	)
 	err := s.db.QueryRow(
-		`SELECT totp_enabled, totp_secret, totp_pending_secret, totp_epoch, totp_last_step
+		`SELECT totp_enabled,
+		        totp_secret, totp_secret_nonce, totp_secret_version,
+		        totp_pending_secret, totp_pending_secret_nonce, totp_pending_secret_version,
+		        totp_epoch, totp_last_step
 		   FROM users WHERE id = ?`,
 		userID,
-	).Scan(&enabled, &secret, &pending, &epoch, &lastStep)
+	).Scan(&enabled, &secret, &secretNonce, &secretVer,
+		&pending, &pendingNonce, &pendingVer,
+		&epoch, &lastStep)
 	if errors.Is(err, sql.ErrNoRows) {
 		return TOTPState{}, ErrUserNotFound
 	}
@@ -445,8 +463,8 @@ func (s *SQLiteAuthStore) GetTOTPState(userID string) (TOTPState, error) {
 	}
 	return TOTPState{
 		Enabled:  enabled == 1,
-		Secret:   secret,
-		Pending:  pending,
+		Secret:   Sealed{Ciphertext: secret, Nonce: secretNonce, Version: int(secretVer.Int64)},
+		Pending:  Sealed{Ciphertext: pending, Nonce: pendingNonce, Version: int(pendingVer.Int64)},
 		Epoch:    epoch,
 		LastStep: lastStep,
 	}, nil

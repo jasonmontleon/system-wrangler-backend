@@ -288,7 +288,7 @@ func TestListDevicesNoDeviceStore(t *testing.T) {
 	svc := NewService(users, testSecret, false)
 	svc.TOTPStore = newStubTOTPStore()
 	svc.RecoveryStore = newStubRecoveryStore()
-	svc.KEK = fixedKEK()
+	svc.Vault = fixedVault(t)
 	mux := http.NewServeMux()
 	svc.Register(mux)
 	requireUser := RequireUser(testSecret, users, time.Now)
@@ -319,7 +319,7 @@ func TestRevokeDeviceNoDeviceStore(t *testing.T) {
 	svc := NewService(users, testSecret, false)
 	svc.TOTPStore = newStubTOTPStore()
 	svc.RecoveryStore = newStubRecoveryStore()
-	svc.KEK = fixedKEK()
+	svc.Vault = fixedVault(t)
 	mux := http.NewServeMux()
 	svc.Register(mux)
 	requireUser := RequireUser(testSecret, users, time.Now)
@@ -470,15 +470,12 @@ func TestTOTPDisableStateError(t *testing.T) {
 	}
 }
 
-func TestTOTPSetupEncryptError(t *testing.T) {
-	// A short KEK forces Encrypt to fail without exercising any random source.
+func TestTOTPSetupVaultUnset(t *testing.T) {
+	// Clearing the vault on a configured Service forces totpReady() to return
+	// false; setup should answer 503 rather than panic on a nil deref.
 	srv, svc, users, _, _, _ := newTOTPTestServer(t)
 	client := loggedInClientFull(t, srv, users, "alice")
-	svc.KEK = make([]byte, 16) // wrong length, totpReady() still returns false
-	// totpReady checks len(s.KEK) == kekSize, so 503 here, not 500. Set the
-	// KEK to a 32-byte value where AES is still happy but force the path
-	// differently: corrupt SetPendingSecret already covered; corrupt KEK
-	// length will surface as 503 from totpReady, which is acceptable.
+	svc.Vault = nil
 	resp, err := client.Post(srv.URL+"/api/auth/totp/setup", "application/json", nil)
 	if err != nil {
 		t.Fatalf("post: %v", err)
@@ -689,7 +686,7 @@ func TestTOTPConfirmRecoveryInsertFails(t *testing.T) {
 	svc.TOTPStore = tot
 	svc.RecoveryStore = rec
 	svc.DeviceStore = dev
-	svc.KEK = fixedKEK()
+	svc.Vault = fixedVault(t)
 	now := time.Date(2026, 5, 6, 12, 0, 0, 0, time.UTC)
 	svc.Now = func() time.Time { return now }
 	mux := http.NewServeMux()
@@ -750,10 +747,10 @@ func TestStoreErrorsOnClosedDBExtended(t *testing.T) {
 	if err := s.db.Close(); err != nil {
 		t.Fatalf("close: %v", err)
 	}
-	if err := s.SetPendingSecret(u.ID, []byte("x")); err == nil {
+	if err := s.SetPendingSecret(u.ID, fakeSealed("x")); err == nil {
 		t.Error("SetPendingSecret on closed DB: want error")
 	}
-	if err := s.ActivateTOTP(u.ID, []byte("x"), time.Now()); err == nil {
+	if err := s.ActivateTOTP(u.ID, fakeSealed("x"), time.Now()); err == nil {
 		t.Error("ActivateTOTP on closed DB: want error")
 	}
 	if err := s.DisableTOTP(u.ID); err == nil {
@@ -807,13 +804,14 @@ func loginAndVerify(t *testing.T, srv *httptest.Server, svc *Service, client *ht
 	_ = r1.Body.Close()
 
 	// We need the secret for code generation; pull it back out of the store.
-	// Test seam: the stub TOTPStore stores ciphertext; decrypt with the KEK.
+	// Test seam: the stub TOTPStore stores the sealed shape; the test vault
+	// can open it because it's the same vault that did the seal.
 	users := svc.Store.(*stubUserStore)
 	uid := users.users["alice-id"].ID
 	state, _ := svc.TOTPStore.GetTOTPState(uid)
-	rawSecret, err := Decrypt(svc.KEK, state.Secret)
+	rawSecret, err := OpenWith(svc.Vault, state.Secret)
 	if err != nil {
-		t.Fatalf("decrypt: %v", err)
+		t.Fatalf("open sealed secret: %v", err)
 	}
 	now := svc.Now().Add(60 * time.Second)
 	svc.Now = func() time.Time { return now }
