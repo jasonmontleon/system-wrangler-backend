@@ -25,6 +25,7 @@ type UserStore interface {
 	UpdatePassword(id, passwordHash string) error
 	ListUsers() ([]User, error)
 	SetDisabled(id string, disabled bool, now time.Time) (User, error)
+	Delete(id string) error
 }
 
 // TOTPState is the row-level shape returned by GetTOTPState — one round-trip
@@ -766,6 +767,36 @@ func (s *SQLiteAuthStore) ListUsers() ([]User, error) {
 		return nil, fmt.Errorf("auth: list users rows: %w", err)
 	}
 	return out, nil
+}
+
+// Delete removes a user row along with every dependent row (trusted
+// devices, recovery codes). Returns ErrUserNotFound when no user row
+// matches id; the dependent deletes are best-effort cleanups and never
+// produce a "not found" result on their own.
+func (s *SQLiteAuthStore) Delete(id string) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("auth: begin delete user: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	res, err := tx.Exec(`DELETE FROM users WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("auth: delete user: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("auth: rows affected: %w", err)
+	}
+	if n == 0 {
+		return ErrUserNotFound
+	}
+	if _, err := tx.Exec(`DELETE FROM trusted_devices WHERE user_id = ?`, id); err != nil {
+		return fmt.Errorf("auth: delete user devices: %w", err)
+	}
+	if _, err := tx.Exec(`DELETE FROM recovery_codes WHERE user_id = ?`, id); err != nil {
+		return fmt.Errorf("auth: delete user recovery: %w", err)
+	}
+	return tx.Commit()
 }
 
 // SetDisabled flips a user's disabled_at column. disabled=true stamps now,

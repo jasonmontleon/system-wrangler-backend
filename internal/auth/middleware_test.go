@@ -129,6 +129,19 @@ func (s *stubUserStore) ListUsers() ([]User, error) {
 	}
 	return out, nil
 }
+func (s *stubUserStore) Delete(id string) error {
+	if s.failOn == "Delete" {
+		return s.err
+	}
+	u, ok := s.users[id]
+	if !ok {
+		return ErrUserNotFound
+	}
+	delete(s.users, id)
+	delete(s.hashes, u.Username)
+	s.count--
+	return nil
+}
 func (s *stubUserStore) SetDisabled(id string, disabled bool, now time.Time) (User, error) {
 	if s.failOn == "SetDisabled" {
 		return User{}, s.err

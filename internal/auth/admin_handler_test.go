@@ -449,6 +449,146 @@ func TestAdminRegisterNilMiddleware(t *testing.T) {
 	_ = resp.Body.Close()
 }
 
+func TestAdminDeleteUser(t *testing.T) {
+	srv, _, store := newAdminTestServer(t)
+	seedUser(t, store, "alice")
+	bob := seedUser(t, store, "bob")
+	if _, err := store.SetDisabled(bob.ID, true, time.Now()); err != nil {
+		t.Fatalf("disable bob: %v", err)
+	}
+	client := loggedInClient(t, srv, "alice")
+
+	req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/api/admin/users/"+bob.ID, nil)
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusNoContent {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want 204, body=%s", resp.StatusCode, body)
+	}
+	if _, err := store.GetByID(bob.ID); err == nil {
+		t.Error("bob still present after delete")
+	}
+}
+
+func TestAdminDeleteUserEnabledRemoved(t *testing.T) {
+	srv, _, store := newAdminTestServer(t)
+	seedUser(t, store, "alice")
+	bob := seedUser(t, store, "bob")
+	seedUser(t, store, "carol")
+	client := loggedInClient(t, srv, "alice")
+
+	req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/api/admin/users/"+bob.ID, nil)
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusNoContent {
+		body, _ := io.ReadAll(resp.Body)
+		t.Errorf("status = %d, want 204, body=%s", resp.StatusCode, body)
+	}
+}
+
+func TestAdminCannotDeleteSelf(t *testing.T) {
+	srv, _, store := newAdminTestServer(t)
+	alice := seedUser(t, store, "alice")
+	seedUser(t, store, "bob")
+	client := loggedInClient(t, srv, "alice")
+
+	req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/api/admin/users/"+alice.ID, nil)
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", resp.StatusCode)
+	}
+}
+
+func TestAdminCannotDeleteLastEnabled(t *testing.T) {
+	srv, _, store := newAdminTestServer(t)
+	seedUser(t, store, "alice")
+	bob := seedUser(t, store, "bob")
+	client := loggedInClient(t, srv, "alice")
+	one := 1
+	store.forceCountEnabled = &one
+
+	req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/api/admin/users/"+bob.ID, nil)
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", resp.StatusCode)
+	}
+}
+
+func TestAdminDeleteUserNotFound(t *testing.T) {
+	srv, _, store := newAdminTestServer(t)
+	seedUser(t, store, "alice")
+	client := loggedInClient(t, srv, "alice")
+
+	req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/api/admin/users/ghost", nil)
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", resp.StatusCode)
+	}
+}
+
+func TestAdminDeleteUserStoreErrors(t *testing.T) {
+	srv, _, store := newAdminTestServer(t)
+	seedUser(t, store, "alice")
+	bob := seedUser(t, store, "bob")
+	client := loggedInClient(t, srv, "alice")
+
+	tests := []struct {
+		failOn string
+		want   int
+	}{
+		{"GetByID", http.StatusInternalServerError},
+		{"CountEnabled", http.StatusInternalServerError},
+		{"Delete", http.StatusInternalServerError},
+	}
+	for _, tt := range tests {
+		t.Run(tt.failOn, func(t *testing.T) {
+			store.failOn = tt.failOn
+			store.err = errAdminTest{}
+			req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/api/admin/users/"+bob.ID, nil)
+			resp, err := client.Do(req)
+			if err != nil {
+				t.Fatalf("delete: %v", err)
+			}
+			_ = resp.Body.Close()
+			if resp.StatusCode != tt.want {
+				t.Errorf("status = %d, want %d", resp.StatusCode, tt.want)
+			}
+		})
+	}
+	store.failOn = ""
+}
+
+func TestAdminDeleteUserRequiresAuth(t *testing.T) {
+	srv, _, _ := newAdminTestServer(t)
+	req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/api/admin/users/x", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("status = %d, want 401", resp.StatusCode)
+	}
+}
+
 type errAdminTest struct{}
 
 func (errAdminTest) Error() string { return "admin test error" }
