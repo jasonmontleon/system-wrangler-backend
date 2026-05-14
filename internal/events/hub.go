@@ -20,6 +20,7 @@ type Event struct {
 type Hub struct {
 	mu          sync.RWMutex
 	subscribers map[*Subscriber]struct{}
+	closed      bool
 	logger      *slog.Logger
 }
 
@@ -41,9 +42,16 @@ type Subscriber struct {
 
 // Subscribe registers and returns a new Subscriber with a buffered channel.
 // Callers MUST Unsubscribe before discarding the returned subscriber.
+// Once the hub is Closed, Subscribe returns a Subscriber whose channel is
+// already closed so handlers wake immediately and unwind.
 func (h *Hub) Subscribe() *Subscriber {
 	s := &Subscriber{Ch: make(chan Event, 16)}
 	h.mu.Lock()
+	if h.closed {
+		h.mu.Unlock()
+		close(s.Ch)
+		return s
+	}
 	h.subscribers[s] = struct{}{}
 	h.mu.Unlock()
 	return s
@@ -57,6 +65,23 @@ func (h *Hub) Unsubscribe(s *Subscriber) {
 		close(s.Ch)
 	}
 	h.mu.Unlock()
+}
+
+// Close closes every live subscriber channel and prevents new subscribers
+// from registering. SSE handlers blocked on sub.Ch observe the close and
+// return, letting http.Server.Shutdown finish promptly instead of waiting
+// out its deadline on long-lived streaming requests. Idempotent.
+func (h *Hub) Close() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.closed {
+		return
+	}
+	h.closed = true
+	for s := range h.subscribers {
+		close(s.Ch)
+		delete(h.subscribers, s)
+	}
 }
 
 // Broadcast sends e to every subscriber via a non-blocking send. A slow

@@ -162,10 +162,17 @@ func main() {
 
 	<-ctx.Done()
 	slog.Info("shutdown signal received")
+	// Close the SSE hub first so streaming handlers observe their channel
+	// close and return; otherwise srv.Shutdown waits out its deadline on
+	// the long-lived /api/events requests held by open dashboard tabs.
+	hub.Close()
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		slog.Error("shutdown error", "err", err)
+		if err := srv.Close(); err != nil {
+			slog.Error("force close error", "err", err)
+		}
 	}
 	<-probeDone
 }

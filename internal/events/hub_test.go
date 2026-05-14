@@ -77,6 +77,66 @@ func TestHubSlowSubscriberDoesNotBlockPublisher(t *testing.T) {
 	}
 }
 
+func TestHubCloseClosesAllSubscribers(t *testing.T) {
+	h := NewHub(quietLogger())
+	a := h.Subscribe()
+	b := h.Subscribe()
+
+	h.Close()
+
+	for _, sub := range []*Subscriber{a, b} {
+		select {
+		case _, ok := <-sub.Ch:
+			if ok {
+				t.Error("channel should be closed after Hub.Close")
+			}
+		case <-time.After(time.Second):
+			t.Error("timed out waiting for channel close")
+		}
+	}
+}
+
+func TestHubCloseIsIdempotent(t *testing.T) {
+	h := NewHub(quietLogger())
+	s := h.Subscribe()
+	h.Close()
+	// Second Close must not panic on the already-closed subscriber channel.
+	h.Close()
+	if _, ok := <-s.Ch; ok {
+		t.Error("channel should be closed after Hub.Close")
+	}
+}
+
+func TestHubSubscribeAfterCloseReturnsClosedChannel(t *testing.T) {
+	h := NewHub(quietLogger())
+	h.Close()
+
+	s := h.Subscribe()
+	select {
+	case _, ok := <-s.Ch:
+		if ok {
+			t.Error("post-Close Subscribe must return a closed channel")
+		}
+	case <-time.After(time.Second):
+		t.Error("timed out waiting for closed channel")
+	}
+}
+
+func TestHubUnsubscribeAfterCloseIsNoop(_ *testing.T) {
+	h := NewHub(quietLogger())
+	s := h.Subscribe()
+	h.Close()
+	// Unsubscribe must not double-close the channel.
+	h.Unsubscribe(s)
+}
+
+func TestHubBroadcastAfterCloseIsNoop(_ *testing.T) {
+	h := NewHub(quietLogger())
+	h.Close()
+	// No subscribers, no panic, no send on closed channel.
+	h.Broadcast(Event{Type: "x"})
+}
+
 func TestHubConcurrentSubscribeAndBroadcast(_ *testing.T) {
 	// Race-detector smoke test.
 	h := NewHub(quietLogger())

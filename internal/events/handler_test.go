@@ -71,6 +71,50 @@ func TestSSEHandlerStreamsEvents(t *testing.T) {
 	}
 }
 
+func TestSSEHandlerTerminatesOnHubClose(t *testing.T) {
+	hub := NewHub(quietLogger())
+	srv := httptest.NewServer(SSEHandler(hub))
+	defer srv.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL, nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("do: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	// Wait until the handler has subscribed before closing the hub, otherwise
+	// the close races the subscribe and the handler may never see it.
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		hub.mu.RLock()
+		n := len(hub.subscribers)
+		hub.mu.RUnlock()
+		if n == 1 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	hub.Close()
+
+	// The handler should return promptly once its subscriber channel closes,
+	// dropping the subscriber count back to zero.
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		hub.mu.RLock()
+		n := len(hub.subscribers)
+		hub.mu.RUnlock()
+		if n == 0 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Error("handler did not return after Hub.Close")
+}
+
 func TestSSEHandlerTerminatesOnContextCancel(t *testing.T) {
 	hub := NewHub(quietLogger())
 	srv := httptest.NewServer(SSEHandler(hub))
