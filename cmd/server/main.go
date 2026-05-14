@@ -7,6 +7,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"flag"
 	"fmt"
@@ -87,17 +88,17 @@ func main() {
 		slog.Error("migrate legacy totp", "err", err)
 		os.Exit(1)
 	}
-	if *rotateKeys {
-		if _, err := authStore.RotateKeys(vault); err != nil {
-			slog.Error("rotate keys", "err", err)
-			os.Exit(1)
-		}
-		return
-	}
 	auditStore, err := audit.NewSQLiteStore(db)
 	if err != nil {
 		slog.Error("init audit store", "err", err)
 		os.Exit(1)
+	}
+	if *rotateKeys {
+		if _, err := authStore.RotateKeys(vault, auditStore); err != nil {
+			slog.Error("rotate keys", "err", err)
+			os.Exit(1)
+		}
+		return
 	}
 	rbacStore, err := rbac.NewSQLiteStore(db)
 	if err != nil {
@@ -110,6 +111,7 @@ func main() {
 	authSvc.DeviceStore = authStore
 	authSvc.Vault = vault
 	authSvc.Audit = auditStore
+	authSvc.DB = db
 	authSvc.LoginThrottle = auth.NewThrottle(time.Minute, 10, time.Now)
 
 	hub := events.NewHub(slog.Default())
@@ -136,7 +138,7 @@ func main() {
 		Addr: addr,
 		Handler: withRequestMeta(
 			withLogging(
-				newMux(store, groupStore, authStore, authSvc, secret, hub, auditStore, rbacStore, onCreate, broadcastSystemsChanged),
+				newMux(db, store, groupStore, authStore, authSvc, secret, hub, auditStore, rbacStore, onCreate, broadcastSystemsChanged),
 			),
 		),
 		ReadHeaderTimeout: 5 * time.Second,
@@ -183,7 +185,7 @@ func main() {
 	<-probeDone
 }
 
-func newMux(store systems.Store, groupStore groups.Store, users auth.UserStore, authSvc *auth.Service, secret []byte, hub *events.Hub, auditStore *audit.Store, rbacStore rbac.Store, onSystemCreate, onSystemDelete func()) *http.ServeMux {
+func newMux(db *sql.DB, store systems.Store, groupStore groups.Store, users auth.UserStore, authSvc *auth.Service, secret []byte, hub *events.Hub, auditStore *audit.Store, rbacStore rbac.Store, onSystemCreate, onSystemDelete func()) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", handleHealth)
 	authSvc.Register(mux)
@@ -199,6 +201,23 @@ func newMux(store systems.Store, groupStore groups.Store, users auth.UserStore, 
 	authSvc.RegisterTOTP(mux, requireUser)
 	authSvc.RegisterAdmin(mux, requireUser)
 	sysHandler := systems.NewHandler(store)
+	sysHandler.DB = db
+	if auditStore != nil {
+		sysHandler.AuditEmit = func(ctx context.Context, tx *sql.Tx, action string, sys systems.System, detail map[string]any) error {
+			d := audit.NewDetail()
+			for k, v := range detail {
+				_ = d.SetSafe(k, v)
+			}
+			return auditStore.LogTx(ctx, tx, audit.Event{
+				Action:      action,
+				Outcome:     audit.Success,
+				TargetKind:  "system",
+				TargetID:    sys.ID,
+				TargetLabel: sys.Name,
+				Detail:      d,
+			})
+		}
+	}
 	sysHandler.OnCreate = onSystemCreate
 	sysHandler.OnDelete = onSystemDelete
 	sysHandler.VisibleSystem = func(ctx context.Context, s systems.System) bool {

@@ -4,6 +4,7 @@ package systems
 
 import (
 	"bytes"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"io"
@@ -301,10 +302,12 @@ func TestHandlerStoreErrors(t *testing.T) {
 
 type stubStore struct{ err error }
 
-func (s *stubStore) Create(SystemInput) (System, error) { return System{}, s.err }
-func (s *stubStore) Get(string) (System, error)         { return System{}, s.err }
-func (s *stubStore) List() ([]System, error)            { return nil, s.err }
-func (s *stubStore) Delete(string) error                { return s.err }
+func (s *stubStore) Create(SystemInput) (System, error)            { return System{}, s.err }
+func (s *stubStore) CreateTx(*sql.Tx, SystemInput) (System, error) { return System{}, s.err }
+func (s *stubStore) Get(string) (System, error)                    { return System{}, s.err }
+func (s *stubStore) List() ([]System, error)                       { return nil, s.err }
+func (s *stubStore) Delete(string) error                           { return s.err }
+func (s *stubStore) DeleteTx(*sql.Tx, string) error                { return s.err }
 func (s *stubStore) UpdateProbe(string, bool, time.Time) error {
 	return s.err
 }

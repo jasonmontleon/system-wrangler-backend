@@ -62,8 +62,13 @@ type Actor struct {
 }
 
 // Event is the input shape callers pass to LogTx / Log. The package fills
-// in id, occurred_at, actor_*, request_ip, request_id from ctx.
+// in id, occurred_at, actor_*, request_ip, request_id from ctx. ID, when
+// non-empty, overrides the store-generated UUID — set by callers that
+// need to know the row id up front (e.g. so a follow-up
+// `secret.rotate.complete` row can carry `detail.parent_id` pointing
+// back at the matching `secret.rotate.start`).
 type Event struct {
+	ID          string
 	Action      string
 	Outcome     Outcome
 	TargetKind  string

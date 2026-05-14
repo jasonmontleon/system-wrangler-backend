@@ -8,6 +8,7 @@ package auth
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -38,6 +39,12 @@ type Service struct {
 	// tests and stub callers run without it). Production wiring in
 	// cmd/server/main.go always supplies it.
 	Audit *audit.Store
+	// DB is the shared SQLite handle. When set alongside Audit, the
+	// password-change and TOTP handlers wrap the user-row mutation and
+	// the matching audit_log row in one transaction so the two cannot
+	// diverge on a crash. Tests with stub stores leave it nil and fall
+	// back to the non-transactional path.
+	DB *sql.DB
 	// LoginThrottle is the per-IP rate limiter applied to /login and
 	// /totp/verify. nil disables the per-IP layer entirely (the
 	// per-account lockout still runs).
@@ -646,12 +653,41 @@ func (s *Service) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		slog.Error("auth change password hash", "err", err)
 		return
 	}
-	if err := s.Store.UpdatePassword(u.ID, newHash); err != nil {
+	if err := s.changePasswordWithAudit(r.Context(), u, newHash); err != nil {
 		writeError(w, http.StatusInternalServerError, "password change failed")
 		slog.Error("auth change password update", "err", err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// changePasswordWithAudit applies the new hash and writes
+// `auth.password.change` in one transaction. The audit row is only
+// emitted when DB + Audit are both wired — tests using stub stores
+// still update the password but skip the audit row, matching the prior
+// behavior.
+func (s *Service) changePasswordWithAudit(ctx context.Context, u User, newHash string) error {
+	if s.DB == nil || s.Audit == nil {
+		return s.Store.UpdatePassword(u.ID, newHash)
+	}
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := s.Store.UpdatePasswordTx(tx, u.ID, newHash); err != nil {
+		return err
+	}
+	if err := s.Audit.LogTx(ctx, tx, audit.Event{
+		Action:      "auth.password.change",
+		Outcome:     audit.Success,
+		TargetKind:  "user",
+		TargetID:    u.ID,
+		TargetLabel: u.Username,
+	}); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *Service) userFromCookie(r *http.Request) (User, bool) {

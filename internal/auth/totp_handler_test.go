@@ -3,6 +3,7 @@
 package auth
 
 import (
+	"database/sql"
 	"encoding/base32"
 	"encoding/json"
 	"errors"
@@ -55,6 +56,10 @@ func (s *stubTOTPStore) ActivateTOTP(userID string, sealed Sealed, _ time.Time) 
 	return nil
 }
 
+func (s *stubTOTPStore) ActivateTOTPTx(_ *sql.Tx, userID string, sealed Sealed, t time.Time) error {
+	return s.ActivateTOTP(userID, sealed, t)
+}
+
 func (s *stubTOTPStore) DisableTOTP(userID string) error {
 	if s.failOn == "DisableTOTP" {
 		return s.err
@@ -66,6 +71,10 @@ func (s *stubTOTPStore) DisableTOTP(userID string) error {
 	st.Epoch++
 	s.state[userID] = st
 	return nil
+}
+
+func (s *stubTOTPStore) DisableTOTPTx(_ *sql.Tx, userID string) error {
+	return s.DisableTOTP(userID)
 }
 
 func (s *stubTOTPStore) GetTOTPState(userID string) (TOTPState, error) {
@@ -118,6 +127,10 @@ func (s *stubRecoveryStore) InsertRecoveryCodes(userID string, hashes []string) 
 	return nil
 }
 
+func (s *stubRecoveryStore) InsertRecoveryCodesTx(_ *sql.Tx, userID string, hashes []string) error {
+	return s.InsertRecoveryCodes(userID, hashes)
+}
+
 func (s *stubRecoveryStore) ConsumeRecoveryCode(userID, presented string, _ time.Time) error {
 	rows := s.codes[userID]
 	for i, r := range rows {
@@ -131,6 +144,10 @@ func (s *stubRecoveryStore) ConsumeRecoveryCode(userID, presented string, _ time
 		}
 	}
 	return ErrUnauthorized
+}
+
+func (s *stubRecoveryStore) ConsumeRecoveryCodeTx(_ *sql.Tx, userID, presented string, t time.Time) error {
+	return s.ConsumeRecoveryCode(userID, presented, t)
 }
 
 func (s *stubRecoveryStore) DeleteRecoveryCodes(userID string) error {

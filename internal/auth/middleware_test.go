@@ -3,6 +3,7 @@
 package auth
 
 import (
+	"database/sql"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -134,6 +135,9 @@ func (s *stubUserStore) UpdatePassword(id, hash string) error {
 	u.LockedUntil = nil
 	s.users[id] = u
 	return nil
+}
+func (s *stubUserStore) UpdatePasswordTx(_ *sql.Tx, id, hash string) error {
+	return s.UpdatePassword(id, hash)
 }
 func (s *stubUserStore) ListUsers() ([]User, error) {
 	if s.failOn == "ListUsers" {

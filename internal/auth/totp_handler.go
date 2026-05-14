@@ -3,12 +3,16 @@
 package auth
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
+
+	"system-wrangler-backend/internal/audit"
 )
 
 // RegisterTOTP wires the protected TOTP/device endpoints onto mux. Mirrors
@@ -135,17 +139,46 @@ func (s *Service) handleTOTPConfirm(w http.ResponseWriter, r *http.Request) {
 		}
 		hashes = append(hashes, h)
 	}
-	if err := s.TOTPStore.ActivateTOTP(u.ID, state.Pending, s.Now()); err != nil {
+	if err := s.activateTOTPWithAudit(r.Context(), u, state.Pending, hashes); err != nil {
 		writeError(w, http.StatusInternalServerError, "totp confirm failed")
 		slog.Error("totp confirm activate", "err", err, "user_id", u.ID)
 		return
 	}
-	if err := s.RecoveryStore.InsertRecoveryCodes(u.ID, hashes); err != nil {
-		writeError(w, http.StatusInternalServerError, "totp confirm failed")
-		slog.Error("totp confirm recovery insert", "err", err, "user_id", u.ID)
-		return
-	}
 	writeJSON(w, http.StatusOK, totpConfirmResponse{RecoveryCodes: codes})
+}
+
+// activateTOTPWithAudit promotes pending→active, writes recovery codes,
+// and emits `auth.totp.enroll` in one transaction. With DB or Audit
+// unwired (stub-store tests), the activation and recovery-code insert
+// fall back to the non-transactional path.
+func (s *Service) activateTOTPWithAudit(ctx context.Context, u User, sealed Sealed, recoveryHashes []string) error {
+	if s.DB == nil || s.Audit == nil {
+		if err := s.TOTPStore.ActivateTOTP(u.ID, sealed, s.Now()); err != nil {
+			return err
+		}
+		return s.RecoveryStore.InsertRecoveryCodes(u.ID, recoveryHashes)
+	}
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := s.TOTPStore.ActivateTOTPTx(tx, u.ID, sealed, s.Now()); err != nil {
+		return err
+	}
+	if err := s.RecoveryStore.InsertRecoveryCodesTx(tx, u.ID, recoveryHashes); err != nil {
+		return err
+	}
+	if err := s.Audit.LogTx(ctx, tx, audit.Event{
+		Action:      "auth.totp.enroll",
+		Outcome:     audit.Success,
+		TargetKind:  "user",
+		TargetID:    u.ID,
+		TargetLabel: u.Username,
+	}); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 type totpVerifyRequest struct {
@@ -211,7 +244,7 @@ func (s *Service) handleTOTPVerify(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "challenge invalid")
 		return
 	}
-	verified, viaRecovery := s.tryVerifyCode(u.ID, state, code)
+	verified, viaRecovery := s.tryVerifyCode(r.Context(), u, state, code)
 	if !verified {
 		// Don't clear the challenge cookie on a wrong code — let the user
 		// retry within the 5-min window. Failure to verify on a *valid*
@@ -265,13 +298,15 @@ func (s *Service) handleTOTPVerify(w http.ResponseWriter, r *http.Request) {
 
 // tryVerifyCode attempts TOTP first then recovery-code fallback. Returns
 // (verified, viaRecovery). On success the matching credential has already
-// been consumed (step bumped or row marked used).
-func (s *Service) tryVerifyCode(userID string, state TOTPState, code string) (bool, bool) {
+// been consumed (step bumped or row marked used). The recovery-code
+// branch goes through consumeRecoveryWithAudit so the row update and
+// the `auth.totp.recovery.use` audit row commit together.
+func (s *Service) tryVerifyCode(ctx context.Context, u User, state TOTPState, code string) (bool, bool) {
 	secret, err := OpenWith(s.Vault, state.Secret)
 	if err == nil {
 		step, err := VerifyTOTPCode(secret, code, s.Now(), state.LastStep)
 		if err == nil {
-			if err := s.TOTPStore.ConsumeStep(userID, step); err == nil {
+			if err := s.TOTPStore.ConsumeStep(u.ID, step); err == nil {
 				return true, false
 			}
 		}
@@ -280,10 +315,47 @@ func (s *Service) tryVerifyCode(userID string, state TOTPState, code string) (bo
 	if s.RecoveryStore == nil {
 		return false, false
 	}
-	if err := s.RecoveryStore.ConsumeRecoveryCode(userID, code, s.Now()); err == nil {
+	if err := s.consumeRecoveryWithAudit(ctx, u, code, s.Now()); err == nil {
 		return true, true
 	}
 	return false, false
+}
+
+// consumeRecoveryWithAudit marks the recovery code as used and emits
+// `auth.totp.recovery.use` in one transaction. Falls back to non-Tx
+// when DB / Audit are unwired.
+func (s *Service) consumeRecoveryWithAudit(ctx context.Context, u User, code string, now time.Time) error {
+	if s.DB == nil || s.Audit == nil {
+		return s.RecoveryStore.ConsumeRecoveryCode(u.ID, code, now)
+	}
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := s.RecoveryStore.ConsumeRecoveryCodeTx(tx, u.ID, code, now); err != nil {
+		return err
+	}
+	// Stamp the actor here: the auth middleware hasn't run for the
+	// pre-session /totp/verify endpoint, so the audit row would
+	// otherwise log as Unauthenticated. The user has just proved
+	// possession of a one-shot recovery code, which is enough to
+	// attribute the row to them.
+	ctx = audit.WithActor(ctx, audit.Actor{
+		Kind:  audit.ActorUser,
+		ID:    u.ID,
+		Label: u.Username,
+	})
+	if err := s.Audit.LogTx(ctx, tx, audit.Event{
+		Action:      "auth.totp.recovery.use",
+		Outcome:     audit.Success,
+		TargetKind:  "user",
+		TargetID:    u.ID,
+		TargetLabel: u.Username,
+	}); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // rememberDevice persists a trusted-device row and writes the cookie.
@@ -361,7 +433,7 @@ func (s *Service) handleTOTPDisable(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "invalid code")
 		return
 	}
-	if err := s.TOTPStore.DisableTOTP(u.ID); err != nil {
+	if err := s.disableTOTPWithAudit(r.Context(), u); err != nil {
 		writeError(w, http.StatusInternalServerError, "disable failed")
 		slog.Error("totp disable persist", "err", err, "user_id", u.ID)
 		return
@@ -370,6 +442,33 @@ func (s *Service) handleTOTPDisable(w http.ResponseWriter, r *http.Request) {
 	// browser doesn't carry a stale value.
 	s.clearTrustedDeviceCookie(w)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// disableTOTPWithAudit clears the TOTP secret and emits
+// `auth.totp.disable` in one transaction. Falls back to non-Tx when
+// DB / Audit are unwired.
+func (s *Service) disableTOTPWithAudit(ctx context.Context, u User) error {
+	if s.DB == nil || s.Audit == nil {
+		return s.TOTPStore.DisableTOTP(u.ID)
+	}
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := s.TOTPStore.DisableTOTPTx(tx, u.ID); err != nil {
+		return err
+	}
+	if err := s.Audit.LogTx(ctx, tx, audit.Event{
+		Action:      "auth.totp.disable",
+		Outcome:     audit.Success,
+		TargetKind:  "user",
+		TargetID:    u.ID,
+		TargetLabel: u.Username,
+	}); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *Service) handleListDevices(w http.ResponseWriter, r *http.Request) {

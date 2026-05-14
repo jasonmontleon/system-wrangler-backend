@@ -79,6 +79,27 @@ func addGroupIDColumn(db *sql.DB) error {
 
 // Create persists a new System after running SystemInput.Validate.
 func (s *SQLiteStore) Create(in SystemInput) (System, error) {
+	return s.createWith(s.db, in)
+}
+
+// CreateTx persists a new System inside the caller's tx so the audit
+// row that accompanies the change can commit alongside the row itself.
+// A nil tx falls back to the non-transactional path.
+func (s *SQLiteStore) CreateTx(tx *sql.Tx, in SystemInput) (System, error) {
+	if tx == nil {
+		return s.Create(in)
+	}
+	return s.createWith(tx, in)
+}
+
+// execer covers both *sql.DB and *sql.Tx so createWith / deleteWith serve
+// both call sites without duplication. Mirrors the same pattern used in
+// internal/audit/store.go.
+type execer interface {
+	Exec(q string, args ...any) (sql.Result, error)
+}
+
+func (s *SQLiteStore) createWith(e execer, in SystemInput) (System, error) {
 	if err := in.Validate(); err != nil {
 		return System{}, err
 	}
@@ -89,7 +110,7 @@ func (s *SQLiteStore) Create(in SystemInput) (System, error) {
 		CreatedAt: s.Now().UTC(),
 		Status:    StatusUnprobed,
 	}
-	_, err := s.db.Exec(
+	_, err := e.Exec(
 		`INSERT INTO hosts (id, name, hostname, created_at, status) VALUES (?, ?, ?, ?, ?)`,
 		h.ID, h.Name, h.Hostname, h.CreatedAt.UnixNano(), string(h.Status),
 	)
@@ -139,7 +160,20 @@ func (s *SQLiteStore) List() ([]System, error) {
 
 // Delete removes the System with the given ID, or returns ErrNotFound.
 func (s *SQLiteStore) Delete(id string) error {
-	res, err := s.db.Exec(`DELETE FROM hosts WHERE id = ?`, id)
+	return s.deleteWith(s.db, id)
+}
+
+// DeleteTx removes the System inside the caller's tx so the audit row can
+// commit alongside the row. nil tx falls through to Delete.
+func (s *SQLiteStore) DeleteTx(tx *sql.Tx, id string) error {
+	if tx == nil {
+		return s.Delete(id)
+	}
+	return s.deleteWith(tx, id)
+}
+
+func (s *SQLiteStore) deleteWith(e execer, id string) error {
+	res, err := e.Exec(`DELETE FROM hosts WHERE id = ?`, id)
 	if err != nil {
 		return fmt.Errorf("systems: delete: %w", err)
 	}

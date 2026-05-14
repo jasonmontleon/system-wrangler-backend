@@ -28,6 +28,31 @@ func newTestStore() *MemStore {
 	return s
 }
 
+// TestMemStoreCreateTxDeleteTxDelegate confirms the Tx variants on
+// MemStore behave like their non-Tx siblings (the tx argument is
+// ignored — MemStore has no real transactions). Together they pin the
+// Store interface so swapping in the SQLite store doesn't surprise
+// handlers that wire only Create/Delete.
+func TestMemStoreCreateTxDeleteTxDelegate(t *testing.T) {
+	s := newTestStore()
+	h, err := s.CreateTx(nil, SystemInput{Name: "x", Hostname: "y"})
+	if err != nil {
+		t.Fatalf("CreateTx: %v", err)
+	}
+	if _, err := s.Get(h.ID); err != nil {
+		t.Errorf("CreateTx did not persist: %v", err)
+	}
+	if err := s.DeleteTx(nil, h.ID); err != nil {
+		t.Errorf("DeleteTx: %v", err)
+	}
+	if _, err := s.Get(h.ID); !errors.Is(err, ErrNotFound) {
+		t.Errorf("DeleteTx did not remove: %v", err)
+	}
+	if err := s.DeleteTx(nil, "ghost"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("DeleteTx on ghost = %v, want ErrNotFound", err)
+	}
+}
+
 func TestMemStoreCreateAndGet(t *testing.T) {
 	s := newTestStore()
 	h, err := s.Create(SystemInput{Name: "  host1 ", Hostname: " 10.0.0.1 "})

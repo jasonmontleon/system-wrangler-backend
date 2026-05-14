@@ -106,9 +106,13 @@ func (s *Store) insert(ctx context.Context, e execer, ev Event) error {
 	if ev.Outcome == "" {
 		return errors.New("audit: Event.Outcome is required")
 	}
-	id, err := s.NewID()
-	if err != nil {
-		return fmt.Errorf("audit: new id: %w", err)
+	id := ev.ID
+	if id == "" {
+		generated, err := s.NewID()
+		if err != nil {
+			return fmt.Errorf("audit: new id: %w", err)
+		}
+		id = generated
 	}
 	actor := ActorFromContext(ctx)
 	if actor.Kind == "" {
@@ -122,7 +126,7 @@ func (s *Store) insert(ctx context.Context, e execer, ev Event) error {
 		}
 		detailJSON = sql.NullString{String: string(b), Valid: true}
 	}
-	_, err = e.ExecContext(ctx, `
+	if _, err := e.ExecContext(ctx, `
 INSERT INTO audit_log (
     id, occurred_at, actor_kind, actor_id, actor_label,
     action, target_kind, target_id, target_label,
@@ -134,8 +138,7 @@ INSERT INTO audit_log (
 		nullStr(ev.TargetKind), nullStr(ev.TargetID), nullStr(ev.TargetLabel),
 		string(ev.Outcome), detailJSON,
 		nullStr(RemoteAddrFromContext(ctx)), nullStr(RequestIDFromContext(ctx)),
-	)
-	if err != nil {
+	); err != nil {
 		return fmt.Errorf("audit: insert: %w", err)
 	}
 	return nil

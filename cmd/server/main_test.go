@@ -58,8 +58,9 @@ func newTestMux(t *testing.T) http.Handler {
 	}
 	svc := auth.NewService(authStore, secret, false)
 	svc.Audit = auditStore
+	svc.DB = db
 	hub := events.NewHub(nil)
-	return newMux(invStore, groupStore, authStore, svc, secret, hub, auditStore, rbacStore, nil, nil)
+	return newMux(db, invStore, groupStore, authStore, svc, secret, hub, auditStore, rbacStore, nil, nil)
 }
 
 func TestHandleHealth(t *testing.T) {

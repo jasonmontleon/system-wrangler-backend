@@ -3,6 +3,7 @@
 package systems
 
 import (
+	"database/sql"
 	"sort"
 	"strings"
 	"sync"
@@ -16,6 +17,15 @@ type Store interface {
 	Get(id string) (System, error)
 	List() ([]System, error)
 	Delete(id string) error
+	// CreateTx is the in-transaction sibling of Create. The handler uses
+	// it to land the new row in the same transaction as the audit_log
+	// row that records the operation, so the change and its audit row
+	// commit together or neither commits. tx may be nil — implementations
+	// that do not have a real transaction (MemStore) delegate to Create.
+	CreateTx(tx *sql.Tx, in SystemInput) (System, error)
+	// DeleteTx is the in-transaction sibling of Delete. Same contract as
+	// CreateTx.
+	DeleteTx(tx *sql.Tx, id string) error
 	// UpdateProbe records a probe outcome. when is the timestamp the probe
 	// completed; on success it also becomes the system's LastSeen.
 	UpdateProbe(id string, ok bool, when time.Time) error
@@ -124,6 +134,17 @@ func (s *MemStore) Delete(id string) error {
 	}
 	delete(s.systems, id)
 	return nil
+}
+
+// CreateTx delegates to Create. MemStore has no real transactions; the tx
+// argument is accepted for interface parity with SQLiteStore.
+func (s *MemStore) CreateTx(_ *sql.Tx, in SystemInput) (System, error) {
+	return s.Create(in)
+}
+
+// DeleteTx delegates to Delete for the same reason as CreateTx.
+func (s *MemStore) DeleteTx(_ *sql.Tx, id string) error {
+	return s.Delete(id)
 }
 
 // SetGroup assigns the system to a group, or clears the assignment when

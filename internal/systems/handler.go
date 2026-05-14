@@ -4,15 +4,34 @@ package systems
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
 )
 
+// AuditEmitter writes an audit row inside the caller's tx. The systems
+// handler invokes it after CreateTx / DeleteTx so the row change and the
+// audit row commit together. main.go wires it to audit.Store.LogTx with
+// the right action / target shape — this package never imports audit
+// directly (audit's own test files already import systems, so a direct
+// edge here would cycle the audit test build).
+type AuditEmitter func(ctx context.Context, tx *sql.Tx, action string, sys System, detail map[string]any) error
+
 // Handler bundles the HTTP endpoints for systems.
 type Handler struct {
 	Store Store
+	// DB is the shared SQLite handle the handler uses to wrap a
+	// state-changing request (create / delete) and its audit row in a
+	// single transaction. Optional: tests with MemStore leave it nil
+	// and the handler falls back to the non-transactional path.
+	DB *sql.DB
+	// AuditEmit, if non-nil, is invoked once per successful state-
+	// changing request inside the same tx that carried the change.
+	// Production wiring in cmd/server/main.go supplies it; MemStore
+	// tests omit it.
+	AuditEmit AuditEmitter
 	// OnCreate fires after a successful create. Optional; nil is skipped.
 	// Wired to (a) the probe Trigger so a freshly-added system is probed
 	// within seconds instead of after a full Interval, and (b) the event
@@ -90,7 +109,7 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 		return
 	}
-	sys, err := h.Store.Create(in)
+	sys, err := h.createWithAudit(r.Context(), in)
 	if err != nil {
 		if errors.Is(err, ErrInvalid) {
 			writeError(w, http.StatusBadRequest, err.Error())
@@ -105,6 +124,35 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Location", "/api/systems/"+sys.ID)
 	writeJSON(w, http.StatusCreated, sys)
+}
+
+// createWithAudit lands the new system row and an `system.create` audit row
+// in the same transaction when DB + AuditEmit are wired. Tests using
+// MemStore leave both nil; the fallback path just calls Store.Create
+// without an audit row.
+func (h *Handler) createWithAudit(ctx context.Context, in SystemInput) (System, error) {
+	if h.DB == nil || h.AuditEmit == nil {
+		return h.Store.Create(in)
+	}
+	tx, err := h.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return System{}, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	sys, err := h.Store.CreateTx(tx, in)
+	if err != nil {
+		return System{}, err
+	}
+	if err := h.AuditEmit(ctx, tx, "system.create", sys, map[string]any{
+		"name":     sys.Name,
+		"hostname": sys.Hostname,
+	}); err != nil {
+		return System{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return System{}, err
+	}
+	return sys, nil
 }
 
 func (h *Handler) get(w http.ResponseWriter, r *http.Request) {
@@ -156,7 +204,7 @@ func (h *Handler) delete(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "forbidden")
 		return
 	}
-	if err := h.Store.Delete(id); err != nil {
+	if err := h.deleteWithAudit(r.Context(), sys); err != nil {
 		if errors.Is(err, ErrNotFound) {
 			writeError(w, http.StatusNotFound, "system not found")
 			return
@@ -170,6 +218,33 @@ func (h *Handler) delete(w http.ResponseWriter, r *http.Request) {
 		h.OnDelete()
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// deleteWithAudit removes the system row and emits a `system.delete`
+// audit row in one transaction when DB + AuditEmit are wired. The
+// label/group_id are read from the already-resolved sys so the audit
+// row reads naturally even if the row is gone by the time the
+// audit-log reader looks.
+func (h *Handler) deleteWithAudit(ctx context.Context, sys System) error {
+	if h.DB == nil || h.AuditEmit == nil {
+		return h.Store.Delete(sys.ID)
+	}
+	tx, err := h.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := h.Store.DeleteTx(tx, sys.ID); err != nil {
+		return err
+	}
+	detail := map[string]any{}
+	if sys.GroupID != nil {
+		detail["group_id"] = *sys.GroupID
+	}
+	if err := h.AuditEmit(ctx, tx, "system.delete", sys, detail); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func writeJSON(w http.ResponseWriter, status int, body any) {

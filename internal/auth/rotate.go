@@ -3,10 +3,14 @@
 package auth
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
 
+	"github.com/google/uuid"
+
+	"system-wrangler-backend/internal/audit"
 	"system-wrangler-backend/internal/secrets"
 )
 
@@ -34,26 +38,56 @@ type RotateResult struct {
 // Intended to be called once at boot when both SW_MASTER_KEY_FILE and
 // SW_MASTER_KEY_FILE_PREVIOUS are set, from a one-shot `-rotate-keys`
 // invocation of the server binary. Not exposed as an HTTP endpoint in v1.
-func (s *SQLiteAuthStore) RotateKeys(v *secrets.Vault) (RotateResult, error) {
+//
+// When auditStore is non-nil, the call emits a `secret.rotate.start`
+// row before the work begins and a `secret.rotate.complete` row after,
+// linked via `detail.parent_id`. Both rows have actor_kind=system since
+// rotation is a one-shot operator-invoked job, not a user-facing
+// request. Failures still emit the complete row (with Outcome=failure)
+// so the audit trail records the attempt.
+func (s *SQLiteAuthStore) RotateKeys(v *secrets.Vault, auditStore *audit.Store) (RotateResult, error) {
 	if v == nil {
 		return RotateResult{}, errors.New("auth: rotate requires a vault")
 	}
-	secRot, secSkip, err := s.rotateColumn(v,
-		"totp_secret", "totp_secret_nonce", "totp_secret_version")
-	if err != nil {
-		return RotateResult{}, err
+	startID := uuid.NewString()
+	ctx := audit.WithActor(context.Background(), audit.Actor{
+		Kind:  audit.ActorSystem,
+		Label: "system",
+	})
+	if auditStore != nil {
+		startDetail := audit.NewDetail()
+		_ = startDetail.SetSafe("new_version", v.CurrentVersion())
+		if err := auditStore.Log(ctx, audit.Event{
+			ID:      startID,
+			Action:  "secret.rotate.start",
+			Outcome: audit.Success,
+			Detail:  startDetail,
+		}); err != nil {
+			slog.Error("rotate audit start", "err", err)
+		}
 	}
-	pendRot, pendSkip, err := s.rotateColumn(v,
-		"totp_pending_secret", "totp_pending_secret_nonce", "totp_pending_secret_version")
-	if err != nil {
-		return RotateResult{}, err
+	r, rotErr := s.runRotate(v)
+	if auditStore != nil {
+		completeDetail := audit.NewDetail()
+		_ = completeDetail.SetSafe("parent_id", startID)
+		_ = completeDetail.SetSafe("new_version", r.NewVersion)
+		_ = completeDetail.SetSafe("rows_rewrapped", r.SecretRotated+r.PendingRotated)
+		_ = completeDetail.SetSafe("rows_already_current", r.SecretAlready+r.PendingAlready)
+		outcome := audit.Success
+		if rotErr != nil {
+			outcome = audit.Failure
+			_ = completeDetail.SetSafe("error", rotErr.Error())
+		}
+		if err := auditStore.Log(ctx, audit.Event{
+			Action:  "secret.rotate.complete",
+			Outcome: outcome,
+			Detail:  completeDetail,
+		}); err != nil {
+			slog.Error("rotate audit complete", "err", err)
+		}
 	}
-	r := RotateResult{
-		NewVersion:     v.CurrentVersion(),
-		SecretRotated:  secRot,
-		PendingRotated: pendRot,
-		SecretAlready:  secSkip,
-		PendingAlready: pendSkip,
+	if rotErr != nil {
+		return RotateResult{}, rotErr
 	}
 	slog.Info("totp_keys_rotated",
 		"new_version", r.NewVersion,
@@ -63,6 +97,36 @@ func (s *SQLiteAuthStore) RotateKeys(v *secrets.Vault) (RotateResult, error) {
 		"pending_already_current", r.PendingAlready,
 	)
 	return r, nil
+}
+
+// runRotate is the per-column iteration extracted from RotateKeys so the
+// audit start / complete envelope can wrap a single call. Returns a
+// partially-populated RotateResult on error — the partial counts go on
+// the failure audit row so operators can see how far rotation got.
+func (s *SQLiteAuthStore) runRotate(v *secrets.Vault) (RotateResult, error) {
+	secRot, secSkip, err := s.rotateColumn(v,
+		"totp_secret", "totp_secret_nonce", "totp_secret_version")
+	if err != nil {
+		return RotateResult{NewVersion: v.CurrentVersion(), SecretRotated: secRot, SecretAlready: secSkip}, err
+	}
+	pendRot, pendSkip, err := s.rotateColumn(v,
+		"totp_pending_secret", "totp_pending_secret_nonce", "totp_pending_secret_version")
+	if err != nil {
+		return RotateResult{
+			NewVersion:     v.CurrentVersion(),
+			SecretRotated:  secRot,
+			SecretAlready:  secSkip,
+			PendingRotated: pendRot,
+			PendingAlready: pendSkip,
+		}, err
+	}
+	return RotateResult{
+		NewVersion:     v.CurrentVersion(),
+		SecretRotated:  secRot,
+		PendingRotated: pendRot,
+		SecretAlready:  secSkip,
+		PendingAlready: pendSkip,
+	}, nil
 }
 
 // rotateColumn rewrites a single column triple. Returns (rotated, skipped).

@@ -35,7 +35,7 @@ func TestRotateKeysNoWork(t *testing.T) {
 	// Fresh DB, no enrolled users → rotate succeeds with zero rotations.
 	s := newTestAuthStore(t)
 	v, _ := secrets.NewVaultFromKey(deterministicVaultKey(50))
-	r, err := s.RotateKeys(v)
+	r, err := s.RotateKeys(v, nil)
 	if err != nil {
 		t.Fatalf("RotateKeys: %v", err)
 	}
@@ -66,7 +66,7 @@ func TestRotateKeysReSealsActiveSecret(t *testing.T) {
 		t.Fatalf("load previous: %v", err)
 	}
 
-	r, err := s.RotateKeys(curVault)
+	r, err := s.RotateKeys(curVault, nil)
 	if err != nil {
 		t.Fatalf("RotateKeys: %v", err)
 	}
@@ -103,7 +103,7 @@ func TestRotateKeysReSealsPendingSecret(t *testing.T) {
 	if err := loadPrevKeyForTest(curVault, prev); err != nil {
 		t.Fatalf("load previous: %v", err)
 	}
-	r, err := s.RotateKeys(curVault)
+	r, err := s.RotateKeys(curVault, nil)
 	if err != nil {
 		t.Fatalf("RotateKeys: %v", err)
 	}
@@ -133,10 +133,10 @@ func TestRotateKeysIdempotent(t *testing.T) {
 	curVault, _ := secrets.NewVaultFromKey(cur)
 	_ = loadPrevKeyForTest(curVault, prev)
 
-	if _, err := s.RotateKeys(curVault); err != nil {
+	if _, err := s.RotateKeys(curVault, nil); err != nil {
 		t.Fatalf("first rotate: %v", err)
 	}
-	r2, err := s.RotateKeys(curVault)
+	r2, err := s.RotateKeys(curVault, nil)
 	if err != nil {
 		t.Fatalf("second rotate: %v", err)
 	}
@@ -161,7 +161,7 @@ func TestRotateKeysUnknownVersionIsHardError(t *testing.T) {
 
 	// Vault with only the new key — the old version is not loaded.
 	curVault, _ := secrets.NewVaultFromKey(deterministicVaultKey(91))
-	_, err := s.RotateKeys(curVault)
+	_, err := s.RotateKeys(curVault, nil)
 	if err == nil {
 		t.Fatal("want error for row whose version is unknown to the vault")
 	}
@@ -177,7 +177,7 @@ func TestRotateKeysUnknownVersionIsHardError(t *testing.T) {
 
 func TestRotateKeysNilVault(t *testing.T) {
 	s := newTestAuthStore(t)
-	if _, err := s.RotateKeys(nil); err == nil {
+	if _, err := s.RotateKeys(nil, nil); err == nil {
 		t.Error("RotateKeys with nil vault: want error")
 	}
 }
@@ -188,7 +188,7 @@ func TestRotateKeysClosedDB(t *testing.T) {
 		t.Fatalf("close: %v", err)
 	}
 	v, _ := secrets.NewVaultFromKey(deterministicVaultKey(95))
-	if _, err := s.RotateKeys(v); err == nil {
+	if _, err := s.RotateKeys(v, nil); err == nil {
 		t.Error("RotateKeys on closed DB: want error")
 	}
 }

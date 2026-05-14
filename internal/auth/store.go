@@ -23,6 +23,11 @@ type UserStore interface {
 	GetHashByID(id string) (string, error)
 	UpdateProfile(id, email, theme string) (User, error)
 	UpdatePassword(id, passwordHash string) error
+	// UpdatePasswordTx is the in-transaction sibling of UpdatePassword.
+	// The change-password handler uses it so the password update and the
+	// `auth.password.change` audit row commit together or neither
+	// commits. A nil tx falls back to UpdatePassword.
+	UpdatePasswordTx(tx *sql.Tx, id, passwordHash string) error
 	ListUsers() ([]User, error)
 	SetDisabled(id string, disabled bool, now time.Time) (User, error)
 	Delete(id string) error
@@ -45,20 +50,29 @@ type TOTPState struct {
 
 // TOTPStore is the slice of persistence the TOTP enrollment + verification
 // flow needs. Kept narrow so tests can supply a stub without implementing
-// the whole DeviceStore/RecoveryStore surface.
+// the whole DeviceStore/RecoveryStore surface. The *Tx variants commit
+// the row change inside the handler's audit transaction so the change
+// and its audit row land atomically.
 type TOTPStore interface {
 	SetPendingSecret(userID string, s Sealed) error
 	ActivateTOTP(userID string, s Sealed, confirmedAt time.Time) error
+	ActivateTOTPTx(tx *sql.Tx, userID string, s Sealed, confirmedAt time.Time) error
 	DisableTOTP(userID string) error
+	DisableTOTPTx(tx *sql.Tx, userID string) error
 	GetTOTPState(userID string) (TOTPState, error)
 	ConsumeStep(userID string, step int64) error
 }
 
 // RecoveryStore persists the bcrypt-hashed recovery codes and the one-shot
-// consumption marker that turns a code into a single-use credential.
+// consumption marker that turns a code into a single-use credential. The
+// Tx variants share the handler's transaction with the audit row, so a
+// recovery-code consumption and its `auth.totp.recovery.use` audit row
+// commit together.
 type RecoveryStore interface {
 	InsertRecoveryCodes(userID string, hashes []string) error
+	InsertRecoveryCodesTx(tx *sql.Tx, userID string, hashes []string) error
 	ConsumeRecoveryCode(userID, presented string, now time.Time) error
+	ConsumeRecoveryCodeTx(tx *sql.Tx, userID, presented string, now time.Time) error
 	DeleteRecoveryCodes(userID string) error
 }
 
@@ -320,7 +334,28 @@ func (s *SQLiteAuthStore) UpdateProfile(id, email, theme string) (User, error) {
 // credential — this is the "user is voluntarily setting their own
 // password" path. ErrUserNotFound is returned if no row matches id.
 func (s *SQLiteAuthStore) UpdatePassword(id, hash string) error {
-	res, err := s.db.Exec(
+	return s.updatePasswordWith(s.db, id, hash)
+}
+
+// UpdatePasswordTx is the in-transaction sibling: same SQL, but the row
+// change rides inside the caller's tx so the audit row that records the
+// change can commit alongside it. nil tx falls back to UpdatePassword.
+func (s *SQLiteAuthStore) UpdatePasswordTx(tx *sql.Tx, id, hash string) error {
+	if tx == nil {
+		return s.UpdatePassword(id, hash)
+	}
+	return s.updatePasswordWith(tx, id, hash)
+}
+
+// execer covers *sql.DB and *sql.Tx so the password-update SQL can be
+// shared between the transactional and non-transactional call sites
+// without duplicating the multi-column UPDATE.
+type execer interface {
+	Exec(q string, args ...any) (sql.Result, error)
+}
+
+func (s *SQLiteAuthStore) updatePasswordWith(e execer, id, hash string) error {
+	res, err := e.Exec(
 		`UPDATE users
 		   SET password_hash = ?,
 		       must_change_password = 0,
@@ -532,7 +567,24 @@ func (s *SQLiteAuthStore) ActivateTOTP(userID string, sealed Sealed, confirmedAt
 		return fmt.Errorf("auth: begin activate totp: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+	if err := s.activateTOTPIn(tx, userID, sealed, confirmedAt); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
 
+// ActivateTOTPTx is the in-transaction sibling: runs the same UPDATE
+// inside the caller's tx so the audit row for `auth.totp.enroll` and
+// the inserted recovery_codes rows commit alongside it. nil tx falls
+// back to ActivateTOTP.
+func (s *SQLiteAuthStore) ActivateTOTPTx(tx *sql.Tx, userID string, sealed Sealed, confirmedAt time.Time) error {
+	if tx == nil {
+		return s.ActivateTOTP(userID, sealed, confirmedAt)
+	}
+	return s.activateTOTPIn(tx, userID, sealed, confirmedAt)
+}
+
+func (s *SQLiteAuthStore) activateTOTPIn(tx *sql.Tx, userID string, sealed Sealed, confirmedAt time.Time) error {
 	res, err := tx.Exec(
 		`UPDATE users
 		   SET totp_secret = ?, totp_secret_nonce = ?, totp_secret_version = ?,
@@ -551,7 +603,7 @@ func (s *SQLiteAuthStore) ActivateTOTP(userID string, sealed Sealed, confirmedAt
 	if n == 0 {
 		return ErrUserNotFound
 	}
-	return tx.Commit()
+	return nil
 }
 
 // DisableTOTP undoes everything ActivateTOTP set up: bumps totp_epoch (so
@@ -565,7 +617,23 @@ func (s *SQLiteAuthStore) DisableTOTP(userID string) error {
 		return fmt.Errorf("auth: begin disable totp: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+	if err := s.disableTOTPIn(tx, userID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
 
+// DisableTOTPTx is the in-transaction sibling: clears the same columns
+// inside the caller's tx so the audit row for `auth.totp.disable`
+// commits with the change. nil tx falls back to DisableTOTP.
+func (s *SQLiteAuthStore) DisableTOTPTx(tx *sql.Tx, userID string) error {
+	if tx == nil {
+		return s.DisableTOTP(userID)
+	}
+	return s.disableTOTPIn(tx, userID)
+}
+
+func (s *SQLiteAuthStore) disableTOTPIn(tx *sql.Tx, userID string) error {
 	res, err := tx.Exec(
 		`UPDATE users
 		   SET totp_enabled = 0,
@@ -592,7 +660,7 @@ func (s *SQLiteAuthStore) DisableTOTP(userID string) error {
 	if _, err := tx.Exec(`DELETE FROM trusted_devices WHERE user_id = ?`, userID); err != nil {
 		return fmt.Errorf("auth: delete trusted devices: %w", err)
 	}
-	return tx.Commit()
+	return nil
 }
 
 // GetTOTPState returns every TOTP-related column for a single user in one
@@ -666,6 +734,23 @@ func (s *SQLiteAuthStore) InsertRecoveryCodes(userID string, hashes []string) er
 		return fmt.Errorf("auth: begin insert recovery: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+	if err := s.insertRecoveryCodesIn(tx, userID, hashes); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// InsertRecoveryCodesTx is the in-transaction sibling: shares the
+// handler's tx so the recovery rows land alongside ActivateTOTPTx and
+// its audit row. nil tx falls back to InsertRecoveryCodes.
+func (s *SQLiteAuthStore) InsertRecoveryCodesTx(tx *sql.Tx, userID string, hashes []string) error {
+	if tx == nil {
+		return s.InsertRecoveryCodes(userID, hashes)
+	}
+	return s.insertRecoveryCodesIn(tx, userID, hashes)
+}
+
+func (s *SQLiteAuthStore) insertRecoveryCodesIn(tx *sql.Tx, userID string, hashes []string) error {
 	if _, err := tx.Exec(`DELETE FROM recovery_codes WHERE user_id = ?`, userID); err != nil {
 		return fmt.Errorf("auth: clear recovery: %w", err)
 	}
@@ -677,7 +762,7 @@ func (s *SQLiteAuthStore) InsertRecoveryCodes(userID string, hashes []string) er
 			return fmt.Errorf("auth: insert recovery: %w", err)
 		}
 	}
-	return tx.Commit()
+	return nil
 }
 
 // ConsumeRecoveryCode iterates the user's unused codes, bcrypt-compares each
@@ -685,7 +770,33 @@ func (s *SQLiteAuthStore) InsertRecoveryCodes(userID string, hashes []string) er
 // atomic UPDATE. The atomic update is the linearisation point — even if two
 // requests race with the same code, only one will see RowsAffected==1.
 func (s *SQLiteAuthStore) ConsumeRecoveryCode(userID, presented string, now time.Time) error {
-	rows, err := s.db.Query(
+	return s.consumeRecoveryCodeWith(nil, userID, presented, now)
+}
+
+// ConsumeRecoveryCodeTx is the in-transaction sibling so the verify
+// path's audit row commits alongside the row update. nil tx falls back
+// to the non-transactional ConsumeRecoveryCode.
+func (s *SQLiteAuthStore) ConsumeRecoveryCodeTx(tx *sql.Tx, userID, presented string, now time.Time) error {
+	if tx == nil {
+		return s.ConsumeRecoveryCode(userID, presented, now)
+	}
+	return s.consumeRecoveryCodeWith(tx, userID, presented, now)
+}
+
+// recoveryRunner abstracts Query/Exec across *sql.DB and *sql.Tx so the
+// recovery-code consumption logic isn't duplicated. Defined locally
+// because the SELECT + UPDATE pair lives only in this method.
+type recoveryRunner interface {
+	Query(q string, args ...any) (*sql.Rows, error)
+	Exec(q string, args ...any) (sql.Result, error)
+}
+
+func (s *SQLiteAuthStore) consumeRecoveryCodeWith(tx *sql.Tx, userID, presented string, now time.Time) error {
+	var runner recoveryRunner = s.db
+	if tx != nil {
+		runner = tx
+	}
+	rows, err := runner.Query(
 		`SELECT code_hash FROM recovery_codes WHERE user_id = ? AND used_at IS NULL`,
 		userID,
 	)
@@ -712,7 +823,7 @@ func (s *SQLiteAuthStore) ConsumeRecoveryCode(userID, presented string, now time
 		if err := CompareRecoveryCode(h, presented); err != nil {
 			continue
 		}
-		res, err := s.db.Exec(
+		res, err := runner.Exec(
 			`UPDATE recovery_codes SET used_at = ? WHERE user_id = ? AND code_hash = ? AND used_at IS NULL`,
 			now.UnixNano(), userID, h,
 		)

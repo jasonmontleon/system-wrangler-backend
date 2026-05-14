@@ -44,6 +44,26 @@ func newTestSQLiteStore(t *testing.T) *SQLiteStore {
 	return s
 }
 
+// TestSQLiteCreateTxDeleteTxNilFallback exercises the nil-tx fallback
+// branch in CreateTx/DeleteTx so a caller that has no surrounding
+// transaction still lands the row through the same store handle.
+func TestSQLiteCreateTxDeleteTxNilFallback(t *testing.T) {
+	s := newTestSQLiteStore(t)
+	sys, err := s.CreateTx(nil, SystemInput{Name: "x", Hostname: "y"})
+	if err != nil {
+		t.Fatalf("CreateTx(nil): %v", err)
+	}
+	if _, err := s.Get(sys.ID); err != nil {
+		t.Errorf("CreateTx(nil) did not persist: %v", err)
+	}
+	if err := s.DeleteTx(nil, sys.ID); err != nil {
+		t.Errorf("DeleteTx(nil): %v", err)
+	}
+	if err := s.DeleteTx(nil, "ghost"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("DeleteTx(nil, ghost) = %v, want ErrNotFound", err)
+	}
+}
+
 func TestSQLiteOpenInvalidDSN(t *testing.T) {
 	// A path under a nonexistent directory cannot be created; SQLite returns
 	// an error during the first PRAGMA exec.
