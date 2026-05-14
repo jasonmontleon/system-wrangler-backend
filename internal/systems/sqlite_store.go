@@ -28,11 +28,17 @@ func NewSQLiteStore(db *sql.DB) (*SQLiteStore, error) {
 	if _, err := db.Exec(schema); err != nil {
 		return nil, fmt.Errorf("systems: schema: %w", err)
 	}
+	if err := addGroupIDColumn(db); err != nil {
+		return nil, fmt.Errorf("systems: migrate group_id: %w", err)
+	}
 	return &SQLiteStore{db: db, NewID: newUUID, Now: time.Now}, nil
 }
 
 // Unix nanoseconds for timestamps: trivial to sort, no parsing on read,
 // round-trips Go's time.Time without precision loss. NULL last_seen = never.
+// group_id is a nullable text column joined client-side against
+// /api/groups; this package deliberately does not import groups so the
+// dependency arrow only points the other way.
 const schema = `
 CREATE TABLE IF NOT EXISTS hosts (
     id          TEXT PRIMARY KEY,
@@ -40,11 +46,34 @@ CREATE TABLE IF NOT EXISTS hosts (
     hostname    TEXT NOT NULL,
     created_at  INTEGER NOT NULL,
     status      TEXT NOT NULL,
-    last_seen   INTEGER
+    last_seen   INTEGER,
+    group_id    TEXT
 ) STRICT;
 
 CREATE INDEX IF NOT EXISTS hosts_created_at ON hosts(created_at, id);
+CREATE INDEX IF NOT EXISTS hosts_group_id   ON hosts(group_id);
 `
+
+// addGroupIDColumn brings older databases (created before the group_id
+// column existed) up to schema. SQLite has no "ADD COLUMN IF NOT EXISTS",
+// so the pragma check is the portable way.
+func addGroupIDColumn(db *sql.DB) error {
+	row := db.QueryRow(`SELECT 1 FROM pragma_table_info('hosts') WHERE name = 'group_id'`)
+	var found int
+	switch err := row.Scan(&found); {
+	case err == nil:
+		return nil
+	case errors.Is(err, sql.ErrNoRows):
+		// fall through
+	default:
+		return err
+	}
+	if _, err := db.Exec(`ALTER TABLE hosts ADD COLUMN group_id TEXT`); err != nil {
+		return err
+	}
+	_, err := db.Exec(`CREATE INDEX IF NOT EXISTS hosts_group_id ON hosts(group_id)`)
+	return err
+}
 
 // Create persists a new System after running SystemInput.Validate.
 func (s *SQLiteStore) Create(in SystemInput) (System, error) {
@@ -71,7 +100,7 @@ func (s *SQLiteStore) Create(in SystemInput) (System, error) {
 // Get returns the System with the given ID, or ErrNotFound.
 func (s *SQLiteStore) Get(id string) (System, error) {
 	row := s.db.QueryRow(
-		`SELECT id, name, hostname, created_at, status, last_seen FROM hosts WHERE id = ?`,
+		`SELECT id, name, hostname, created_at, status, last_seen, group_id FROM hosts WHERE id = ?`,
 		id,
 	)
 	h, err := scanHost(row)
@@ -85,7 +114,7 @@ func (s *SQLiteStore) Get(id string) (System, error) {
 // MemStore so handler behavior is identical regardless of backend.
 func (s *SQLiteStore) List() ([]System, error) {
 	rows, err := s.db.Query(
-		`SELECT id, name, hostname, created_at, status, last_seen FROM hosts ORDER BY created_at, id`,
+		`SELECT id, name, hostname, created_at, status, last_seen, group_id FROM hosts ORDER BY created_at, id`,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("systems: list: %w", err)
@@ -114,6 +143,39 @@ func (s *SQLiteStore) Delete(id string) error {
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
 		return ErrNotFound
+	}
+	return nil
+}
+
+// SetGroup assigns a system to a group, or clears the assignment when
+// groupID is nil. Returns ErrNotFound if no row matches systemID.
+func (s *SQLiteStore) SetGroup(systemID string, groupID *string) error {
+	var (
+		res sql.Result
+		err error
+	)
+	if groupID == nil {
+		res, err = s.db.Exec(`UPDATE hosts SET group_id = NULL WHERE id = ?`, systemID)
+	} else {
+		res, err = s.db.Exec(`UPDATE hosts SET group_id = ? WHERE id = ?`, *groupID, systemID)
+	}
+	if err != nil {
+		return fmt.Errorf("systems: set group: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// ClearGroup nils out group_id on every system whose group_id matches
+// groupID. Called by the groups store on Delete so that removing a group
+// leaves member systems intact but ungrouped (cascade-set-null behavior
+// without relying on an SQLite FK).
+func (s *SQLiteStore) ClearGroup(groupID string) error {
+	_, err := s.db.Exec(`UPDATE hosts SET group_id = NULL WHERE group_id = ?`, groupID)
+	if err != nil {
+		return fmt.Errorf("systems: clear group: %w", err)
 	}
 	return nil
 }
@@ -156,9 +218,10 @@ func scanHost(r rowScanner) (System, error) {
 		h         System
 		createdNs int64
 		lastSeen  sql.NullInt64
+		groupID   sql.NullString
 		status    string
 	)
-	if err := r.Scan(&h.ID, &h.Name, &h.Hostname, &createdNs, &status, &lastSeen); err != nil {
+	if err := r.Scan(&h.ID, &h.Name, &h.Hostname, &createdNs, &status, &lastSeen, &groupID); err != nil {
 		return System{}, err
 	}
 	h.CreatedAt = time.Unix(0, createdNs).UTC()
@@ -166,6 +229,10 @@ func scanHost(r rowScanner) (System, error) {
 	if lastSeen.Valid {
 		t := time.Unix(0, lastSeen.Int64).UTC()
 		h.LastSeen = &t
+	}
+	if groupID.Valid {
+		v := groupID.String
+		h.GroupID = &v
 	}
 	return h, nil
 }

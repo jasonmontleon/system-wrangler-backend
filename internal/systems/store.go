@@ -19,6 +19,11 @@ type Store interface {
 	// UpdateProbe records a probe outcome. when is the timestamp the probe
 	// completed; on success it also becomes the system's LastSeen.
 	UpdateProbe(id string, ok bool, when time.Time) error
+	// SetGroup assigns a system to a group, or clears its group when
+	// groupID is nil. Returns ErrNotFound if the system does not exist.
+	// FK integrity (does the group exist?) is enforced by the groups
+	// table when present; SetGroup itself does not validate it.
+	SetGroup(systemID string, groupID *string) error
 }
 
 // MemStore is an in-memory Store. Safe for concurrent use. Data is lost on
@@ -119,4 +124,37 @@ func (s *MemStore) Delete(id string) error {
 	}
 	delete(s.systems, id)
 	return nil
+}
+
+// SetGroup assigns the system to a group, or clears the assignment when
+// groupID is nil.
+func (s *MemStore) SetGroup(systemID string, groupID *string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	h, found := s.systems[systemID]
+	if !found {
+		return ErrNotFound
+	}
+	if groupID == nil {
+		h.GroupID = nil
+	} else {
+		v := *groupID
+		h.GroupID = &v
+	}
+	s.systems[systemID] = h
+	return nil
+}
+
+// ClearGroup nils out the GroupID on every system whose current GroupID
+// matches groupID. Used by the groups store on Delete so MemStore-backed
+// tests see the same cascade behavior as SQLite.
+func (s *MemStore) ClearGroup(groupID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for id, h := range s.systems {
+		if h.GroupID != nil && *h.GroupID == groupID {
+			h.GroupID = nil
+			s.systems[id] = h
+		}
+	}
 }

@@ -153,6 +153,53 @@ func TestMemStoreUpdateProbeMissing(t *testing.T) {
 	}
 }
 
+func TestMemStoreSetGroupRoundTrip(t *testing.T) {
+	s := newTestStore()
+	h, _ := s.Create(SystemInput{Name: "h", Hostname: "1.1.1.1"})
+	gid := "g-1"
+	if err := s.SetGroup(h.ID, &gid); err != nil {
+		t.Fatalf("SetGroup assign: %v", err)
+	}
+	got, _ := s.Get(h.ID)
+	if got.GroupID == nil || *got.GroupID != gid {
+		t.Errorf("GroupID = %v, want %q", got.GroupID, gid)
+	}
+	if err := s.SetGroup(h.ID, nil); err != nil {
+		t.Fatalf("SetGroup clear: %v", err)
+	}
+	got, _ = s.Get(h.ID)
+	if got.GroupID != nil {
+		t.Errorf("after clear GroupID = %v, want nil", got.GroupID)
+	}
+}
+
+func TestMemStoreSetGroupMissing(t *testing.T) {
+	s := newTestStore()
+	gid := "g-1"
+	if err := s.SetGroup("nope", &gid); !errors.Is(err, ErrNotFound) {
+		t.Errorf("err = %v, want ErrNotFound", err)
+	}
+}
+
+func TestMemStoreClearGroup(t *testing.T) {
+	s := newTestStore()
+	a, _ := s.Create(SystemInput{Name: "a", Hostname: "1.1.1.1"})
+	b, _ := s.Create(SystemInput{Name: "b", Hostname: "1.1.1.2"})
+	gid := "g-1"
+	if err := s.SetGroup(a.ID, &gid); err != nil {
+		t.Fatalf("SetGroup a: %v", err)
+	}
+	if err := s.SetGroup(b.ID, &gid); err != nil {
+		t.Fatalf("SetGroup b: %v", err)
+	}
+	s.ClearGroup(gid)
+	gotA, _ := s.Get(a.ID)
+	gotB, _ := s.Get(b.ID)
+	if gotA.GroupID != nil || gotB.GroupID != nil {
+		t.Errorf("ClearGroup didn't clear: a=%v b=%v", gotA.GroupID, gotB.GroupID)
+	}
+}
+
 // TestMemStoreConcurrent exercises the RWMutex under -race; it does not
 // assert specific output beyond "no race / no panic / all writes visible".
 func TestMemStoreConcurrent(t *testing.T) {

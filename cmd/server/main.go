@@ -25,6 +25,7 @@ import (
 	"system-wrangler-backend/internal/auth"
 	"system-wrangler-backend/internal/database"
 	"system-wrangler-backend/internal/events"
+	"system-wrangler-backend/internal/groups"
 	"system-wrangler-backend/internal/secrets"
 	"system-wrangler-backend/internal/systems"
 	"system-wrangler-backend/web"
@@ -58,6 +59,11 @@ func main() {
 	store, err := systems.NewSQLiteStore(db)
 	if err != nil {
 		slog.Error("init systems store", "err", err)
+		os.Exit(1)
+	}
+	groupStore, err := groups.NewSQLiteStore(db)
+	if err != nil {
+		slog.Error("init groups store", "err", err)
 		os.Exit(1)
 	}
 	authStore, err := auth.NewSQLiteAuthStore(db)
@@ -124,7 +130,7 @@ func main() {
 		Addr: addr,
 		Handler: withRequestMeta(
 			withLogging(
-				newMux(store, authStore, authSvc, secret, hub, auditStore, onCreate, broadcastSystemsChanged),
+				newMux(store, groupStore, authStore, authSvc, secret, hub, auditStore, onCreate, broadcastSystemsChanged),
 			),
 		),
 		ReadHeaderTimeout: 5 * time.Second,
@@ -164,7 +170,7 @@ func main() {
 	<-probeDone
 }
 
-func newMux(store systems.Store, users auth.UserStore, authSvc *auth.Service, secret []byte, hub *events.Hub, auditStore *audit.Store, onSystemCreate, onSystemDelete func()) *http.ServeMux {
+func newMux(store systems.Store, groupStore groups.Store, users auth.UserStore, authSvc *auth.Service, secret []byte, hub *events.Hub, auditStore *audit.Store, onSystemCreate, onSystemDelete func()) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", handleHealth)
 	authSvc.Register(mux)
@@ -176,6 +182,10 @@ func newMux(store systems.Store, users auth.UserStore, authSvc *auth.Service, se
 	sysHandler.OnCreate = onSystemCreate
 	sysHandler.OnDelete = onSystemDelete
 	sysHandler.Register(mux, requireUser)
+	groupHandler := groups.NewHandler(groupStore, store)
+	groupHandler.OnChange = onSystemDelete
+	groupHandler.Audit = auditStore
+	groupHandler.Register(mux, requireUser)
 	if auditStore != nil {
 		audit.NewHandler(auditStore).Register(mux, requireUser)
 	}

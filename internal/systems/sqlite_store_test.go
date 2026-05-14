@@ -267,3 +267,68 @@ func TestSQLiteStoreConcurrent(t *testing.T) {
 		t.Errorf("len = %d, want %d", len(systems), n)
 	}
 }
+
+func TestSQLiteSetGroupRoundTrip(t *testing.T) {
+	s := newTestSQLiteStore(t)
+	h, _ := s.Create(SystemInput{Name: "h", Hostname: "1.1.1.1"})
+	gid := "group-x"
+	if err := s.SetGroup(h.ID, &gid); err != nil {
+		t.Fatalf("SetGroup assign: %v", err)
+	}
+	got, _ := s.Get(h.ID)
+	if got.GroupID == nil || *got.GroupID != gid {
+		t.Errorf("GroupID = %v, want %q", got.GroupID, gid)
+	}
+	if err := s.SetGroup(h.ID, nil); err != nil {
+		t.Fatalf("SetGroup clear: %v", err)
+	}
+	got, _ = s.Get(h.ID)
+	if got.GroupID != nil {
+		t.Errorf("after clear GroupID = %v, want nil", got.GroupID)
+	}
+}
+
+func TestSQLiteSetGroupMissing(t *testing.T) {
+	s := newTestSQLiteStore(t)
+	gid := "group-x"
+	if err := s.SetGroup("nope", &gid); !errors.Is(err, ErrNotFound) {
+		t.Errorf("set err = %v, want ErrNotFound", err)
+	}
+	if err := s.SetGroup("nope", nil); !errors.Is(err, ErrNotFound) {
+		t.Errorf("clear err = %v, want ErrNotFound", err)
+	}
+}
+
+func TestSQLiteClearGroup(t *testing.T) {
+	s := newTestSQLiteStore(t)
+	a, _ := s.Create(SystemInput{Name: "a", Hostname: "1.1.1.1"})
+	b, _ := s.Create(SystemInput{Name: "b", Hostname: "1.1.1.2"})
+	gid := "shared"
+	if err := s.SetGroup(a.ID, &gid); err != nil {
+		t.Fatalf("SetGroup a: %v", err)
+	}
+	if err := s.SetGroup(b.ID, &gid); err != nil {
+		t.Fatalf("SetGroup b: %v", err)
+	}
+	if err := s.ClearGroup(gid); err != nil {
+		t.Fatalf("ClearGroup: %v", err)
+	}
+	gotA, _ := s.Get(a.ID)
+	gotB, _ := s.Get(b.ID)
+	if gotA.GroupID != nil || gotB.GroupID != nil {
+		t.Errorf("ClearGroup didn't clear: a=%v b=%v", gotA.GroupID, gotB.GroupID)
+	}
+}
+
+func TestSQLiteAddGroupIDColumnIdempotent(t *testing.T) {
+	// Re-running NewSQLiteStore on the same DB must be a no-op — the
+	// idempotent ALTER path is what supports upgrades over existing data.
+	s := newTestSQLiteStore(t)
+	h, _ := s.Create(SystemInput{Name: "h", Hostname: "1.1.1.1"})
+	if _, err := NewSQLiteStore(s.db); err != nil {
+		t.Fatalf("second NewSQLiteStore: %v", err)
+	}
+	if _, err := s.Get(h.ID); err != nil {
+		t.Errorf("Get after second init: %v", err)
+	}
+}

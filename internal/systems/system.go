@@ -30,7 +30,10 @@ const (
 	StatusUnreachable Status = "unreachable"
 )
 
-// System is a managed host in the fleet.
+// System is a managed host in the fleet. GroupID is nil for systems that
+// are not yet assigned to a system group; resolving the group's name is
+// the frontend's job (it already fetches /api/groups) so that systems
+// doesn't depend on the groups package.
 type System struct {
 	ID        string     `json:"id"`
 	Name      string     `json:"name"`
@@ -38,6 +41,7 @@ type System struct {
 	CreatedAt time.Time  `json:"createdAt"`
 	Status    Status     `json:"status"`
 	LastSeen  *time.Time `json:"lastSeen,omitempty"`
+	GroupID   *string    `json:"groupId,omitempty"`
 }
 
 // SystemInput is the user-supplied subset of a System accepted on create.

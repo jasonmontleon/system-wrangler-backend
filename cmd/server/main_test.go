@@ -16,6 +16,7 @@ import (
 	"system-wrangler-backend/internal/auth"
 	"system-wrangler-backend/internal/database"
 	"system-wrangler-backend/internal/events"
+	"system-wrangler-backend/internal/groups"
 	"system-wrangler-backend/internal/systems"
 )
 
@@ -34,6 +35,10 @@ func newTestMux(t *testing.T) http.Handler {
 	if err != nil {
 		t.Fatalf("NewSQLiteStore: %v", err)
 	}
+	groupStore, err := groups.NewSQLiteStore(db)
+	if err != nil {
+		t.Fatalf("groups.NewSQLiteStore: %v", err)
+	}
 	authStore, err := auth.NewSQLiteAuthStore(db)
 	if err != nil {
 		t.Fatalf("NewSQLiteAuthStore: %v", err)
@@ -49,7 +54,7 @@ func newTestMux(t *testing.T) http.Handler {
 	svc := auth.NewService(authStore, secret, false)
 	svc.Audit = auditStore
 	hub := events.NewHub(nil)
-	return newMux(invStore, authStore, svc, secret, hub, auditStore, nil, nil)
+	return newMux(invStore, groupStore, authStore, svc, secret, hub, auditStore, nil, nil)
 }
 
 func TestHandleHealth(t *testing.T) {

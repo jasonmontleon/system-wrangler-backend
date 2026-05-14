@@ -308,3 +308,4 @@ func (s *stubStore) Delete(string) error                { return s.err }
 func (s *stubStore) UpdateProbe(string, bool, time.Time) error {
 	return s.err
 }
+func (s *stubStore) SetGroup(string, *string) error { return s.err }
