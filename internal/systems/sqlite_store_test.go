@@ -332,3 +332,51 @@ func TestSQLiteAddGroupIDColumnIdempotent(t *testing.T) {
 		t.Errorf("Get after second init: %v", err)
 	}
 }
+
+// TestSQLiteMigratesLegacySchema reproduces the upgrade path from a
+// database created before group_id existed. CREATE TABLE IF NOT EXISTS
+// will not retrofit the column; the migration must add it and only then
+// create the supporting index. This guards against a regression where
+// the index was created in the same Exec batch as the table and failed
+// on existing deployments.
+func TestSQLiteMigratesLegacySchema(t *testing.T) {
+	dsn := "file:" + filepath.Join(t.TempDir(), "legacy.db")
+	db, err := database.Open(dsn)
+	if err != nil {
+		t.Fatalf("database.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	// Plant the pre-group_id schema by hand.
+	if _, err := db.Exec(`
+		CREATE TABLE hosts (
+		    id          TEXT PRIMARY KEY,
+		    name        TEXT NOT NULL,
+		    hostname    TEXT NOT NULL,
+		    created_at  INTEGER NOT NULL,
+		    status      TEXT NOT NULL,
+		    last_seen   INTEGER
+		) STRICT;
+		CREATE INDEX hosts_created_at ON hosts(created_at, id);
+	`); err != nil {
+		t.Fatalf("seed legacy schema: %v", err)
+	}
+
+	store, err := NewSQLiteStore(db)
+	if err != nil {
+		t.Fatalf("NewSQLiteStore on legacy db: %v", err)
+	}
+	// A round-trip after migration must work and round-trip group_id.
+	h, err := store.Create(SystemInput{Name: "h", Hostname: "1.1.1.1"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	gid := "g-1"
+	if err := store.SetGroup(h.ID, &gid); err != nil {
+		t.Fatalf("SetGroup: %v", err)
+	}
+	got, _ := store.Get(h.ID)
+	if got.GroupID == nil || *got.GroupID != gid {
+		t.Errorf("GroupID = %v, want %q", got.GroupID, gid)
+	}
+}

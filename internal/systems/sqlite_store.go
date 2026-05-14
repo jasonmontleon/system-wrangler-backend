@@ -38,7 +38,9 @@ func NewSQLiteStore(db *sql.DB) (*SQLiteStore, error) {
 // round-trips Go's time.Time without precision loss. NULL last_seen = never.
 // group_id is a nullable text column joined client-side against
 // /api/groups; this package deliberately does not import groups so the
-// dependency arrow only points the other way.
+// dependency arrow only points the other way. The hosts_group_id index is
+// not in this schema because it would fail on databases predating the
+// group_id column — addGroupIDColumn creates it after the migration.
 const schema = `
 CREATE TABLE IF NOT EXISTS hosts (
     id          TEXT PRIMARY KEY,
@@ -51,24 +53,24 @@ CREATE TABLE IF NOT EXISTS hosts (
 ) STRICT;
 
 CREATE INDEX IF NOT EXISTS hosts_created_at ON hosts(created_at, id);
-CREATE INDEX IF NOT EXISTS hosts_group_id   ON hosts(group_id);
 `
 
 // addGroupIDColumn brings older databases (created before the group_id
-// column existed) up to schema. SQLite has no "ADD COLUMN IF NOT EXISTS",
-// so the pragma check is the portable way.
+// column existed) up to schema, then ensures the supporting index exists.
+// SQLite has no "ADD COLUMN IF NOT EXISTS", so the pragma check is the
+// portable way. The index step runs unconditionally because a fresh
+// install's CREATE TABLE already produced the column.
 func addGroupIDColumn(db *sql.DB) error {
 	row := db.QueryRow(`SELECT 1 FROM pragma_table_info('hosts') WHERE name = 'group_id'`)
 	var found int
 	switch err := row.Scan(&found); {
 	case err == nil:
-		return nil
+		// column already present — nothing to ALTER
 	case errors.Is(err, sql.ErrNoRows):
-		// fall through
+		if _, err := db.Exec(`ALTER TABLE hosts ADD COLUMN group_id TEXT`); err != nil {
+			return err
+		}
 	default:
-		return err
-	}
-	if _, err := db.Exec(`ALTER TABLE hosts ADD COLUMN group_id TEXT`); err != nil {
 		return err
 	}
 	_, err := db.Exec(`CREATE INDEX IF NOT EXISTS hosts_group_id ON hosts(group_id)`)
