@@ -17,6 +17,7 @@ import (
 	"system-wrangler-backend/internal/database"
 	"system-wrangler-backend/internal/events"
 	"system-wrangler-backend/internal/groups"
+	"system-wrangler-backend/internal/rbac"
 	"system-wrangler-backend/internal/systems"
 )
 
@@ -51,10 +52,14 @@ func newTestMux(t *testing.T) http.Handler {
 	if err != nil {
 		t.Fatalf("audit.NewSQLiteStore: %v", err)
 	}
+	rbacStore, err := rbac.NewSQLiteStore(db)
+	if err != nil {
+		t.Fatalf("rbac.NewSQLiteStore: %v", err)
+	}
 	svc := auth.NewService(authStore, secret, false)
 	svc.Audit = auditStore
 	hub := events.NewHub(nil)
-	return newMux(invStore, groupStore, authStore, svc, secret, hub, auditStore, nil, nil)
+	return newMux(invStore, groupStore, authStore, svc, secret, hub, auditStore, rbacStore, nil, nil)
 }
 
 func TestHandleHealth(t *testing.T) {

@@ -25,6 +25,21 @@ type Handler struct {
 	OnChange func()
 	// Audit, if non-nil, receives an audit row per state-changing request.
 	Audit *audit.Store
+	// VisibleGroup, if non-nil, filters GET /api/groups and gates
+	// GET /api/groups/{id}. Returning true means "the caller may see
+	// this group." Wired by main.go against rbac to avoid this
+	// package importing rbac.
+	VisibleGroup func(ctx context.Context, g Group) bool
+	// CanManage, if non-nil, gates POST /api/groups, PATCH
+	// /api/groups/{id}, and DELETE /api/groups/{id}. Group lifecycle
+	// is Global Admin only per research/rbac.md.
+	CanManage func(ctx context.Context) bool
+	// CanMoveSystem, if non-nil, gates PUT /api/systems/{id}/group.
+	// from is the system's current group_id (nil = ungrouped); to is
+	// the target group_id from the request body (nil = clear).
+	// Global Admin always; Group Admin only when both ends are
+	// groups they admin and neither is ungrouped.
+	CanMoveSystem func(ctx context.Context, from, to *string) bool
 }
 
 // NewHandler constructs a Handler bound to the given stores.
@@ -47,17 +62,33 @@ func (h *Handler) Register(mux *http.ServeMux, mw func(http.Handler) http.Handle
 	mux.Handle("PUT /api/systems/{id}/group", mw(http.HandlerFunc(h.setSystemGroup)))
 }
 
-func (h *Handler) list(w http.ResponseWriter, _ *http.Request) {
+func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 	gs, err := h.Store.List()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "list failed")
 		slog.Error("groups list", "err", err)
 		return
 	}
+	// Apply the per-row scope filter when wired. Tests without a filter
+	// see every row, matching the pre-RBAC behavior.
+	if h.VisibleGroup != nil {
+		ctx := r.Context()
+		filtered := gs[:0]
+		for _, g := range gs {
+			if h.VisibleGroup(ctx, g) {
+				filtered = append(filtered, g)
+			}
+		}
+		gs = filtered
+	}
 	writeJSON(w, http.StatusOK, gs)
 }
 
 func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
+	if h.CanManage != nil && !h.CanManage(r.Context()) {
+		writeError(w, http.StatusForbidden, "forbidden")
+		return
+	}
 	var in GroupInput
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
@@ -102,10 +133,20 @@ func (h *Handler) get(w http.ResponseWriter, r *http.Request) {
 		slog.Error("groups get", "err", err, "id", id) //nolint:gosec
 		return
 	}
+	// 404 (not 403) for groups the caller can't see — leaks no
+	// information about whether the group exists.
+	if h.VisibleGroup != nil && !h.VisibleGroup(r.Context(), g) {
+		writeError(w, http.StatusNotFound, "group not found")
+		return
+	}
 	writeJSON(w, http.StatusOK, g)
 }
 
 func (h *Handler) rename(w http.ResponseWriter, r *http.Request) {
+	if h.CanManage != nil && !h.CanManage(r.Context()) {
+		writeError(w, http.StatusForbidden, "forbidden")
+		return
+	}
 	id := r.PathValue("id")
 	var in GroupInput
 	dec := json.NewDecoder(r.Body)
@@ -141,6 +182,10 @@ func (h *Handler) rename(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) delete(w http.ResponseWriter, r *http.Request) {
+	if h.CanManage != nil && !h.CanManage(r.Context()) {
+		writeError(w, http.StatusForbidden, "forbidden")
+		return
+	}
 	id := r.PathValue("id")
 	// Look up the label before deleting so the audit row reads naturally.
 	g, getErr := h.Store.Get(id)
@@ -179,6 +224,24 @@ func (h *Handler) setSystemGroup(w http.ResponseWriter, r *http.Request) {
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+	// Resolve the system's current group_id so the gate can compare
+	// against the target group_id. The CanMoveSystem rule requires
+	// "both ends admin'd" for Group Admin callers, which is impossible
+	// to evaluate without knowing what we're moving from.
+	sys, err := h.Systems.Get(systemID)
+	if err != nil {
+		if errors.Is(err, systems.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "system not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "system lookup failed")
+		slog.Error("groups setSystemGroup system lookup", "err", err)
+		return
+	}
+	if h.CanMoveSystem != nil && !h.CanMoveSystem(r.Context(), sys.GroupID, body.GroupID) {
+		writeError(w, http.StatusForbidden, "forbidden")
 		return
 	}
 	if body.GroupID != nil {

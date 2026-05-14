@@ -172,10 +172,74 @@ type Query struct {
 	Limit       int
 	AfterMillis int64 // 0 = no cursor; paired with AfterID
 	AfterID     string
+	// Scope restricts results to rows visible to a group-only caller.
+	// Nil means "no scope filter" (global-role callers). A non-nil
+	// filter with an empty GroupIDs slice is the explicit "user with
+	// no role assignments" state and matches zero rows.
+	Scope *ScopeFilter
+}
+
+// ScopeFilter restricts ListQuery to rows whose target resolves to a
+// group the caller can see. Per research/rbac.md, two row shapes
+// match:
+//
+//   - target_kind = 'system' AND the system's current group_id is in
+//     GroupIDs. The join against hosts means rows for deleted systems
+//     naturally fall out (only global roles see those).
+//   - target_kind = 'system_group' AND target_id is in GroupIDs.
+//
+// All other rows (target_kind = 'user', cross-scope actions, etc.)
+// are hidden from group-only callers.
+type ScopeFilter struct {
+	GroupIDs []string
 }
 
 // ErrNotFound is returned by Get when no row matches the id.
 var ErrNotFound = errors.New("audit: record not found")
+
+// IsVisibleTo reports whether rec is visible to a group-only caller
+// whose scope is sf. Mirrors the predicate enforced by ListQuery so
+// the single-record Get endpoint can gate consistently: a row a
+// group-only caller can't see via /api/admin/audit must also be
+// hidden via /api/admin/audit/{id}.
+//
+// Rules:
+//   - target_kind = 'system' is visible iff the system's current
+//     group_id is in sf.GroupIDs. Deleted systems are not visible.
+//   - target_kind = 'system_group' is visible iff target_id is in
+//     sf.GroupIDs.
+//   - any other shape is hidden (cross-scope rows, user-targets, etc.)
+func (s *Store) IsVisibleTo(rec Record, sf ScopeFilter) (bool, error) {
+	if rec.TargetKind == "system_group" {
+		for _, gid := range sf.GroupIDs {
+			if rec.TargetID == gid {
+				return true, nil
+			}
+		}
+		return false, nil
+	}
+	if rec.TargetKind != "system" || rec.TargetID == "" || len(sf.GroupIDs) == 0 {
+		return false, nil
+	}
+	placeholders := strings.Repeat("?,", len(sf.GroupIDs))
+	placeholders = placeholders[:len(placeholders)-1]
+	// sf.GroupIDs flows through args, never SQL — gosec G201 false
+	// positive on the assembled placeholder list.
+	q := "SELECT 1 FROM hosts WHERE id = ? AND group_id IN (" + placeholders + ")" //nolint:gosec
+	args := make([]any, 0, len(sf.GroupIDs)+1)
+	args = append(args, rec.TargetID)
+	for _, id := range sf.GroupIDs {
+		args = append(args, id)
+	}
+	var x int
+	switch err := s.db.QueryRow(q, args...).Scan(&x); {
+	case errors.Is(err, sql.ErrNoRows):
+		return false, nil
+	case err != nil:
+		return false, fmt.Errorf("audit: visibility check: %w", err)
+	}
+	return true, nil
+}
 
 // Get returns one record by id, or ErrNotFound.
 func (s *Store) Get(id string) (Record, error) {
@@ -295,10 +359,40 @@ func buildWhere(q Query) (string, []any) {
 		clauses = append(clauses, "(occurred_at < ? OR (occurred_at = ? AND id < ?))")
 		args = append(args, q.AfterMillis, q.AfterMillis, q.AfterID)
 	}
+	if q.Scope != nil {
+		clause, extra := scopeClause(q.Scope.GroupIDs)
+		clauses = append(clauses, clause)
+		args = append(args, extra...)
+	}
 	if len(clauses) == 0 {
 		return "", args
 	}
 	return "WHERE " + strings.Join(clauses, " AND "), args
+}
+
+// scopeClause builds the WHERE fragment that restricts rows to those a
+// group-only caller can see. An empty groupIDs slice produces a
+// constant-false clause ("1 = 0") so the user with no role assignments
+// sees no rows. With placeholders embedded as a fixed-shape repeated
+// IN list, the caller-supplied groupIDs flow only through args, not
+// SQL strings — gosec G201 is satisfied.
+func scopeClause(groupIDs []string) (string, []any) {
+	if len(groupIDs) == 0 {
+		return "1 = 0", nil
+	}
+	placeholders := strings.Repeat("?,", len(groupIDs))
+	placeholders = placeholders[:len(placeholders)-1]
+	clause := "((target_kind = 'system' AND target_id IN (" +
+		"SELECT id FROM hosts WHERE group_id IN (" + placeholders + "))) OR " +
+		"(target_kind = 'system_group' AND target_id IN (" + placeholders + ")))"
+	args := make([]any, 0, len(groupIDs)*2)
+	for _, id := range groupIDs {
+		args = append(args, id)
+	}
+	for _, id := range groupIDs {
+		args = append(args, id)
+	}
+	return clause, args
 }
 
 type rowScanner interface {

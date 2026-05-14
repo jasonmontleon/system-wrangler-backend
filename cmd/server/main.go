@@ -26,6 +26,7 @@ import (
 	"system-wrangler-backend/internal/database"
 	"system-wrangler-backend/internal/events"
 	"system-wrangler-backend/internal/groups"
+	"system-wrangler-backend/internal/rbac"
 	"system-wrangler-backend/internal/secrets"
 	"system-wrangler-backend/internal/systems"
 	"system-wrangler-backend/web"
@@ -98,6 +99,11 @@ func main() {
 		slog.Error("init audit store", "err", err)
 		os.Exit(1)
 	}
+	rbacStore, err := rbac.NewSQLiteStore(db)
+	if err != nil {
+		slog.Error("init rbac store", "err", err)
+		os.Exit(1)
+	}
 	authSvc := auth.NewService(authStore, secret, useTLS)
 	authSvc.TOTPStore = authStore
 	authSvc.RecoveryStore = authStore
@@ -130,7 +136,7 @@ func main() {
 		Addr: addr,
 		Handler: withRequestMeta(
 			withLogging(
-				newMux(store, groupStore, authStore, authSvc, secret, hub, auditStore, onCreate, broadcastSystemsChanged),
+				newMux(store, groupStore, authStore, authSvc, secret, hub, auditStore, rbacStore, onCreate, broadcastSystemsChanged),
 			),
 		),
 		ReadHeaderTimeout: 5 * time.Second,
@@ -177,25 +183,73 @@ func main() {
 	<-probeDone
 }
 
-func newMux(store systems.Store, groupStore groups.Store, users auth.UserStore, authSvc *auth.Service, secret []byte, hub *events.Hub, auditStore *audit.Store, onSystemCreate, onSystemDelete func()) *http.ServeMux {
+func newMux(store systems.Store, groupStore groups.Store, users auth.UserStore, authSvc *auth.Service, secret []byte, hub *events.Hub, auditStore *audit.Store, rbacStore rbac.Store, onSystemCreate, onSystemDelete func()) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", handleHealth)
 	authSvc.Register(mux)
-	requireUser := auth.RequireUser(secret, users, time.Now)
+	requireUserOnly := auth.RequireUser(secret, users, time.Now)
+	withScope := rbac.Middleware(rbacStore)
+	// requireUser chains RequireUser → Middleware(rbac) so every
+	// authenticated handler downstream can read both the User and the
+	// Scope off the request context.
+	requireUser := func(next http.Handler) http.Handler {
+		return requireUserOnly(withScope(next))
+	}
 	authSvc.RegisterProtected(mux, requireUser)
 	authSvc.RegisterTOTP(mux, requireUser)
 	authSvc.RegisterAdmin(mux, requireUser)
 	sysHandler := systems.NewHandler(store)
 	sysHandler.OnCreate = onSystemCreate
 	sysHandler.OnDelete = onSystemDelete
+	sysHandler.VisibleSystem = func(ctx context.Context, s systems.System) bool {
+		scope, ok := rbac.ScopeFromContext(ctx)
+		if !ok {
+			return true
+		}
+		return scope.CanReadSystem(s.GroupID)
+	}
+	sysHandler.CanCreate = func(ctx context.Context) bool {
+		scope, ok := rbac.ScopeFromContext(ctx)
+		return ok && scope.CanCreateSystem()
+	}
+	sysHandler.CanDelete = func(ctx context.Context, s systems.System) bool {
+		scope, ok := rbac.ScopeFromContext(ctx)
+		return ok && scope.CanDeleteSystem(s.GroupID)
+	}
 	sysHandler.Register(mux, requireUser)
 	groupHandler := groups.NewHandler(groupStore, store)
 	groupHandler.OnChange = onSystemDelete
 	groupHandler.Audit = auditStore
+	groupHandler.VisibleGroup = func(ctx context.Context, g groups.Group) bool {
+		scope, ok := rbac.ScopeFromContext(ctx)
+		if !ok {
+			return true
+		}
+		return scope.CanReadGroup(g.ID)
+	}
+	groupHandler.CanManage = func(ctx context.Context) bool {
+		scope, ok := rbac.ScopeFromContext(ctx)
+		return ok && scope.CanManageGroups()
+	}
+	groupHandler.CanMoveSystem = func(ctx context.Context, from, to *string) bool {
+		scope, ok := rbac.ScopeFromContext(ctx)
+		return ok && scope.CanMoveSystem(from, to)
+	}
 	groupHandler.Register(mux, requireUser)
 	if auditStore != nil {
-		audit.NewHandler(auditStore).Register(mux, requireUser)
+		ah := audit.NewHandler(auditStore)
+		ah.ScopeFilterFor = func(r *http.Request) *audit.ScopeFilter {
+			s, ok := rbac.ScopeFromContext(r.Context())
+			if !ok || s.IsGlobalAuditor() {
+				return nil
+			}
+			return &audit.ScopeFilter{GroupIDs: s.VisibleGroupIDs()}
+		}
+		ah.Register(mux, requireUser)
 	}
+	rbacHandler := rbac.NewHandler(rbacStore, users, groupStore)
+	rbacHandler.Audit = auditStore
+	rbacHandler.Register(mux, requireUser)
 	if hub != nil {
 		mux.Handle("GET /api/events", requireUser(events.SSEHandler(hub)))
 	}

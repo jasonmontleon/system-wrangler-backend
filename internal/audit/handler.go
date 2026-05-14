@@ -16,6 +16,11 @@ import (
 // edit audit rows.
 type Handler struct {
 	Store *Store
+	// ScopeFilterFor, if non-nil, is called per-request to derive a
+	// ScopeFilter for ListQuery. Returning nil applies no restriction
+	// (the global-role case). Wiring lives in main.go so the audit
+	// package doesn't import rbac (rbac already imports audit).
+	ScopeFilterFor func(r *http.Request) *ScopeFilter
 }
 
 // NewHandler binds a Handler to s.
@@ -94,6 +99,9 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "after_id and after_ms must be set together")
 		return
 	}
+	if h.ScopeFilterFor != nil {
+		q.Scope = h.ScopeFilterFor(r)
+	}
 	recs, hasMore, err := h.Store.ListQuery(q)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "list failed")
@@ -124,6 +132,23 @@ func (h *Handler) get(w http.ResponseWriter, r *http.Request) {
 		// gosec G706 is a false positive here.
 		slog.Error("audit get", "err", err, "id", id) //nolint:gosec
 		return
+	}
+	// 404 (not 403) for rows the caller can't see, matching the list-
+	// endpoint's omission so /api/admin/audit/{id} cannot leak the
+	// existence of a row that wouldn't appear in /api/admin/audit.
+	if h.ScopeFilterFor != nil {
+		if sf := h.ScopeFilterFor(r); sf != nil {
+			visible, err := h.Store.IsVisibleTo(rec, *sf)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "visibility check failed")
+				slog.Error("audit visibility", "err", err)
+				return
+			}
+			if !visible {
+				writeError(w, http.StatusNotFound, "audit record not found")
+				return
+			}
+		}
 	}
 	writeJSON(w, http.StatusOK, rec)
 }
