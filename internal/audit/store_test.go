@@ -262,6 +262,88 @@ func TestListQuery_Filters(t *testing.T) {
 	}
 }
 
+func TestListQuery_LabelAndRequestIDFilters(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	// Three rows: actor labels alice / bob / alicia; target labels db-1 /
+	// db-2 / web-1; one of them carries a request id used by the search.
+	aliceCtx := WithActor(ctx, Actor{Kind: ActorUser, ID: "u-alice", Label: "alice"})
+	bobCtx := WithActor(ctx, Actor{Kind: ActorUser, ID: "u-bob", Label: "bob"})
+	aliciaCtx := WithActor(ctx, Actor{Kind: ActorUser, ID: "u-alicia", Label: "alicia"})
+	aliciaCtx = WithRequestID(aliciaCtx, "req-XYZ")
+
+	if err := s.Log(aliceCtx, Event{
+		Action: "system.create", Outcome: Success,
+		TargetKind: "system", TargetID: "sys-1", TargetLabel: "db-1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Log(bobCtx, Event{
+		Action: "system.delete", Outcome: Success,
+		TargetKind: "system", TargetID: "sys-2", TargetLabel: "db-2",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Log(aliciaCtx, Event{
+		Action: "system.create", Outcome: Success,
+		TargetKind: "system", TargetID: "sys-3", TargetLabel: "web-1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name      string
+		q         Query
+		wantCount int
+		wantFirst string // actor label of the newest matching row
+	}{
+		{"actor_label substring matches alice prefix", Query{ActorLabel: "alic"}, 2, "alicia"},
+		{"actor_label is case-insensitive", Query{ActorLabel: "ALICE"}, 1, "alice"},
+		{"target_label substring matches db-*", Query{TargetLabel: "db-"}, 2, "bob"},
+		{"target_label exact case-insensitive", Query{TargetLabel: "WEB-1"}, 1, "alicia"},
+		{"request_id exact", Query{RequestID: "req-XYZ"}, 1, "alicia"},
+		{"request_id miss returns empty", Query{RequestID: "no-such"}, 0, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rs, _, err := s.ListQuery(tt.q)
+			if err != nil {
+				t.Fatalf("ListQuery: %v", err)
+			}
+			if len(rs) != tt.wantCount {
+				t.Fatalf("rows = %d, want %d (%+v)", len(rs), tt.wantCount, rs)
+			}
+			if tt.wantCount > 0 && rs[0].ActorLabel != tt.wantFirst {
+				t.Errorf("rs[0].ActorLabel = %q, want %q", rs[0].ActorLabel, tt.wantFirst)
+			}
+		})
+	}
+}
+
+func TestListQuery_LabelFilterEscapesWildcards(t *testing.T) {
+	// A user-supplied % or _ must not be treated as a SQL wildcard.
+	s := newTestStore(t)
+	ctx := context.Background()
+	literal := WithActor(ctx, Actor{Kind: ActorUser, ID: "u1", Label: "a%b"})
+	plain := WithActor(ctx, Actor{Kind: ActorUser, ID: "u2", Label: "aZZb"})
+	if err := s.Log(literal, Event{Action: "x", Outcome: Success}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Log(plain, Event{Action: "x", Outcome: Success}); err != nil {
+		t.Fatal(err)
+	}
+	// Searching for a literal "%" should match only the row whose label
+	// actually contains a percent sign, not every row.
+	rs, _, err := s.ListQuery(Query{ActorLabel: "%"})
+	if err != nil {
+		t.Fatalf("ListQuery: %v", err)
+	}
+	if len(rs) != 1 || rs[0].ActorLabel != "a%b" {
+		t.Errorf("got %+v, want one row with label a%%b", rs)
+	}
+}
+
 func TestListQuery_TimeWindow(t *testing.T) {
 	s := newTestStore(t)
 	// Custom Now: three rows one minute apart.

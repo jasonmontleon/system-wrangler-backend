@@ -104,6 +104,55 @@ func TestHandlerList_FiltersAndPagination(t *testing.T) {
 	}
 }
 
+func TestHandlerList_LabelAndRequestIDQueryParams(t *testing.T) {
+	_, s, mux := newTestHandler(t)
+	ctx := context.Background()
+
+	alice := WithActor(ctx, Actor{Kind: ActorUser, ID: "u1", Label: "alice"})
+	alice = WithRequestID(alice, "req-abc")
+	bob := WithActor(ctx, Actor{Kind: ActorUser, ID: "u2", Label: "bob"})
+	if err := s.Log(alice, Event{
+		Action: "system.create", Outcome: Success,
+		TargetKind: "system", TargetID: "sys-1", TargetLabel: "db-prod",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Log(bob, Event{
+		Action: "system.delete", Outcome: Success,
+		TargetKind: "system", TargetID: "sys-2", TargetLabel: "web-1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name, url string
+		want      int
+	}{
+		{"actor_label substring", "/api/admin/audit?actor_label=ali", 1},
+		{"target_label substring", "/api/admin/audit?target_label=db-", 1},
+		{"target_label other match", "/api/admin/audit?target_label=web", 1},
+		{"request_id exact", "/api/admin/audit?request_id=req-abc", 1},
+		{"request_id miss", "/api/admin/audit?request_id=nope", 0},
+		{"actor_label miss", "/api/admin/audit?actor_label=zzz", 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			mux.ServeHTTP(w, httptest.NewRequest(http.MethodGet, tt.url, nil))
+			if w.Code != http.StatusOK {
+				t.Fatalf("status = %d body=%s", w.Code, w.Body.String())
+			}
+			var resp listResponse
+			if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if len(resp.Records) != tt.want {
+				t.Errorf("rows = %d, want %d", len(resp.Records), tt.want)
+			}
+		})
+	}
+}
+
 func TestHandlerList_BadParams(t *testing.T) {
 	_, _, mux := newTestHandler(t)
 	cases := []string{

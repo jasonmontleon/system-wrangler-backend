@@ -56,12 +56,15 @@ type cursor struct {
 func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 	qs := r.URL.Query()
 	q := Query{
-		ActorID:    qs.Get("actor_id"),
-		Action:     qs.Get("action"),
-		TargetKind: qs.Get("target_kind"),
-		TargetID:   qs.Get("target_id"),
-		Outcome:    Outcome(qs.Get("outcome")),
-		AfterID:    qs.Get("after_id"),
+		ActorID:     qs.Get("actor_id"),
+		ActorLabel:  qs.Get("actor_label"),
+		Action:      qs.Get("action"),
+		TargetKind:  qs.Get("target_kind"),
+		TargetID:    qs.Get("target_id"),
+		TargetLabel: qs.Get("target_label"),
+		Outcome:     Outcome(qs.Get("outcome")),
+		RequestID:   qs.Get("request_id"),
+		AfterID:     qs.Get("after_id"),
 	}
 	if v := qs.Get("since"); v != "" {
 		ms, err := strconv.ParseInt(v, 10, 64)

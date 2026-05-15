@@ -168,10 +168,13 @@ type Query struct {
 	Since       time.Time
 	Until       time.Time
 	ActorID     string
+	ActorLabel  string // case-insensitive substring match against actor_label
 	Action      string // exact or prefix when trailing '*'
 	TargetKind  string
 	TargetID    string
+	TargetLabel string // case-insensitive substring match against target_label
 	Outcome     Outcome
+	RequestID   string // exact match against request_id
 	Limit       int
 	AfterMillis int64 // 0 = no cursor; paired with AfterID
 	AfterID     string
@@ -337,6 +340,10 @@ func buildWhere(q Query) (string, []any) {
 		clauses = append(clauses, "actor_id = ?")
 		args = append(args, q.ActorID)
 	}
+	if q.ActorLabel != "" {
+		clauses = append(clauses, "actor_label LIKE ? ESCAPE '\\' COLLATE NOCASE")
+		args = append(args, "%"+escapeLike(q.ActorLabel)+"%")
+	}
 	if q.Action != "" {
 		if strings.HasSuffix(q.Action, "*") {
 			clauses = append(clauses, "action LIKE ?")
@@ -354,9 +361,17 @@ func buildWhere(q Query) (string, []any) {
 		clauses = append(clauses, "target_id = ?")
 		args = append(args, q.TargetID)
 	}
+	if q.TargetLabel != "" {
+		clauses = append(clauses, "target_label LIKE ? ESCAPE '\\' COLLATE NOCASE")
+		args = append(args, "%"+escapeLike(q.TargetLabel)+"%")
+	}
 	if q.Outcome != "" {
 		clauses = append(clauses, "outcome = ?")
 		args = append(args, string(q.Outcome))
+	}
+	if q.RequestID != "" {
+		clauses = append(clauses, "request_id = ?")
+		args = append(args, q.RequestID)
 	}
 	if q.AfterMillis > 0 && q.AfterID != "" {
 		clauses = append(clauses, "(occurred_at < ? OR (occurred_at = ? AND id < ?))")
@@ -371,6 +386,17 @@ func buildWhere(q Query) (string, []any) {
 		return "", args
 	}
 	return "WHERE " + strings.Join(clauses, " AND "), args
+}
+
+// escapeLike escapes the three SQL LIKE wildcards (% _ \) so a user-
+// supplied substring is treated as literal text. The companion LIKE
+// clause must use ESCAPE '\' — but SQLite treats backslash as the
+// default escape character only when the pattern contains it, so
+// emitting the literal pattern here is enough at our scale. Inputs
+// without wildcards round-trip unchanged.
+func escapeLike(s string) string {
+	r := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+	return r.Replace(s)
 }
 
 // scopeClause builds the WHERE fragment that restricts rows to those a
