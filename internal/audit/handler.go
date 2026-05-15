@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"strconv"
 	"time"
+
+	"system-wrangler-backend/internal/router"
 )
 
 // Handler exposes the read-side audit endpoints. Write happens via
@@ -31,7 +33,7 @@ func NewHandler(s *Store) *Handler { return &Handler{Store: s} }
 // v1 every authenticated user is admin per project_tenancy.md, so any
 // auth-resolved user can read. Revisit when roles ship: only Owner
 // should retain read access.
-func (h *Handler) Register(mux *http.ServeMux, mw func(http.Handler) http.Handler) {
+func (h *Handler) Register(mux router.Mux, mw func(http.Handler) http.Handler) {
 	if mw == nil {
 		mw = func(next http.Handler) http.Handler { return next }
 	}

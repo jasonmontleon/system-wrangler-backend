@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"system-wrangler-backend/internal/audit"
+	"system-wrangler-backend/internal/router"
 )
 
 // Handler exposes the admin backup endpoint. It owns the wire format
@@ -43,7 +44,7 @@ func NewHandler(svc *Service) *Handler { return &Handler{Service: svc} }
 // authenticated-user middleware. The Global-Admin gate is enforced
 // inside the handler via CanCreate, mirroring the in-handler scope
 // checks used by the rbac admin endpoints.
-func (h *Handler) Register(mux *http.ServeMux, mw func(http.Handler) http.Handler) {
+func (h *Handler) Register(mux router.Mux, mw func(http.Handler) http.Handler) {
 	if mw == nil {
 		mw = func(next http.Handler) http.Handler { return next }
 	}

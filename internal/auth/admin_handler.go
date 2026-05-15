@@ -9,6 +9,7 @@ import (
 	"net/http"
 
 	"system-wrangler-backend/internal/audit"
+	"system-wrangler-backend/internal/router"
 )
 
 // RegisterAdmin attaches the user-administration endpoints to mux behind
@@ -18,7 +19,7 @@ import (
 // RequireFreshPassword for the same reason every other protected
 // surface does: an account flagged for password rotation can't reach
 // for admin tooling.
-func (s *Service) RegisterAdmin(mux *http.ServeMux, requireUser func(http.Handler) http.Handler) {
+func (s *Service) RegisterAdmin(mux router.Mux, requireUser func(http.Handler) http.Handler) {
 	if requireUser == nil {
 		requireUser = func(next http.Handler) http.Handler { return next }
 	}

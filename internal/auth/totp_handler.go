@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"system-wrangler-backend/internal/audit"
+	"system-wrangler-backend/internal/router"
 	"system-wrangler-backend/internal/secrets"
 )
 
@@ -23,9 +24,9 @@ import (
 // — a user under the must_change_password flag can't enroll, disable,
 // or fiddle with trusted devices until they rotate the password.
 // /totp/verify is the pre-session step and runs without RequireUser.
-func (s *Service) RegisterTOTP(mux *http.ServeMux, requireUser func(http.Handler) http.Handler) {
+func (s *Service) RegisterTOTP(mux router.Mux, requireUser func(http.Handler) http.Handler) {
 	fresh := func(h http.Handler) http.Handler { return requireUser(RequireFreshPassword(h)) }
-	mux.HandleFunc("POST /api/auth/totp/verify", s.handleTOTPVerify)
+	mux.Handle("POST /api/auth/totp/verify", http.HandlerFunc(s.handleTOTPVerify))
 	mux.Handle("POST /api/auth/totp/setup", fresh(http.HandlerFunc(s.handleTOTPSetup)))
 	mux.Handle("POST /api/auth/totp/confirm", fresh(http.HandlerFunc(s.handleTOTPConfirm)))
 	mux.Handle("DELETE /api/auth/totp", fresh(http.HandlerFunc(s.handleTOTPDisable)))

@@ -24,6 +24,7 @@ import (
 	"net/http"
 	"sort"
 
+	"system-wrangler-backend/internal/router"
 	"system-wrangler-backend/internal/secrets"
 )
 
@@ -68,7 +69,7 @@ type Handler struct {
 // user middleware. Mirrors the in-handler scope check pattern used by
 // rbac and backup so a missing CanScan defaults to "anyone
 // authenticated" — fine for tests, never for production.
-func (h *Handler) Register(mux *http.ServeMux, mw func(http.Handler) http.Handler) {
+func (h *Handler) Register(mux router.Mux, mw func(http.Handler) http.Handler) {
 	if mw == nil {
 		mw = func(next http.Handler) http.Handler { return next }
 	}

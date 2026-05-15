@@ -20,6 +20,7 @@ import (
 	"github.com/google/uuid"
 
 	"system-wrangler-backend/internal/audit"
+	"system-wrangler-backend/internal/router"
 	"system-wrangler-backend/internal/secrets"
 )
 
@@ -156,11 +157,11 @@ func NewService(store UserStore, secret []byte, secureCookie bool) *Service {
 
 // Register attaches the unauthenticated auth endpoints (status, setup,
 // login, logout) to mux.
-func (s *Service) Register(mux *http.ServeMux) {
-	mux.HandleFunc("GET /api/auth/status", s.handleStatus)
-	mux.HandleFunc("POST /api/auth/setup", s.handleSetup)
-	mux.HandleFunc("POST /api/auth/login", s.handleLogin)
-	mux.HandleFunc("POST /api/auth/logout", s.handleLogout)
+func (s *Service) Register(mux router.Mux) {
+	mux.Handle("GET /api/auth/status", http.HandlerFunc(s.handleStatus))
+	mux.Handle("POST /api/auth/setup", http.HandlerFunc(s.handleSetup))
+	mux.Handle("POST /api/auth/login", http.HandlerFunc(s.handleLogin))
+	mux.Handle("POST /api/auth/logout", http.HandlerFunc(s.handleLogout))
 }
 
 // RegisterProtected wires the endpoints that require an authenticated user.
@@ -169,7 +170,7 @@ func (s *Service) Register(mux *http.ServeMux) {
 // change is wrapped with RequireFreshPassword so a user with the
 // must_change_password flag set is bounced until they rotate the
 // admin-supplied password.
-func (s *Service) RegisterProtected(mux *http.ServeMux, requireUser func(http.Handler) http.Handler) {
+func (s *Service) RegisterProtected(mux router.Mux, requireUser func(http.Handler) http.Handler) {
 	fresh := func(h http.Handler) http.Handler { return requireUser(RequireFreshPassword(h)) }
 	mux.Handle("PATCH /api/auth/profile", fresh(http.HandlerFunc(s.handleUpdateProfile)))
 	mux.Handle("POST /api/auth/password", requireUser(http.HandlerFunc(s.handleChangePassword)))

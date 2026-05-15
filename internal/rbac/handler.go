@@ -12,6 +12,7 @@ import (
 	"system-wrangler-backend/internal/audit"
 	"system-wrangler-backend/internal/auth"
 	"system-wrangler-backend/internal/groups"
+	"system-wrangler-backend/internal/router"
 )
 
 // UserLookup is the slice of auth.UserStore the handler needs. Kept
@@ -56,7 +57,7 @@ func NewHandler(store Store, users UserLookup, gs GroupLookup) *Handler {
 // same auth + scope-resolving middleware applied to the rest of the
 // protected API; the handlers read both User and Scope off the
 // request context.
-func (h *Handler) Register(mux *http.ServeMux, mw func(http.Handler) http.Handler) {
+func (h *Handler) Register(mux router.Mux, mw func(http.Handler) http.Handler) {
 	if mw == nil {
 		mw = func(next http.Handler) http.Handler { return next }
 	}

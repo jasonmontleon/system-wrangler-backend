@@ -28,7 +28,9 @@ import (
 	"system-wrangler-backend/internal/database"
 	"system-wrangler-backend/internal/events"
 	"system-wrangler-backend/internal/groups"
+	"system-wrangler-backend/internal/openapi"
 	"system-wrangler-backend/internal/rbac"
+	"system-wrangler-backend/internal/router"
 	"system-wrangler-backend/internal/secrets"
 	"system-wrangler-backend/internal/secretscan"
 	"system-wrangler-backend/internal/systems"
@@ -191,7 +193,17 @@ func main() {
 
 func newMux(db *sql.DB, store systems.Store, groupStore groups.Store, authStore *auth.SQLiteAuthStore, authSvc *auth.Service, secret []byte, vault *secrets.Vault, hub *events.Hub, auditStore *audit.Store, rbacStore rbac.Store, onSystemCreate, onSystemDelete func()) *http.ServeMux {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/health", handleHealth)
+	populateMux(mux, db, store, groupStore, authStore, authSvc, secret, vault, hub, auditStore, rbacStore, onSystemCreate, onSystemDelete)
+	return mux
+}
+
+// populateMux registers every System Wrangler route on mux. Extracted
+// from newMux so the openapi drift test can hand in a recording wrapper
+// that captures every (method, path) pattern without spinning up a real
+// *http.ServeMux. main.go and tests reach for newMux; only the drift
+// test needs this entry point.
+func populateMux(mux router.Mux, db *sql.DB, store systems.Store, groupStore groups.Store, authStore *auth.SQLiteAuthStore, authSvc *auth.Service, secret []byte, vault *secrets.Vault, hub *events.Hub, auditStore *audit.Store, rbacStore rbac.Store, onSystemCreate, onSystemDelete func()) {
+	mux.Handle("GET /api/health", http.HandlerFunc(handleHealth))
 	authSvc.Register(mux)
 	requireUserOnly := auth.RequireUser(secret, authStore, time.Now)
 	withScope := rbac.Middleware(rbacStore)
@@ -294,13 +306,13 @@ func newMux(db *sql.DB, store systems.Store, groupStore groups.Store, authStore 
 	if hub != nil {
 		mux.Handle("GET /api/events", requireUser(events.SSEHandler(hub)))
 	}
+	openapi.Handler{}.Register(mux)
 	// Catchall for unmatched /api/* — without this they fall through to the
 	// SPA handler and get index.html as a misleading 200. The SPA handler
 	// is registered without a method so /api/ stays unambiguously more
 	// specific for any method (Go's ServeMux conflicts otherwise).
-	mux.HandleFunc("/api/", handleAPINotFound)
+	mux.Handle("/api/", http.HandlerFunc(handleAPINotFound))
 	mux.Handle("/", spaHandler())
-	return mux
 }
 
 // triggerProbe returns a non-blocking sender for p.Trigger; drops cleanly

@@ -10,6 +10,7 @@ import (
 	"net/http"
 
 	"system-wrangler-backend/internal/audit"
+	"system-wrangler-backend/internal/router"
 	"system-wrangler-backend/internal/systems"
 )
 
@@ -50,7 +51,7 @@ func NewHandler(store Store, sys systems.Store) *Handler {
 // Register attaches /api/groups routes to the given mux. Each handler is
 // wrapped in mw before registration so callers can apply auth (or any other
 // per-route middleware) without exposing the handler methods.
-func (h *Handler) Register(mux *http.ServeMux, mw func(http.Handler) http.Handler) {
+func (h *Handler) Register(mux router.Mux, mw func(http.Handler) http.Handler) {
 	if mw == nil {
 		mw = func(next http.Handler) http.Handler { return next }
 	}

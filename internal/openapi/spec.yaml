@@ -1,0 +1,1167 @@
+openapi: 3.1.0
+info:
+  title: System Wrangler API
+  version: v1
+  description: |
+    HTTP API exposed by the System Wrangler backend. Every protected
+    endpoint requires the `sw_session` cookie issued by
+    `POST /api/auth/login` (or `POST /api/auth/setup` on a fresh
+    install). State-changing requests must also carry the
+    `X-Sw-Csrf: 1` header — the CSRF middleware rejects authenticated
+    POST/PUT/PATCH/DELETE without it.
+
+    This spec is the source of truth for the API surface. A drift test
+    (`cmd/server/openapi_drift_test.go`) compares it to the routes
+    registered on the production mux so the two cannot rot apart.
+
+servers:
+  - url: /
+    description: Same-origin (the SPA and the API share the host).
+
+tags:
+  - name: meta
+    description: Health, OpenAPI spec, docs.
+  - name: auth
+    description: Setup, login, logout, profile, password.
+  - name: totp
+    description: Two-factor authentication and trusted devices.
+  - name: users
+    description: Admin user management.
+  - name: audit
+    description: Read-side audit log.
+  - name: rbac
+    description: Role assignments (global and group-scoped).
+  - name: systems
+    description: Managed hosts in the fleet.
+  - name: groups
+    description: Named collections of systems.
+  - name: backup
+    description: Database snapshot download.
+  - name: secrets
+    description: Operator-facing secret scan.
+  - name: events
+    description: Server-sent events stream.
+
+security:
+  - sessionCookie: []
+
+paths:
+
+  /api/health:
+    get:
+      tags: [meta]
+      summary: Liveness probe.
+      security: []
+      responses:
+        "200":
+          description: Service is up.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status:
+                    type: string
+                    enum: [ok]
+
+  /api/openapi.yaml:
+    get:
+      tags: [meta]
+      summary: This OpenAPI spec.
+      security: []
+      responses:
+        "200":
+          description: The hand-written spec served verbatim.
+          content:
+            application/yaml:
+              schema:
+                type: string
+
+  /api/docs:
+    get:
+      tags: [meta]
+      summary: Redoc page rendering the OpenAPI spec.
+      security: []
+      responses:
+        "200":
+          description: HTML page that loads Redoc and points at /api/openapi.yaml.
+          content:
+            text/html:
+              schema:
+                type: string
+
+  /api/auth/status:
+    get:
+      tags: [auth]
+      summary: First-paint status used by the SPA to decide between setup, login, and dashboard.
+      security: []
+      responses:
+        "200":
+          description: Setup state + (when a valid session cookie is present) the resolved user.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [setupRequired, authenticated]
+                properties:
+                  setupRequired:
+                    type: boolean
+                  authenticated:
+                    type: boolean
+                  user:
+                    $ref: "#/components/schemas/User"
+
+  /api/auth/setup:
+    post:
+      tags: [auth]
+      summary: First-time install bootstrap (only succeeds when no users exist).
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Credentials"
+      responses:
+        "201":
+          description: Initial user created and session cookie issued.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403":
+          description: Setup already complete (users exist).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/auth/login:
+    post:
+      tags: [auth]
+      summary: "Password login. Returns `{totpRequired: true}` when a second factor is needed."
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Credentials"
+      responses:
+        "200":
+          description: "Either the resolved user (login complete) or `{totpRequired: true}`."
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/User"
+                  - type: object
+                    required: [totpRequired]
+                    properties:
+                      totpRequired: { type: boolean }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401":
+          description: Invalid credentials, or password correct on a disabled account.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "423":
+          description: |
+            Account is locked. Returned only when the password was
+            correct — the wrong-password branch on a locked account
+            stays opaque (401) to avoid disclosure.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccountLocked"
+        "429":
+          description: Per-IP login throttle exceeded.
+          headers:
+            Retry-After:
+              schema: { type: integer }
+              description: Seconds until the next attempt is allowed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/auth/logout:
+    post:
+      tags: [auth]
+      summary: Clear the session cookie. Idempotent.
+      security: []
+      responses:
+        "204": { description: Logged out. }
+
+  /api/auth/profile:
+    patch:
+      tags: [auth]
+      summary: Update the caller's email and/or theme.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                email: { type: string }
+                theme:
+                  type: string
+                  enum: ["", "light", "dark"]
+      responses:
+        "200":
+          description: Updated user.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/auth/password:
+    post:
+      tags: [auth]
+      summary: Change the caller's password.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [currentPassword, newPassword]
+              properties:
+                currentPassword: { type: string }
+                newPassword: { type: string, minLength: 8 }
+      responses:
+        "204": { description: Password rotated. }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401":
+          description: Current password incorrect, or no session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/auth/totp/verify:
+    post:
+      tags: [totp]
+      summary: |
+        Second-factor step. Consumes the challenge cookie issued by
+        /api/auth/login when TOTP is enabled. Accepts either a TOTP
+        code or a one-shot recovery code.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code: { type: string }
+                rememberDevice: { type: boolean }
+      responses:
+        "200":
+          description: Login complete; session cookie issued.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401":
+          description: Invalid challenge, wrong code, disabled account, or no challenge cookie.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "423":
+          description: Correct code on a locked account.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccountLocked"
+        "429":
+          description: Per-IP throttle exceeded.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: TOTP not configured (vault or stores missing).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/auth/totp/setup:
+    post:
+      tags: [totp]
+      summary: Begin TOTP enrollment — server returns a pending secret + QR.
+      responses:
+        "200":
+          description: Pending secret, otpauth URI, and base64-encoded QR PNG.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [secret, uri, qrPng]
+                properties:
+                  secret: { type: string, description: Base32-encoded TOTP secret. }
+                  uri: { type: string, description: otpauth:// URI for QR encoding. }
+                  qrPng: { type: string, description: Base64-encoded PNG of the QR code. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "503":
+          description: TOTP not configured.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/auth/totp/confirm:
+    post:
+      tags: [totp]
+      summary: Confirm pending TOTP enrollment with a code; receive recovery codes.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code: { type: string }
+      responses:
+        "200":
+          description: TOTP activated; one-time recovery codes returned.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [recoveryCodes]
+                properties:
+                  recoveryCodes:
+                    type: array
+                    items: { type: string }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401":
+          description: No session, or code did not verify.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: Pending secret cannot be decrypted with the current master key.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: TOTP not configured.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/auth/totp:
+    delete:
+      tags: [totp]
+      summary: Disable TOTP for the caller (requires password + current code).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [password, code]
+              properties:
+                password: { type: string }
+                code: { type: string }
+      responses:
+        "204": { description: TOTP disabled and trusted-device rows wiped. }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422":
+          description: TOTP secret cannot be decrypted; ask an admin to reset.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: TOTP not configured.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/auth/devices:
+    get:
+      tags: [totp]
+      summary: List trusted devices for the caller.
+      responses:
+        "200":
+          description: Caller's trusted-device rows.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/TrustedDevice"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/auth/devices/{id}:
+    delete:
+      tags: [totp]
+      summary: Revoke one of the caller's trusted devices.
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+      responses:
+        "204": { description: Device revoked. }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "503":
+          description: Trusted-device store not configured.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/admin/users:
+    get:
+      tags: [users]
+      summary: List every user account.
+      responses:
+        "200":
+          description: All users.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [users]
+                properties:
+                  users:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/User"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      tags: [users]
+      summary: Create a user account.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Credentials"
+      responses:
+        "201":
+          description: User created. The user starts with zero role assignments.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "409":
+          description: Username already taken.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/admin/users/{id}:
+    patch:
+      tags: [users]
+      summary: Update an account (currently `disabled` only).
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                disabled: { type: boolean }
+      responses:
+        "200":
+          description: Updated user.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [users]
+      summary: Delete an account.
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+      responses:
+        "204": { description: User deleted. }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/admin/users/{id}/password:
+    post:
+      tags: [users]
+      summary: Admin password reset (sets `mustChangePassword` on the target).
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [password]
+              properties:
+                password: { type: string, minLength: 8 }
+      responses:
+        "204": { description: Password reset. }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/admin/users/{id}/totp/reset:
+    post:
+      tags: [users]
+      summary: Admin-reset TOTP for a user (disables 2FA and wipes trusted devices).
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+      responses:
+        "204": { description: 2FA disabled on the target account. }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/admin/audit:
+    get:
+      tags: [audit]
+      summary: Page through audit-log rows.
+      parameters:
+        - { in: query, name: actor_id, schema: { type: string } }
+        - { in: query, name: actor_label, schema: { type: string }, description: "Case-insensitive substring match." }
+        - { in: query, name: action, schema: { type: string }, description: "Exact match, or prefix when trailing '*'." }
+        - { in: query, name: target_kind, schema: { type: string } }
+        - { in: query, name: target_id, schema: { type: string } }
+        - { in: query, name: target_label, schema: { type: string }, description: "Case-insensitive substring match." }
+        - { in: query, name: outcome, schema: { type: string, enum: [success, failure, denied] } }
+        - { in: query, name: request_id, schema: { type: string } }
+        - { in: query, name: since, schema: { type: integer }, description: "Integer milliseconds since epoch." }
+        - { in: query, name: until, schema: { type: integer }, description: "Integer milliseconds since epoch." }
+        - { in: query, name: limit, schema: { type: integer, minimum: 1 } }
+        - { in: query, name: after_ms, schema: { type: integer }, description: "Keyset cursor; pair with after_id." }
+        - { in: query, name: after_id, schema: { type: string }, description: "Keyset cursor; pair with after_ms." }
+      responses:
+        "200":
+          description: A page of audit records, optionally with a `next` cursor.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [records]
+                properties:
+                  records:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/AuditRecord"
+                  next:
+                    type: object
+                    required: [afterMs, afterId]
+                    properties:
+                      afterMs: { type: integer }
+                      afterId: { type: string }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/admin/audit/{id}:
+    get:
+      tags: [audit]
+      summary: One audit record by id.
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: The matching audit record.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuditRecord"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/admin/role-assignments:
+    get:
+      tags: [rbac]
+      summary: List every role assignment. Global Admin only.
+      responses:
+        "200":
+          description: All role assignments, with hydrated username and group name.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [assignments]
+                properties:
+                  assignments:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/RoleAssignment"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      tags: [rbac]
+      summary: Grant a global or group-scoped role. Global Admin only.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RoleAssignmentInput"
+      responses:
+        "201":
+          description: Assignment created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RoleAssignment"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+    delete:
+      tags: [rbac]
+      summary: Revoke a global or group-scoped role. Global Admin only.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RoleAssignmentInput"
+      responses:
+        "204": { description: Assignment revoked. }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/groups/{id}/role-assignments:
+    get:
+      tags: [rbac]
+      summary: List role assignments on one group.
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: Assignments scoped to this group.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [assignments]
+                properties:
+                  assignments:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/RoleAssignment"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    post:
+      tags: [rbac]
+      summary: Grant a role on one group. Global Admin or Group Admin of this group.
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [userId, role]
+              properties:
+                userId: { type: string }
+                role: { $ref: "#/components/schemas/Role" }
+      responses:
+        "201":
+          description: Assignment created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RoleAssignment"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /api/groups/{id}/role-assignments/{userId}/{role}:
+    delete:
+      tags: [rbac]
+      summary: Revoke a role on one group.
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+        - { in: path, name: userId, required: true, schema: { type: string } }
+        - { in: path, name: role, required: true, schema: { $ref: "#/components/schemas/Role" } }
+      responses:
+        "204": { description: Assignment revoked. }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/me/scope:
+    get:
+      tags: [rbac]
+      summary: Resolved permission set for the caller.
+      responses:
+        "200":
+          description: The caller's global role (if any) and per-group roles.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [groups]
+                properties:
+                  global: { $ref: "#/components/schemas/Role" }
+                  groups:
+                    type: object
+                    additionalProperties:
+                      $ref: "#/components/schemas/Role"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/systems:
+    get:
+      tags: [systems]
+      summary: List systems visible to the caller's scope.
+      responses:
+        "200":
+          description: Systems the caller can see.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/System"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      tags: [systems]
+      summary: Register a new system.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SystemInput"
+      responses:
+        "201":
+          description: Created system. `Location` carries `/api/systems/{id}`.
+          headers:
+            Location:
+              schema: { type: string }
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/System"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/systems/{id}:
+    get:
+      tags: [systems]
+      summary: One system by id.
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: The matching system.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/System"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404":
+          description: Not found, or hidden from the caller's scope.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    delete:
+      tags: [systems]
+      summary: Remove a system.
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+      responses:
+        "204": { description: System removed. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/systems/{id}/group:
+    put:
+      tags: [groups]
+      summary: Set or clear a system's group membership.
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [groupId]
+              properties:
+                groupId:
+                  type: [string, "null"]
+                  description: Target group, or `null` to clear.
+      responses:
+        "204": { description: Membership updated. }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/groups:
+    get:
+      tags: [groups]
+      summary: List groups visible to the caller.
+      responses:
+        "200":
+          description: Groups the caller can see.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Group"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      tags: [groups]
+      summary: Create a group. Global Admin only.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GroupInput"
+      responses:
+        "201":
+          description: Group created. `Location` carries `/api/groups/{id}`.
+          headers:
+            Location:
+              schema: { type: string }
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Group"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /api/groups/{id}:
+    get:
+      tags: [groups]
+      summary: One group by id.
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: The matching group.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Group"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404":
+          description: Not found, or hidden from the caller's scope.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    patch:
+      tags: [groups]
+      summary: Rename a group. Global Admin only.
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GroupInput"
+      responses:
+        "200":
+          description: Renamed group.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Group"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+    delete:
+      tags: [groups]
+      summary: Delete a group. Systems become ungrouped.
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+      responses:
+        "204": { description: Group deleted. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/admin/backup:
+    post:
+      tags: [backup]
+      summary: Stream a SQLite snapshot of the database. Global Admin only.
+      responses:
+        "200":
+          description: The snapshot file streamed back with a timestamped filename.
+          headers:
+            Content-Disposition:
+              schema: { type: string }
+          content:
+            application/vnd.sqlite3:
+              schema:
+                type: string
+                format: binary
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409":
+          description: Another backup is already in progress.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/admin/secrets/undecryptable:
+    get:
+      tags: [secrets]
+      summary: List sealed rows that cannot be opened with the current master key. Global Admin only.
+      responses:
+        "200":
+          description: Undecryptable rows aggregated across every Source.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [count, items]
+                properties:
+                  count: { type: integer }
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      required: [kind, field, targetId, targetLabel, keyVersion]
+                      properties:
+                        kind: { type: string }
+                        field: { type: string }
+                        targetId: { type: string }
+                        targetLabel: { type: string }
+                        keyVersion: { type: integer }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/events:
+    get:
+      tags: [events]
+      summary: Subscribe to the server-sent events stream of fleet changes.
+      responses:
+        "200":
+          description: |
+            SSE stream. The body is a sequence of `data: <json>\n\n`
+            lines plus periodic `: keepalive\n\n` comments.
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+components:
+  securitySchemes:
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: sw_session
+
+  responses:
+    BadRequest:
+      description: Request payload rejected.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Unauthorized:
+      description: Missing or invalid session.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Forbidden:
+      description: Authenticated, but the scope forbids this action.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    NotFound:
+      description: Resource does not exist (or is hidden from the caller's scope).
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Conflict:
+      description: Conflicts with existing state (duplicate or precondition failed).
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error: { type: string }
+
+    AccountLocked:
+      type: object
+      required: [error, lockedUntil]
+      properties:
+        error: { type: string }
+        lockedUntil:
+          type: string
+          format: date-time
+          description: RFC3339 timestamp when the lock expires.
+
+    Credentials:
+      type: object
+      required: [username, password]
+      properties:
+        username: { type: string, minLength: 1 }
+        password: { type: string, minLength: 8 }
+
+    User:
+      type: object
+      required: [id, username, email, theme, createdAt, totpEnabled, disabled, mustChangePassword]
+      properties:
+        id: { type: string }
+        username: { type: string }
+        email: { type: string }
+        theme:
+          type: string
+          enum: ["", "light", "dark"]
+        createdAt: { type: string, format: date-time }
+        totpEnabled: { type: boolean }
+        disabled: { type: boolean }
+        disabledAt: { type: string, format: date-time }
+        failedAttempts: { type: integer }
+        lockedUntil: { type: string, format: date-time }
+        mustChangePassword: { type: boolean }
+
+    TrustedDevice:
+      type: object
+      required: [id, label, createdAt, lastUsedAt, expiresAt]
+      properties:
+        id: { type: string }
+        label: { type: string }
+        createdAt: { type: string, format: date-time }
+        lastUsedAt: { type: string, format: date-time }
+        expiresAt: { type: string, format: date-time }
+
+    System:
+      type: object
+      required: [id, name, hostname, createdAt, status]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        hostname: { type: string }
+        createdAt: { type: string, format: date-time }
+        status:
+          type: string
+          enum: [unprobed, reachable, unreachable]
+        lastSeen: { type: string, format: date-time }
+        groupId: { type: string }
+
+    SystemInput:
+      type: object
+      required: [name, hostname]
+      properties:
+        name: { type: string, maxLength: 255 }
+        hostname: { type: string, maxLength: 255 }
+
+    Group:
+      type: object
+      required: [id, name, createdAt, systemCount]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        createdAt: { type: string, format: date-time }
+        systemCount: { type: integer }
+
+    GroupInput:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string, maxLength: 255 }
+
+    Role:
+      type: string
+      enum: [admin, operator, auditor]
+
+    RoleAssignment:
+      type: object
+      required: [userId, groupId, role]
+      properties:
+        userId: { type: string }
+        username: { type: string }
+        groupId:
+          type: [string, "null"]
+          description: "`null` for global assignments."
+        groupName: { type: string }
+        role: { $ref: "#/components/schemas/Role" }
+
+    RoleAssignmentInput:
+      type: object
+      required: [userId, role]
+      properties:
+        userId: { type: string }
+        groupId:
+          type: [string, "null"]
+          description: Omit (or `null`) for a global assignment.
+        role: { $ref: "#/components/schemas/Role" }
+
+    AuditRecord:
+      type: object
+      required: [id, occurredAt, actorKind, action, outcome]
+      properties:
+        id: { type: string }
+        occurredAt: { type: string, format: date-time }
+        actorKind:
+          type: string
+          enum: [user, system, unauthenticated]
+        actorId: { type: string }
+        actorLabel: { type: string }
+        action: { type: string }
+        targetKind: { type: string }
+        targetId: { type: string }
+        targetLabel: { type: string }
+        outcome:
+          type: string
+          enum: [success, failure, denied]
+        detail:
+          type: object
+          additionalProperties: true
+        requestIp: { type: string }
+        requestId: { type: string }

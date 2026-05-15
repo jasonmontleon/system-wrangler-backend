@@ -9,6 +9,8 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+
+	"system-wrangler-backend/internal/router"
 )
 
 // AuditEmitter writes an audit row inside the caller's tx. The systems
@@ -65,7 +67,7 @@ func NewHandler(s Store) *Handler { return &Handler{Store: s} }
 // Register attaches /api/systems routes to the given mux. Each handler is
 // wrapped in mw before registration so callers can apply auth (or any other
 // per-route middleware) without exposing the handler methods.
-func (h *Handler) Register(mux *http.ServeMux, mw func(http.Handler) http.Handler) {
+func (h *Handler) Register(mux router.Mux, mw func(http.Handler) http.Handler) {
 	if mw == nil {
 		mw = func(next http.Handler) http.Handler { return next }
 	}
