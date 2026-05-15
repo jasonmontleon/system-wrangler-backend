@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"system-wrangler-backend/internal/audit"
+	"system-wrangler-backend/internal/secrets"
 )
 
 // RegisterTOTP wires the protected TOTP/device endpoints onto mux. Mirrors
@@ -115,6 +116,12 @@ func (s *Service) handleTOTPConfirm(w http.ResponseWriter, r *http.Request) {
 	}
 	secret, err := OpenWith(s.Vault, state.Pending)
 	if err != nil {
+		if secrets.IsUnrecoverable(err) {
+			writeError(w, http.StatusUnprocessableEntity,
+				"pending TOTP secret cannot be decrypted with the current master key — restart enrollment to generate a new one")
+			slog.Warn("totp confirm pending undecryptable", "user_id", u.ID, "key_version", state.Pending.Version)
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "totp confirm failed")
 		slog.Error("totp confirm decrypt", "err", err, "user_id", u.ID)
 		return
@@ -310,6 +317,12 @@ func (s *Service) tryVerifyCode(ctx context.Context, u User, state TOTPState, co
 				return true, false
 			}
 		}
+	} else if secrets.IsUnrecoverable(err) {
+		// The TOTP path is dead until an admin resets 2FA or the
+		// matching master key returns. Fall through to recovery
+		// code: bcrypt-hashed, not sealed, so unaffected by the
+		// mismatched-key restore scenario.
+		slog.Warn("totp verify secret undecryptable", "user_id", u.ID, "key_version", state.Secret.Version)
 	}
 	// Fall back to recovery code if TOTP didn't match.
 	if s.RecoveryStore == nil {
@@ -425,6 +438,12 @@ func (s *Service) handleTOTPDisable(w http.ResponseWriter, r *http.Request) {
 	}
 	secret, err := OpenWith(s.Vault, state.Secret)
 	if err != nil {
+		if secrets.IsUnrecoverable(err) {
+			writeError(w, http.StatusUnprocessableEntity,
+				"TOTP secret cannot be decrypted with the current master key — ask an administrator to reset 2FA on the Users page, then re-enroll")
+			slog.Warn("totp disable undecryptable", "user_id", u.ID, "key_version", state.Secret.Version)
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "disable failed")
 		slog.Error("totp disable decrypt", "err", err, "user_id", u.ID)
 		return

@@ -46,6 +46,17 @@ var ErrUnknownVersion = errors.New("secrets: ciphertext version is not loaded in
 // to distinguish between them.
 var ErrDecrypt = errors.New("secrets: decrypt failed")
 
+// IsUnrecoverable reports whether err means the ciphertext cannot be
+// recovered with the currently-loaded vault — either the key version
+// isn't loaded (ErrUnknownVersion) or the auth tag doesn't verify
+// (ErrDecrypt). Callers use this to switch between "infrastructure
+// hiccup, retry" and "this credential is permanently lost under the
+// current master key; rotate it or re-enroll." The classic trigger is
+// a restore against a mismatched SW_MASTER_KEY_FILE.
+func IsUnrecoverable(err error) bool {
+	return errors.Is(err, ErrUnknownVersion) || errors.Is(err, ErrDecrypt)
+}
+
 // Vault holds one or more loaded master keys, indexed by a version derived
 // deterministically from the key bytes. At steady state a Vault holds
 // exactly one key; during a rotation it briefly holds the outgoing key

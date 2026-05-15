@@ -30,6 +30,7 @@ import (
 	"system-wrangler-backend/internal/groups"
 	"system-wrangler-backend/internal/rbac"
 	"system-wrangler-backend/internal/secrets"
+	"system-wrangler-backend/internal/secretscan"
 	"system-wrangler-backend/internal/systems"
 	"system-wrangler-backend/web"
 )
@@ -139,7 +140,7 @@ func main() {
 		Addr: addr,
 		Handler: withRequestMeta(
 			withLogging(
-				newMux(db, store, groupStore, authStore, authSvc, secret, hub, auditStore, rbacStore, onCreate, broadcastSystemsChanged),
+				newMux(db, store, groupStore, authStore, authSvc, secret, vault, hub, auditStore, rbacStore, onCreate, broadcastSystemsChanged),
 			),
 		),
 		ReadHeaderTimeout: 5 * time.Second,
@@ -186,11 +187,11 @@ func main() {
 	<-probeDone
 }
 
-func newMux(db *sql.DB, store systems.Store, groupStore groups.Store, users auth.UserStore, authSvc *auth.Service, secret []byte, hub *events.Hub, auditStore *audit.Store, rbacStore rbac.Store, onSystemCreate, onSystemDelete func()) *http.ServeMux {
+func newMux(db *sql.DB, store systems.Store, groupStore groups.Store, authStore *auth.SQLiteAuthStore, authSvc *auth.Service, secret []byte, vault *secrets.Vault, hub *events.Hub, auditStore *audit.Store, rbacStore rbac.Store, onSystemCreate, onSystemDelete func()) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", handleHealth)
 	authSvc.Register(mux)
-	requireUserOnly := auth.RequireUser(secret, users, time.Now)
+	requireUserOnly := auth.RequireUser(secret, authStore, time.Now)
 	withScope := rbac.Middleware(rbacStore)
 	// requireUser chains RequireUser → Middleware(rbac) so every
 	// authenticated handler downstream can read both the User and the
@@ -267,7 +268,7 @@ func newMux(db *sql.DB, store systems.Store, groupStore groups.Store, users auth
 		}
 		ah.Register(mux, requireUser)
 	}
-	rbacHandler := rbac.NewHandler(rbacStore, users, groupStore)
+	rbacHandler := rbac.NewHandler(rbacStore, authStore, groupStore)
 	rbacHandler.Audit = auditStore
 	rbacHandler.Register(mux, requireUser)
 	backupHandler := backup.NewHandler(&backup.Service{DB: db})
@@ -277,6 +278,17 @@ func newMux(db *sql.DB, store systems.Store, groupStore groups.Store, users auth
 		return ok && scope.IsGlobalAdmin()
 	}
 	backupHandler.Register(mux, requireUser)
+	if vault != nil {
+		secretscanHandler := &secretscan.Handler{
+			Vault:   vault,
+			Sources: []secretscan.Source{auth.TOTPScanSource{Store: authStore}},
+			CanScan: func(ctx context.Context) bool {
+				scope, ok := rbac.ScopeFromContext(ctx)
+				return ok && scope.IsGlobalAdmin()
+			},
+		}
+		secretscanHandler.Register(mux, requireUser)
+	}
 	if hub != nil {
 		mux.Handle("GET /api/events", requireUser(events.SSEHandler(hub)))
 	}

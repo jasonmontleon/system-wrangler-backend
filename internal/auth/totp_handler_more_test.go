@@ -5,6 +5,7 @@ package auth
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
@@ -824,4 +825,106 @@ func loginAndVerify(t *testing.T, srv *httptest.Server, svc *Service, client *ht
 		t.Fatalf("verify: %v", err)
 	}
 	_ = r2.Body.Close()
+}
+
+// breakSealedVersion mutates the stored Sealed.Version for a user's
+// active or pending TOTP secret to a version the test vault does not
+// know, simulating a mismatched-key restore. Returns the cleanup
+// function so other tests sharing the stub can be restored if needed.
+func breakSealedVersion(t *testing.T, tot *stubTOTPStore, userID string, field string) {
+	t.Helper()
+	st := tot.state[userID]
+	switch field {
+	case "secret":
+		st.Secret.Version = 0x7fffffff // unlikely to collide with versionOf(fixedKEK)
+	case "pending":
+		st.Pending.Version = 0x7fffffff
+	default:
+		t.Fatalf("unknown field %q", field)
+	}
+	tot.state[userID] = st
+}
+
+func TestTOTPDisable_SecretUndecryptableReturns422(t *testing.T) {
+	srv, svc, users, tot, _, _ := newTOTPTestServer(t)
+	client, _, _ := enrolledClient(t, srv, svc, users)
+	loginAndVerify(t, srv, svc, client)
+
+	user, _, _ := users.GetByUsername("alice")
+	breakSealedVersion(t, tot, user.ID, "secret")
+
+	body := `{"password":"correctpassword","code":"123456"}`
+	req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/api/auth/totp",
+		strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("do: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422", resp.StatusCode)
+	}
+	var errBody map[string]string
+	if err := json.NewDecoder(resp.Body).Decode(&errBody); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !strings.Contains(strings.ToLower(errBody["error"]), "cannot be decrypted") {
+		t.Errorf("error = %q, want a 'cannot be decrypted' message", errBody["error"])
+	}
+}
+
+func TestTOTPConfirm_PendingUndecryptableReturns422(t *testing.T) {
+	srv, _, users, tot, _, _ := newTOTPTestServer(t)
+	client := loggedInClientFull(t, srv, users, "alice")
+	// Drive /totp/setup so a pending secret is stored, then mutate the
+	// version to break decrypt.
+	r1, _ := client.Post(srv.URL+"/api/auth/totp/setup", "application/json", nil)
+	_ = r1.Body.Close()
+	user, _, _ := users.GetByUsername("alice")
+	breakSealedVersion(t, tot, user.ID, "pending")
+
+	resp, err := client.Post(srv.URL+"/api/auth/totp/confirm", "application/json",
+		strings.NewReader(`{"code":"123456"}`))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422", resp.StatusCode)
+	}
+	var errBody map[string]string
+	if err := json.NewDecoder(resp.Body).Decode(&errBody); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !strings.Contains(strings.ToLower(errBody["error"]), "cannot be decrypted") {
+		t.Errorf("error = %q, want a 'cannot be decrypted' message", errBody["error"])
+	}
+}
+
+func TestTOTPVerify_SecretUndecryptableFallsThroughToRecovery(t *testing.T) {
+	srv, svc, users, tot, _, _ := newTOTPTestServer(t)
+	client, _, recoveryCodes := enrolledClient(t, srv, svc, users)
+	if len(recoveryCodes) == 0 {
+		t.Fatal("no recovery codes minted by enrollment")
+	}
+	user, _, _ := users.GetByUsername("alice")
+	breakSealedVersion(t, tot, user.ID, "secret")
+
+	// Login → challenge cookie set, TOTP path will fail to decrypt, recovery
+	// code falls through and succeeds.
+	r1, _ := client.Post(srv.URL+"/api/auth/login", "application/json",
+		strings.NewReader(`{"username":"alice","password":"correctpassword"}`))
+	_ = r1.Body.Close()
+
+	verify, err := client.Post(srv.URL+"/api/auth/totp/verify", "application/json",
+		strings.NewReader(`{"code":"`+recoveryCodes[0]+`"}`))
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	defer func() { _ = verify.Body.Close() }()
+	if verify.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(verify.Body)
+		t.Fatalf("verify status = %d body=%s", verify.StatusCode, body)
+	}
 }

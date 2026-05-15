@@ -88,6 +88,33 @@ func TestOpenWithUnknownVersion(t *testing.T) {
 	}
 }
 
+func TestIsUnrecoverable(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{"unrelated", errors.New("boom"), false},
+		{"ErrUnknownVersion", ErrUnknownVersion, true},
+		{"ErrDecrypt", ErrDecrypt, true},
+		{"wrapped ErrUnknownVersion", &wrappedError{ErrUnknownVersion}, true},
+		{"wrapped ErrDecrypt", &wrappedError{ErrDecrypt}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := IsUnrecoverable(tt.err); got != tt.want {
+				t.Errorf("IsUnrecoverable(%v) = %v, want %v", tt.err, got, tt.want)
+			}
+		})
+	}
+}
+
+type wrappedError struct{ inner error }
+
+func (w *wrappedError) Error() string { return "wrap: " + w.inner.Error() }
+func (w *wrappedError) Unwrap() error { return w.inner }
+
 func TestNewVaultFromKeyRejectsBadLength(t *testing.T) {
 	if _, err := NewVaultFromKey(make([]byte, 16)); err == nil {
 		t.Error("want error for 16-byte key")
