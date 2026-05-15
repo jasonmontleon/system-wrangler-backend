@@ -25,6 +25,14 @@ import (
 // integration paths exercised here mirror the production wiring.
 func newTestMux(t *testing.T) http.Handler {
 	t.Helper()
+	h, _ := newTestMuxWithAudit(t)
+	return h
+}
+
+// newTestMuxWithAudit returns the same mux as newTestMux plus the
+// audit store, for tests that need to inspect audit rows.
+func newTestMuxWithAudit(t *testing.T) (http.Handler, *audit.Store) {
+	t.Helper()
 	dsn := "file:" + filepath.Join(t.TempDir(), "test.db")
 	db, err := database.Open(dsn)
 	if err != nil {
@@ -60,7 +68,7 @@ func newTestMux(t *testing.T) http.Handler {
 	svc.Audit = auditStore
 	svc.DB = db
 	hub := events.NewHub(nil)
-	return newMux(db, invStore, groupStore, authStore, svc, secret, nil, hub, auditStore, rbacStore, nil, nil)
+	return newMux(db, invStore, groupStore, authStore, svc, secret, nil, hub, auditStore, rbacStore, nil, nil), auditStore
 }
 
 func TestHandleHealth(t *testing.T) {
@@ -353,5 +361,77 @@ func TestWithLoggingPassesThrough(t *testing.T) {
 	}
 	if w.Code != http.StatusTeapot {
 		t.Errorf("status = %d, want %d", w.Code, http.StatusTeapot)
+	}
+}
+
+// TestCSRFMiddlewareInProductionChain wires the production CSRF
+// middleware around the test mux and confirms that an
+// authenticated cross-Origin POST is rejected with 403 + an
+// audit row, while a same-origin POST carrying the header
+// passes through.
+func TestCSRFMiddlewareInProductionChain(t *testing.T) {
+	mux, auditStore := newTestMuxWithAudit(t)
+	srv := httptest.NewServer(withLogging(auth.CSRF(auditStore)(mux)))
+	defer srv.Close()
+
+	jar, _ := cookiejar.New(nil)
+	client := &http.Client{Jar: jar}
+
+	// First-time setup is exempt — bare POST works without CSRF
+	// headers, which is what an unauthenticated install does on
+	// the very first request.
+	setupResp, err := client.Post(srv.URL+"/api/auth/setup", "application/json",
+		strings.NewReader(`{"username":"admin","password":"correctpassword"}`))
+	if err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	_ = setupResp.Body.Close()
+	if setupResp.StatusCode != http.StatusCreated {
+		t.Fatalf("setup status = %d", setupResp.StatusCode)
+	}
+
+	// Cross-Origin POST against an authenticated mutating
+	// endpoint should be rejected before reaching the handler.
+	bad, _ := http.NewRequest(http.MethodPatch, srv.URL+"/api/auth/profile",
+		strings.NewReader(`{"email":"x@example"}`))
+	bad.Header.Set("Origin", "https://evil.example")
+	bad.Header.Set("Content-Type", "application/json")
+	badResp, err := client.Do(bad)
+	if err != nil {
+		t.Fatalf("bad: %v", err)
+	}
+	_ = badResp.Body.Close()
+	if badResp.StatusCode != http.StatusForbidden {
+		t.Errorf("status = %d, want 403", badResp.StatusCode)
+	}
+
+	// Same-origin PATCH with the header passes the middleware.
+	good, _ := http.NewRequest(http.MethodPatch, srv.URL+"/api/auth/profile",
+		strings.NewReader(`{"email":"new@example.com"}`))
+	good.Header.Set("Origin", srv.URL)
+	good.Header.Set("Content-Type", "application/json")
+	good.Header.Set(auth.CSRFHeader, auth.CSRFHeaderValue)
+	goodResp, err := client.Do(good)
+	if err != nil {
+		t.Fatalf("good: %v", err)
+	}
+	_ = goodResp.Body.Close()
+	if goodResp.StatusCode != http.StatusOK {
+		t.Errorf("good status = %d, want 200", goodResp.StatusCode)
+	}
+
+	// One csrf.denied row landed.
+	recs, _, err := auditStore.ListQuery(audit.Query{Action: "csrf.denied", Limit: 5})
+	if err != nil {
+		t.Fatalf("audit list: %v", err)
+	}
+	if len(recs) == 0 {
+		t.Fatal("expected a csrf.denied audit row")
+	}
+	if recs[0].Outcome != audit.Denied {
+		t.Errorf("audit outcome = %s, want denied", recs[0].Outcome)
+	}
+	if got, _ := recs[0].Detail["reason"].(string); got != "origin_mismatch" {
+		t.Errorf("audit reason = %q, want origin_mismatch", got)
 	}
 }

@@ -140,7 +140,9 @@ func main() {
 		Addr: addr,
 		Handler: withRequestMeta(
 			withLogging(
-				newMux(db, store, groupStore, authStore, authSvc, secret, vault, hub, auditStore, rbacStore, onCreate, broadcastSystemsChanged),
+				auth.CSRF(auditStore)(
+					newMux(db, store, groupStore, authStore, authSvc, secret, vault, hub, auditStore, rbacStore, onCreate, broadcastSystemsChanged),
+				),
 			),
 		),
 		ReadHeaderTimeout: 5 * time.Second,
