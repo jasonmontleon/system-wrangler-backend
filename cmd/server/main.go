@@ -24,6 +24,7 @@ import (
 
 	"system-wrangler-backend/internal/audit"
 	"system-wrangler-backend/internal/auth"
+	"system-wrangler-backend/internal/backup"
 	"system-wrangler-backend/internal/database"
 	"system-wrangler-backend/internal/events"
 	"system-wrangler-backend/internal/groups"
@@ -269,6 +270,13 @@ func newMux(db *sql.DB, store systems.Store, groupStore groups.Store, users auth
 	rbacHandler := rbac.NewHandler(rbacStore, users, groupStore)
 	rbacHandler.Audit = auditStore
 	rbacHandler.Register(mux, requireUser)
+	backupHandler := backup.NewHandler(&backup.Service{DB: db})
+	backupHandler.Audit = auditStore
+	backupHandler.CanCreate = func(ctx context.Context) bool {
+		scope, ok := rbac.ScopeFromContext(ctx)
+		return ok && scope.IsGlobalAdmin()
+	}
+	backupHandler.Register(mux, requireUser)
 	if hub != nil {
 		mux.Handle("GET /api/events", requireUser(events.SSEHandler(hub)))
 	}
