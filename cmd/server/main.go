@@ -37,6 +37,7 @@ import (
 	"system-wrangler-backend/internal/secrets"
 	"system-wrangler-backend/internal/secretscan"
 	"system-wrangler-backend/internal/systems"
+	"system-wrangler-backend/internal/updaters"
 	"system-wrangler-backend/web"
 )
 
@@ -122,6 +123,11 @@ func main() {
 		slog.Error("init hostkeys store", "err", err)
 		os.Exit(1)
 	}
+	updaterStore, err := updaters.NewSQLiteStore(db)
+	if err != nil {
+		slog.Error("init updaters store", "err", err)
+		os.Exit(1)
+	}
 	authSvc := auth.NewService(authStore, secret, useTLS)
 	authSvc.TOTPStore = authStore
 	authSvc.RecoveryStore = authStore
@@ -156,7 +162,7 @@ func main() {
 		Handler: withRequestMeta(
 			withLogging(
 				auth.CSRF(auditStore)(
-					newMux(db, store, groupStore, authStore, authSvc, secret, vault, hub, auditStore, rbacStore, credStore, hostKeyStore, onCreate, broadcastSystemsChanged),
+					newMux(db, store, groupStore, authStore, authSvc, secret, vault, hub, auditStore, rbacStore, credStore, hostKeyStore, updaterStore, onCreate, broadcastSystemsChanged),
 				),
 			),
 		),
@@ -204,9 +210,9 @@ func main() {
 	<-probeDone
 }
 
-func newMux(db *sql.DB, store systems.Store, groupStore groups.Store, authStore *auth.SQLiteAuthStore, authSvc *auth.Service, secret []byte, vault *secrets.Vault, hub *events.Hub, auditStore *audit.Store, rbacStore rbac.Store, credStore credentials.Store, hostKeyStore hostkeys.Store, onSystemCreate, onSystemDelete func()) *http.ServeMux {
+func newMux(db *sql.DB, store systems.Store, groupStore groups.Store, authStore *auth.SQLiteAuthStore, authSvc *auth.Service, secret []byte, vault *secrets.Vault, hub *events.Hub, auditStore *audit.Store, rbacStore rbac.Store, credStore credentials.Store, hostKeyStore hostkeys.Store, updaterStore updaters.Store, onSystemCreate, onSystemDelete func()) *http.ServeMux {
 	mux := http.NewServeMux()
-	populateMux(mux, db, store, groupStore, authStore, authSvc, secret, vault, hub, auditStore, rbacStore, credStore, hostKeyStore, onSystemCreate, onSystemDelete)
+	populateMux(mux, db, store, groupStore, authStore, authSvc, secret, vault, hub, auditStore, rbacStore, credStore, hostKeyStore, updaterStore, onSystemCreate, onSystemDelete)
 	return mux
 }
 
@@ -215,7 +221,7 @@ func newMux(db *sql.DB, store systems.Store, groupStore groups.Store, authStore 
 // that captures every (method, path) pattern without spinning up a real
 // *http.ServeMux. main.go and tests reach for newMux; only the drift
 // test needs this entry point.
-func populateMux(mux router.Mux, db *sql.DB, store systems.Store, groupStore groups.Store, authStore *auth.SQLiteAuthStore, authSvc *auth.Service, secret []byte, vault *secrets.Vault, hub *events.Hub, auditStore *audit.Store, rbacStore rbac.Store, credStore credentials.Store, hostKeyStore hostkeys.Store, onSystemCreate, onSystemDelete func()) {
+func populateMux(mux router.Mux, db *sql.DB, store systems.Store, groupStore groups.Store, authStore *auth.SQLiteAuthStore, authSvc *auth.Service, secret []byte, vault *secrets.Vault, hub *events.Hub, auditStore *audit.Store, rbacStore rbac.Store, credStore credentials.Store, hostKeyStore hostkeys.Store, updaterStore updaters.Store, onSystemCreate, onSystemDelete func()) {
 	mux.Handle("GET /api/health", http.HandlerFunc(handleHealth))
 	authSvc.Register(mux)
 	requireUserOnly := auth.RequireUser(secret, authStore, time.Now)
@@ -259,6 +265,20 @@ func populateMux(mux router.Mux, db *sql.DB, store systems.Store, groupStore gro
 	sysHandler.CanCreate = func(ctx context.Context) bool {
 		scope, ok := rbac.ScopeFromContext(ctx)
 		return ok && scope.CanCreateSystem()
+	}
+	sysHandler.SystemStats = func() (map[string]systems.Stats, error) {
+		raw, err := updaterStore.SystemStatsAll()
+		if err != nil {
+			return nil, err
+		}
+		out := make(map[string]systems.Stats, len(raw))
+		for id, s := range raw {
+			out[id] = systems.Stats{
+				LastCheckedAt:  s.LastCheckedAt,
+				PendingUpdates: s.PendingUpdates,
+			}
+		}
+		return out, nil
 	}
 	sysHandler.CanDelete = func(ctx context.Context, s systems.System) bool {
 		scope, ok := rbac.ScopeFromContext(ctx)
@@ -391,6 +411,49 @@ func populateMux(mux router.Mux, db *sql.DB, store systems.Store, groupStore gro
 			},
 		}
 		ansibleHandler.Register(mux, requireUser)
+		updaterRegistry := updaters.NewRegistry(updaterStore)
+		updaterRunner := &updaters.Runner{
+			Registry: updaterRegistry,
+			Store:    updaterStore,
+			Ansible:  ansibleRunner,
+			Audit:    auditStore,
+		}
+		updaterHandler := &updaters.Handler{
+			Runner:  updaterRunner,
+			Store:   updaterStore,
+			Systems: store,
+			CanOperateSystem: func(ctx context.Context, s systems.System) bool {
+				scope, ok := rbac.ScopeFromContext(ctx)
+				if !ok {
+					return false
+				}
+				if scope.IsGlobalOperator() {
+					return true
+				}
+				if s.GroupID == nil {
+					return false
+				}
+				return scope.CanOperateGroup(*s.GroupID)
+			},
+			CanReadSystem: func(ctx context.Context, s systems.System) bool {
+				scope, ok := rbac.ScopeFromContext(ctx)
+				if !ok {
+					return false
+				}
+				return scope.CanReadSystem(s.GroupID)
+			},
+		}
+		updaterHandler.Register(mux, requireUser)
+		updaterAdmin := &updaters.AdminHandler{
+			Registry: updaterRegistry,
+			Syntax:   &updaters.AnsibleSyntaxChecker{Executor: ansible.ExecExecutor{}},
+			Audit:    auditStore,
+			CanManage: func(ctx context.Context) bool {
+				scope, ok := rbac.ScopeFromContext(ctx)
+				return ok && scope.IsGlobalAdmin()
+			},
+		}
+		updaterAdmin.Register(mux, requireUser)
 	}
 	if vault != nil {
 		secretscanHandler := &secretscan.Handler{

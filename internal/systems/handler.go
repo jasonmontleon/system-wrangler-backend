@@ -58,6 +58,13 @@ type Handler struct {
 	// Admin can delete only systems in groups they admin). nil
 	// disables the check.
 	CanDelete func(ctx context.Context, s System) bool
+	// SystemStats, if non-nil, is called once per list / get request
+	// and its result merged into the System rows the handler
+	// serializes — populating LastCheckedAt and PendingUpdates from
+	// the updater store. Failure is logged and shape-preserving:
+	// the rows simply lack those fields on the wire, matching the
+	// "never run" empty state.
+	SystemStats func() (map[string]Stats, error)
 }
 
 // NewHandler constructs a Handler bound to the given Store. The optional
@@ -96,7 +103,33 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 		}
 		systems = filtered
 	}
+	h.enrichStats(systems)
 	writeJSON(w, http.StatusOK, systems)
+}
+
+// enrichStats merges the injected SystemStats result into the
+// supplied slice in place. Missing keys are left as nil pointers —
+// "Last checked: Never" semantics in the SPA. A producer-side
+// failure is logged and absorbed: the API never refuses to serve
+// systems because updater stats are unavailable.
+func (h *Handler) enrichStats(rows []System) {
+	if h.SystemStats == nil || len(rows) == 0 {
+		return
+	}
+	stats, err := h.SystemStats()
+	if err != nil {
+		slog.Warn("systems: stats fetch failed", "err", err)
+		return
+	}
+	for i := range rows {
+		s, ok := stats[rows[i].ID]
+		if !ok {
+			continue
+		}
+		rows[i].LastCheckedAt = s.LastCheckedAt
+		pu := s.PendingUpdates
+		rows[i].PendingUpdates = &pu
+	}
 }
 
 func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
@@ -177,7 +210,9 @@ func (h *Handler) get(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "system not found")
 		return
 	}
-	writeJSON(w, http.StatusOK, sys)
+	out := []System{sys}
+	h.enrichStats(out)
+	writeJSON(w, http.StatusOK, out[0])
 }
 
 func (h *Handler) delete(w http.ResponseWriter, r *http.Request) {

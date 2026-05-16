@@ -90,11 +90,22 @@ func (r *Runner) Run(ctx context.Context, req Request) (Run, error) {
 		StartedAt:  now().UTC(),
 	}
 
+	// Local closure honors the OmitAudit flag for every complete-row
+	// emission so the updater substrate can surface its own
+	// system.update.* / system.inspect.* pairs without doubling the
+	// audit trail.
+	logComplete := func(note string) {
+		if req.OmitAudit {
+			return
+		}
+		r.logComplete(ctx, run, note)
+	}
+
 	resolved, credsOK := r.resolveCredentials(sys)
 	if !credsOK {
 		run.FinishedAt = now().UTC()
 		run.Status = RunMissingCreds
-		r.logComplete(ctx, run, "no credentials resolve for system; configure global/group/system slot")
+		logComplete("no credentials resolve for system; configure global/group/system slot")
 		return run, nil
 	}
 
@@ -111,7 +122,7 @@ func (r *Runner) Run(ctx context.Context, req Request) (Run, error) {
 		}
 		run.FinishedAt = now().UTC()
 		run.Status = RunNoAcceptedHostKey
-		r.logComplete(ctx, run, "no accepted host key; review and accept in the UI before retrying")
+		logComplete("no accepted host key; review and accept in the UI before retrying")
 		return run, nil
 	}
 
@@ -148,7 +159,9 @@ func (r *Runner) Run(ctx context.Context, req Request) (Run, error) {
 		extraVarsArg = []string{"--extra-vars", "@" + extraVarsPath}
 	}
 
-	r.logStart(ctx, run, resolved.AnsibleUser)
+	if !req.OmitAudit {
+		r.logStart(ctx, run, resolved.AnsibleUser)
+	}
 
 	args := []string{
 		"-i", inventoryPath,
@@ -179,13 +192,13 @@ func (r *Runner) Run(ctx context.Context, req Request) (Run, error) {
 		if len(run.Stderr) == 0 {
 			run.Stderr = []byte(execErr.Error())
 		}
-		r.logComplete(ctx, run, execErr.Error())
+		logComplete(execErr.Error())
 		return run, nil
 	}
 
 	if exitCode == 0 {
 		run.Status = RunSuccess
-		r.logComplete(ctx, run, "")
+		logComplete("")
 		return run, nil
 	}
 
@@ -197,11 +210,11 @@ func (r *Runner) Run(ctx context.Context, req Request) (Run, error) {
 			slog.Warn("ansible: keyscan during mismatch capture", "err", err, "system_id", sys.ID)
 		}
 		run.Status = RunHostKeyMismatch
-		r.logComplete(ctx, run, "host key mismatch; review the new offered key in the UI")
+		logComplete("host key mismatch; review the new offered key in the UI")
 		return run, nil
 	}
 	run.Status = RunFailure
-	r.logComplete(ctx, run, "ansible-playbook exited non-zero")
+	logComplete("ansible-playbook exited non-zero")
 	return run, nil
 }
 

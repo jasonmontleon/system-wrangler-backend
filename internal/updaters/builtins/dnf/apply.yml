@@ -1,0 +1,14 @@
+- name: Apply pending DNF updates
+  hosts: all
+  gather_facts: false
+  become: true
+  tasks:
+    - name: Run dnf upgrade
+      ansible.builtin.dnf:
+        name: "*"
+        state: latest
+        update_cache: true
+      register: dnf_result
+    - name: Surface upgrade count to the run log
+      ansible.builtin.debug:
+        msg: "SW_AFFECTED_COUNT: {{ dnf_result.results | default([]) | length }}"

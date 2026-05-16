@@ -1,0 +1,15 @@
+- name: List pending DNF updates
+  hosts: all
+  gather_facts: false
+  become: true
+  tasks:
+    - name: Query dnf for pending updates
+      ansible.builtin.dnf:
+        list: updates
+      register: dnf_pending
+    - name: Emit the package list as a fact
+      ansible.builtin.set_fact:
+        sw_pending_packages: "{{ dnf_pending.results | map(attribute='name') | list }}"
+    - name: Surface count to the run log
+      ansible.builtin.debug:
+        msg: "SW_AFFECTED_COUNT: {{ sw_pending_packages | length }}"

@@ -56,14 +56,19 @@ type Run struct {
 }
 
 // Request is the shape Run accepts. PlaybookPath must exist on the
-// filesystem when Run is called — the caller (future updater
-// substrate) writes the playbook to a temp dir first. Vars is
-// marshaled to JSON and handed to ansible-playbook as
-// --extra-vars '@<file>' so escaping stays sane.
+// filesystem when Run is called — the caller (the updater substrate
+// in internal/updaters) writes the playbook to a temp dir first.
+// Vars is marshaled to JSON and handed to ansible-playbook as
+// --extra-vars '@<file>' so escaping stays sane. OmitAudit lets the
+// updater substrate suppress this package's own
+// ansible.run.start/complete pair so it can emit its own
+// system.update.* / system.inspect.* events without duplicating
+// the audit trail.
 type Request struct {
 	SystemID     string
 	PlaybookPath string
 	Vars         map[string]any
+	OmitAudit    bool
 }
 
 // Sentinel errors returned by Run. Callers compare with errors.Is.

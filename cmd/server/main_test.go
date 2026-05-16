@@ -21,6 +21,7 @@ import (
 	"system-wrangler-backend/internal/hostkeys"
 	"system-wrangler-backend/internal/rbac"
 	"system-wrangler-backend/internal/systems"
+	"system-wrangler-backend/internal/updaters"
 )
 
 // newTestMux returns a fully-wired mux backed by a temp SQLite DB so the
@@ -74,11 +75,15 @@ func newTestMuxWithAudit(t *testing.T) (http.Handler, *audit.Store) {
 	if err != nil {
 		t.Fatalf("hostkeys.NewSQLiteStore: %v", err)
 	}
+	updaterStore, err := updaters.NewSQLiteStore(db)
+	if err != nil {
+		t.Fatalf("updaters.NewSQLiteStore: %v", err)
+	}
 	svc := auth.NewService(authStore, secret, false)
 	svc.Audit = auditStore
 	svc.DB = db
 	hub := events.NewHub(nil)
-	return newMux(db, invStore, groupStore, authStore, svc, secret, nil, hub, auditStore, rbacStore, credStore, hostKeyStore, nil, nil), auditStore
+	return newMux(db, invStore, groupStore, authStore, svc, secret, nil, hub, auditStore, rbacStore, credStore, hostKeyStore, updaterStore, nil, nil), auditStore
 }
 
 func TestHandleHealth(t *testing.T) {

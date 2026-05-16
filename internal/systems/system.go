@@ -34,14 +34,30 @@ const (
 // are not yet assigned to a system group; resolving the group's name is
 // the frontend's job (it already fetches /api/groups) so that systems
 // doesn't depend on the groups package.
+//
+// LastCheckedAt and PendingUpdates are populated at handler time by an
+// injected stats hook (wired in cmd/server/main.go against the updater
+// store). The fields are pointer-valued so the JSON "no data yet" shape
+// is distinguishable from "checked, zero pending."
 type System struct {
-	ID        string     `json:"id"`
-	Name      string     `json:"name"`
-	Hostname  string     `json:"hostname"`
-	CreatedAt time.Time  `json:"createdAt"`
-	Status    Status     `json:"status"`
-	LastSeen  *time.Time `json:"lastSeen,omitempty"`
-	GroupID   *string    `json:"groupId,omitempty"`
+	ID             string     `json:"id"`
+	Name           string     `json:"name"`
+	Hostname       string     `json:"hostname"`
+	CreatedAt      time.Time  `json:"createdAt"`
+	Status         Status     `json:"status"`
+	LastSeen       *time.Time `json:"lastSeen,omitempty"`
+	GroupID        *string    `json:"groupId,omitempty"`
+	LastCheckedAt  *time.Time `json:"lastCheckedAt,omitempty"`
+	PendingUpdates *int       `json:"pendingUpdates,omitempty"`
+}
+
+// Stats is the per-system updater aggregate the systems handler
+// merges into each row before serialization. The producer lives
+// outside this package (the updater store) and is injected via
+// Handler.SystemStats so systems doesn't depend on updaters.
+type Stats struct {
+	LastCheckedAt  *time.Time
+	PendingUpdates int
 }
 
 // SystemInput is the user-supplied subset of a System accepted on create.

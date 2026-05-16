@@ -41,6 +41,8 @@ tags:
     description: SSH host-key acceptance for managed systems (TOFU with operator prompt).
   - name: ansible
     description: Operator-facing ansible affordances — connectivity testing today, ad-hoc actions later.
+  - name: updaters
+    description: Pluggable per-OS updater substrate. Inspect, check, apply against managed systems; custom playbooks managed by Global Admin.
   - name: backup
     description: Database snapshot download.
   - name: secrets
@@ -1298,6 +1300,321 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
 
+  /api/systems/{id}/inspect:
+    post:
+      tags: [updaters]
+      summary: Probe the system for installed updaters and reconcile system_updaters.
+      description: |
+        Composes a one-shot detection playbook from the registry
+        (one `command -v <binary>` task per updater), runs it, and
+        upserts/removes `system_updaters` rows based on what the
+        target reported. Emits a `system.inspect.start` /
+        `system.inspect.complete` audit pair. Returns 409 with the
+        conflicting run id when another inspect / check / apply is
+        in flight on the same system.
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: Inspection completed. `detected` is the resolved availability list.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InspectResult"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: Another run is in progress for this system; the response carries the conflicting run id.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UpdaterConflict"
+        "503":
+          description: Runner not configured on this server (no vault).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/systems/{id}/updaters/{updater}/check:
+    post:
+      tags: [updaters]
+      summary: Run the named updater's check playbook against the system.
+      description: |
+        Fires the read-only check playbook (e.g. `dnf list updates`).
+        Emits `system.update.check.start` / `.complete`. The
+        complete row's detail carries `affected_packages` (the
+        SW_AFFECTED_COUNT marker the playbook surfaced) and
+        `log_sha`.
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+        - { in: path, name: updater, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: Check completed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UpdaterRunResult"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404":
+          description: System or updater not found (or the updater is soft-deleted).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: Another run is in progress for this system.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UpdaterConflict"
+        "503":
+          description: Runner not configured on this server (no vault).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/systems/{id}/updaters/{updater}/apply:
+    post:
+      tags: [updaters]
+      summary: Run the named updater's apply playbook against the system.
+      description: |
+        Fires the mutating apply playbook (e.g. `dnf upgrade *`).
+        Emits `system.update.apply.start` / `.complete`. Apply
+        completes with `affected_packages` and `log_sha` in
+        `detail`, mirroring the check shape.
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+        - { in: path, name: updater, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: Apply completed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UpdaterRunResult"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404":
+          description: System or updater not found (or the updater is soft-deleted).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: Another run is in progress for this system.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UpdaterConflict"
+        "503":
+          description: Runner not configured on this server (no vault).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/systems/{id}/updaters:
+    get:
+      tags: [updaters]
+      summary: Per-system updater list — every registered updater × this system's detection and enablement state.
+      description: |
+        Drives the system detail page's "Enabled updaters" card.
+        Each entry pairs a registered updater (builtin or custom)
+        with whether the last inspection detected it on this host
+        (`installed`) and whether the operator has it enabled
+        (`enabled`). Non-installed rows render as
+        `installed=false, enabled=false`; enablement only matters
+        once detection confirms the binary is present.
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: Per-system updater rows.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [updaters]
+                properties:
+                  updaters:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/SystemUpdater"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "503":
+          description: Runner not configured on this server (no vault).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/systems/{id}/updaters/{updater}/enabled:
+    put:
+      tags: [updaters]
+      summary: Toggle whether fan-out check/apply fires this updater on this system.
+      description: |
+        Operator-on-group only. The (system, updater) row must
+        exist — enablement is a flag on a detected updater, not
+        a way to register one. Returns 404 if no detection row
+        is present.
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+        - { in: path, name: updater, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [enabled]
+              properties:
+                enabled: { type: boolean }
+      responses:
+        "204": { description: Enabled flag updated. }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404":
+          description: System not found, or this updater has not been detected on it.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/systems/{id}/updater-runs:
+    get:
+      tags: [updaters]
+      summary: Paginated run history for the system, newest first.
+      description: |
+        Returns the recent inspect / check / apply runs against this
+        system. `logTail` is the trailing ~12 KB of ansible output
+        captured at finish time; the full stream is not persisted.
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+        - in: query
+          name: limit
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+      responses:
+        "200":
+          description: Recent runs for this system.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [runs]
+                properties:
+                  runs:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/UpdaterRun"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/admin/updater-definitions:
+    get:
+      tags: [updaters]
+      summary: List every registered updater (builtins + custom), unioned.
+      description: |
+        Any authenticated user. Soft-deleted custom definitions are
+        omitted. Builtins are code-registered and always present;
+        custom rows are pulled from `updater_definitions`.
+      responses:
+        "200":
+          description: The union of registered updaters.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [definitions]
+                properties:
+                  definitions:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/UpdaterDefinition"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      tags: [updaters]
+      summary: Create a custom updater. Global Admin only.
+      description: |
+        Save-time guards: input validation (display_name,
+        detect_binary, both playbook bodies non-empty, 64 KB cap),
+        inline-credential heuristic (rejects `password:`,
+        `token:`, `secret:` keys), and `ansible-playbook
+        --syntax-check`. Emits `updater.create` with the playbook
+        SHAs in detail.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdaterDefinitionInput"
+      responses:
+        "201":
+          description: Custom updater created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UpdaterDefinition"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409":
+          description: An updater with this id already exists.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/admin/updater-definitions/{id}:
+    patch:
+      tags: [updaters]
+      summary: Replace a custom updater's editable fields. Global Admin only.
+      description: |
+        Re-runs every save-time guard. Builtins are rejected; ids
+        that don't begin with `custom.` are rejected. Emits
+        `updater.update`.
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdaterDefinitionPatch"
+      responses:
+        "200":
+          description: Updated custom updater.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UpdaterDefinition"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [updaters]
+      summary: Soft-delete a custom updater. Global Admin only.
+      description: |
+        Stamps `deleted_at`; historical `updater_runs` and audit
+        rows still resolve the original display name. Emits
+        `updater.delete`.
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+      responses:
+        "204": { description: Custom updater soft-deleted. }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
   /api/admin/backup:
     post:
       tags: [backup]
@@ -1469,6 +1786,13 @@ components:
           enum: [unprobed, reachable, unreachable]
         lastSeen: { type: string, format: date-time }
         groupId: { type: string }
+        lastCheckedAt:
+          type: string
+          format: date-time
+          description: Most recent check run timestamp across every updater on this system. Absent when no check has ever run.
+        pendingUpdates:
+          type: integer
+          description: Cumulative count of pending updates across this system's enabled updaters, from each updater's latest check run. Absent when no check has ever run.
 
     SystemInput:
       type: object
@@ -1603,6 +1927,148 @@ components:
         acceptedBy:
           type: string
           description: User id of the operator who clicked Accept. Empty for pending rows.
+
+    UpdaterRunKind:
+      type: string
+      enum: [inspect, check, apply]
+
+    UpdaterRun:
+      type: object
+      required: [id, systemId, kind, startedAt]
+      properties:
+        id: { type: string }
+        systemId: { type: string }
+        updaterId:
+          type: string
+          description: Empty when kind is `inspect` (the sweep covers every registered updater at once).
+        kind: { $ref: "#/components/schemas/UpdaterRunKind" }
+        startedAt: { type: string, format: date-time }
+        finishedAt: { type: string, format: date-time }
+        exitCode: { type: integer }
+        actorId: { type: string }
+        playbookSha:
+          type: string
+          description: Hex SHA-256 of the playbook body that ran.
+        logTail:
+          type: string
+          description: Trailing ~12 KB of ansible stdout/stderr captured at finish time.
+
+    UpdaterRunStatus:
+      type: string
+      enum: [success, failure, host_key_mismatch, no_accepted_host_key, missing_credentials]
+
+    UpdaterConflict:
+      type: object
+      required: [error]
+      properties:
+        error: { type: string }
+        conflictingRun:
+          type: string
+          description: Run id of the in-flight inspect/check/apply currently holding the per-system lock.
+
+    InspectResult:
+      type: object
+      required: [runId, status, exitCode, detected, durationMs]
+      properties:
+        runId: { type: string }
+        status: { $ref: "#/components/schemas/UpdaterRunStatus" }
+        exitCode: { type: integer }
+        reason: { type: string }
+        detected:
+          type: array
+          items: { type: string }
+          description: Updater ids the playbook reported as present (sorted).
+        removed:
+          type: array
+          items: { type: string }
+          description: Updater ids that were previously recorded but no longer detected.
+        durationMs: { type: integer }
+
+    UpdaterDefinition:
+      type: object
+      required: [id, source, displayName, detectBinary, checkPlaybook, applyPlaybook]
+      properties:
+        id:
+          type: string
+          description: '`builtin.<name>` or `custom.<slug>`. Prefixes are reserved.'
+        source:
+          type: string
+          enum: [builtin, custom]
+        displayName: { type: string }
+        description: { type: string }
+        detectBinary:
+          type: string
+          description: Binary name probed via `command -v` during inspection. Charset is restricted to `[A-Za-z0-9._-]{1,64}`.
+        checkPlaybook:
+          type: string
+          description: YAML body of the check playbook (read-only "what's pending").
+        applyPlaybook:
+          type: string
+          description: YAML body of the apply playbook (mutates the host).
+        createdBy: { type: string }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    UpdaterDefinitionInput:
+      type: object
+      required: [id, displayName, detectBinary, checkPlaybook, applyPlaybook]
+      properties:
+        id:
+          type: string
+          description: Bare slug (`dnf-fast`) or full id (`custom.dnf-fast`). The server prepends `custom.` if absent.
+        displayName: { type: string }
+        description: { type: string }
+        detectBinary: { type: string }
+        checkPlaybook:
+          type: string
+          description: '64 KB cap; must pass `ansible-playbook --syntax-check` and the inline-credential heuristic.'
+        applyPlaybook:
+          type: string
+
+    UpdaterDefinitionPatch:
+      type: object
+      required: [displayName, detectBinary, checkPlaybook, applyPlaybook]
+      properties:
+        displayName: { type: string }
+        description: { type: string }
+        detectBinary: { type: string }
+        checkPlaybook: { type: string }
+        applyPlaybook: { type: string }
+
+    SystemUpdater:
+      type: object
+      required: [updaterId, source, displayName, installed, enabled]
+      properties:
+        updaterId: { type: string }
+        source:
+          type: string
+          enum: [builtin, custom]
+        displayName: { type: string }
+        installed:
+          type: boolean
+          description: True when the last inspection found the detect binary on this system.
+        enabled:
+          type: boolean
+          description: Operator's per-system toggle. Fan-out check/apply only fires updaters that are both installed and enabled.
+        lastSeenAt:
+          type: string
+          format: date-time
+          description: Timestamp of the inspection that last confirmed the binary present.
+
+    UpdaterRunResult:
+      type: object
+      required: [runId, updaterId, kind, status, exitCode, affectedCount, durationMs]
+      properties:
+        runId: { type: string }
+        updaterId: { type: string }
+        kind: { $ref: "#/components/schemas/UpdaterRunKind" }
+        status: { $ref: "#/components/schemas/UpdaterRunStatus" }
+        exitCode: { type: integer }
+        affectedCount:
+          type: integer
+          description: SW_AFFECTED_COUNT marker the playbook surfaced; 0 when absent.
+        reason: { type: string }
+        durationMs: { type: integer }
 
     AuditRecord:
       type: object

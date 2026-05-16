@@ -21,6 +21,7 @@ import (
 	"system-wrangler-backend/internal/rbac"
 	"system-wrangler-backend/internal/secrets"
 	"system-wrangler-backend/internal/systems"
+	"system-wrangler-backend/internal/updaters"
 )
 
 // TestOpenAPISpecMatchesMux is the drift test. It walks every pattern
@@ -107,6 +108,10 @@ func recordRoutes(t *testing.T) map[string]bool {
 	if err != nil {
 		t.Fatalf("hostkeys store: %v", err)
 	}
+	updaterStore, err := updaters.NewSQLiteStore(db)
+	if err != nil {
+		t.Fatalf("updaters store: %v", err)
+	}
 	svc := auth.NewService(authStore, secret, false)
 	svc.Audit = auditStore
 	svc.DB = db
@@ -121,7 +126,7 @@ func recordRoutes(t *testing.T) map[string]bool {
 	}
 
 	rec := &recordingMux{patterns: map[string]bool{}}
-	populateMux(rec, db, invStore, groupStore, authStore, svc, secret, vault, hub, auditStore, rbacStore, credStore, hostKeyStore, nil, nil)
+	populateMux(rec, db, invStore, groupStore, authStore, svc, secret, vault, hub, auditStore, rbacStore, credStore, hostKeyStore, updaterStore, nil, nil)
 	return rec.patterns
 }
 
