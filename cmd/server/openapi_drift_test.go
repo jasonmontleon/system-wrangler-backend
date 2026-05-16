@@ -12,9 +12,11 @@ import (
 
 	"system-wrangler-backend/internal/audit"
 	"system-wrangler-backend/internal/auth"
+	"system-wrangler-backend/internal/credentials"
 	"system-wrangler-backend/internal/database"
 	"system-wrangler-backend/internal/events"
 	"system-wrangler-backend/internal/groups"
+	"system-wrangler-backend/internal/hostkeys"
 	"system-wrangler-backend/internal/openapi"
 	"system-wrangler-backend/internal/rbac"
 	"system-wrangler-backend/internal/secrets"
@@ -97,6 +99,14 @@ func recordRoutes(t *testing.T) map[string]bool {
 	if err != nil {
 		t.Fatalf("rbac store: %v", err)
 	}
+	credStore, err := credentials.NewSQLiteStore(db)
+	if err != nil {
+		t.Fatalf("credentials store: %v", err)
+	}
+	hostKeyStore, err := hostkeys.NewSQLiteStore(db)
+	if err != nil {
+		t.Fatalf("hostkeys store: %v", err)
+	}
 	svc := auth.NewService(authStore, secret, false)
 	svc.Audit = auditStore
 	svc.DB = db
@@ -111,7 +121,7 @@ func recordRoutes(t *testing.T) map[string]bool {
 	}
 
 	rec := &recordingMux{patterns: map[string]bool{}}
-	populateMux(rec, db, invStore, groupStore, authStore, svc, secret, vault, hub, auditStore, rbacStore, nil, nil)
+	populateMux(rec, db, invStore, groupStore, authStore, svc, secret, vault, hub, auditStore, rbacStore, credStore, hostKeyStore, nil, nil)
 	return rec.patterns
 }
 

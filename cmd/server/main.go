@@ -22,12 +22,15 @@ import (
 
 	"github.com/google/uuid"
 
+	"system-wrangler-backend/internal/ansible"
 	"system-wrangler-backend/internal/audit"
 	"system-wrangler-backend/internal/auth"
 	"system-wrangler-backend/internal/backup"
+	"system-wrangler-backend/internal/credentials"
 	"system-wrangler-backend/internal/database"
 	"system-wrangler-backend/internal/events"
 	"system-wrangler-backend/internal/groups"
+	"system-wrangler-backend/internal/hostkeys"
 	"system-wrangler-backend/internal/openapi"
 	"system-wrangler-backend/internal/rbac"
 	"system-wrangler-backend/internal/router"
@@ -109,6 +112,16 @@ func main() {
 		slog.Error("init rbac store", "err", err)
 		os.Exit(1)
 	}
+	credStore, err := credentials.NewSQLiteStore(db)
+	if err != nil {
+		slog.Error("init credentials store", "err", err)
+		os.Exit(1)
+	}
+	hostKeyStore, err := hostkeys.NewSQLiteStore(db)
+	if err != nil {
+		slog.Error("init hostkeys store", "err", err)
+		os.Exit(1)
+	}
 	authSvc := auth.NewService(authStore, secret, useTLS)
 	authSvc.TOTPStore = authStore
 	authSvc.RecoveryStore = authStore
@@ -143,7 +156,7 @@ func main() {
 		Handler: withRequestMeta(
 			withLogging(
 				auth.CSRF(auditStore)(
-					newMux(db, store, groupStore, authStore, authSvc, secret, vault, hub, auditStore, rbacStore, onCreate, broadcastSystemsChanged),
+					newMux(db, store, groupStore, authStore, authSvc, secret, vault, hub, auditStore, rbacStore, credStore, hostKeyStore, onCreate, broadcastSystemsChanged),
 				),
 			),
 		),
@@ -191,9 +204,9 @@ func main() {
 	<-probeDone
 }
 
-func newMux(db *sql.DB, store systems.Store, groupStore groups.Store, authStore *auth.SQLiteAuthStore, authSvc *auth.Service, secret []byte, vault *secrets.Vault, hub *events.Hub, auditStore *audit.Store, rbacStore rbac.Store, onSystemCreate, onSystemDelete func()) *http.ServeMux {
+func newMux(db *sql.DB, store systems.Store, groupStore groups.Store, authStore *auth.SQLiteAuthStore, authSvc *auth.Service, secret []byte, vault *secrets.Vault, hub *events.Hub, auditStore *audit.Store, rbacStore rbac.Store, credStore credentials.Store, hostKeyStore hostkeys.Store, onSystemCreate, onSystemDelete func()) *http.ServeMux {
 	mux := http.NewServeMux()
-	populateMux(mux, db, store, groupStore, authStore, authSvc, secret, vault, hub, auditStore, rbacStore, onSystemCreate, onSystemDelete)
+	populateMux(mux, db, store, groupStore, authStore, authSvc, secret, vault, hub, auditStore, rbacStore, credStore, hostKeyStore, onSystemCreate, onSystemDelete)
 	return mux
 }
 
@@ -202,7 +215,7 @@ func newMux(db *sql.DB, store systems.Store, groupStore groups.Store, authStore 
 // that captures every (method, path) pattern without spinning up a real
 // *http.ServeMux. main.go and tests reach for newMux; only the drift
 // test needs this entry point.
-func populateMux(mux router.Mux, db *sql.DB, store systems.Store, groupStore groups.Store, authStore *auth.SQLiteAuthStore, authSvc *auth.Service, secret []byte, vault *secrets.Vault, hub *events.Hub, auditStore *audit.Store, rbacStore rbac.Store, onSystemCreate, onSystemDelete func()) {
+func populateMux(mux router.Mux, db *sql.DB, store systems.Store, groupStore groups.Store, authStore *auth.SQLiteAuthStore, authSvc *auth.Service, secret []byte, vault *secrets.Vault, hub *events.Hub, auditStore *audit.Store, rbacStore rbac.Store, credStore credentials.Store, hostKeyStore hostkeys.Store, onSystemCreate, onSystemDelete func()) {
 	mux.Handle("GET /api/health", http.HandlerFunc(handleHealth))
 	authSvc.Register(mux)
 	requireUserOnly := auth.RequireUser(secret, authStore, time.Now)
@@ -292,10 +305,100 @@ func populateMux(mux router.Mux, db *sql.DB, store systems.Store, groupStore gro
 		return ok && scope.IsGlobalAdmin()
 	}
 	backupHandler.Register(mux, requireUser)
+	credHandler := &credentials.Handler{
+		Store:   credStore,
+		Vault:   vault,
+		Systems: store,
+		Groups:  groupStore,
+		Audit:   auditStore,
+		CanManageGlobal: func(ctx context.Context) bool {
+			scope, ok := rbac.ScopeFromContext(ctx)
+			return ok && scope.IsGlobalAdmin()
+		},
+		CanManageGroup: func(ctx context.Context, groupID string) bool {
+			scope, ok := rbac.ScopeFromContext(ctx)
+			if !ok {
+				return false
+			}
+			return scope.IsGlobalAdmin() || scope.RoleOnGroup(groupID) == rbac.RoleAdmin
+		},
+		CanManageSystem: func(ctx context.Context, s systems.System) bool {
+			scope, ok := rbac.ScopeFromContext(ctx)
+			if !ok {
+				return false
+			}
+			if scope.IsGlobalAdmin() {
+				return true
+			}
+			if s.GroupID == nil {
+				return false
+			}
+			return scope.RoleOnGroup(*s.GroupID) == rbac.RoleAdmin
+		},
+		CanReadSystem: func(ctx context.Context, s systems.System) bool {
+			scope, ok := rbac.ScopeFromContext(ctx)
+			if !ok {
+				return false
+			}
+			return scope.CanReadSystem(s.GroupID)
+		},
+	}
+	credHandler.Register(mux, requireUser)
+	hostKeyHandler := &hostkeys.Handler{
+		Store:    hostKeyStore,
+		Systems:  store,
+		Audit:    auditStore,
+		Executor: ansible.ExecExecutor{},
+		CanManageSystem: func(ctx context.Context, s systems.System) bool {
+			scope, ok := rbac.ScopeFromContext(ctx)
+			if !ok {
+				return false
+			}
+			if scope.IsGlobalAdmin() {
+				return true
+			}
+			if s.GroupID == nil {
+				return false
+			}
+			return scope.RoleOnGroup(*s.GroupID) == rbac.RoleAdmin
+		},
+	}
+	hostKeyHandler.Register(mux, requireUser)
+	if vault != nil {
+		ansibleRunner := &ansible.Runner{
+			Executor:    ansible.ExecExecutor{},
+			Systems:     store,
+			Credentials: credStore,
+			HostKeys:    hostKeyStore,
+			Vault:       vault,
+			Audit:       auditStore,
+		}
+		ansibleHandler := &ansible.Handler{
+			Runner:  ansibleRunner,
+			Systems: store,
+			CanManageSystem: func(ctx context.Context, s systems.System) bool {
+				scope, ok := rbac.ScopeFromContext(ctx)
+				if !ok {
+					return false
+				}
+				if scope.IsGlobalAdmin() {
+					return true
+				}
+				if s.GroupID == nil {
+					return false
+				}
+				return scope.RoleOnGroup(*s.GroupID) == rbac.RoleAdmin
+			},
+		}
+		ansibleHandler.Register(mux, requireUser)
+	}
 	if vault != nil {
 		secretscanHandler := &secretscan.Handler{
-			Vault:   vault,
-			Sources: []secretscan.Source{auth.TOTPScanSource{Store: authStore}},
+			Vault: vault,
+			Sources: []secretscan.Source{
+				auth.TOTPScanSource{Store: authStore},
+				credentials.ScanSource{Store: credStore},
+			},
 			CanScan: func(ctx context.Context) bool {
 				scope, ok := rbac.ScopeFromContext(ctx)
 				return ok && scope.IsGlobalAdmin()

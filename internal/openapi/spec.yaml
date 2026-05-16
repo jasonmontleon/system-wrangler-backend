@@ -35,6 +35,12 @@ tags:
     description: Managed hosts in the fleet.
   - name: groups
     description: Named collections of systems.
+  - name: credentials
+    description: Ansible authentication slots (global / group / system) and the resolved view.
+  - name: hostkeys
+    description: SSH host-key acceptance for managed systems (TOFU with operator prompt).
+  - name: ansible
+    description: Operator-facing ansible affordances — connectivity testing today, ad-hoc actions later.
   - name: backup
     description: Database snapshot download.
   - name: secrets
@@ -922,6 +928,376 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
 
+  /api/admin/ansible-credentials:
+    get:
+      tags: [credentials]
+      summary: List every ansible credential slot. Global Admin only.
+      responses:
+        "200":
+          description: All configured slots (global, group, system).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [slots]
+                properties:
+                  slots:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/CredentialSlot"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/admin/ansible-credentials/global:
+    get:
+      tags: [credentials]
+      summary: Get the global credential slot.
+      responses:
+        "200":
+          description: The global slot.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CredentialSlot"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [credentials]
+      summary: Set or replace the global credential slot.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CredentialUpsert"
+      responses:
+        "200":
+          description: Updated slot. The private key blob is never returned.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CredentialSlot"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "503":
+          description: Secrets vault not configured; cannot seal a new key.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    delete:
+      tags: [credentials]
+      summary: Delete the global credential slot.
+      responses:
+        "204": { description: Slot deleted. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/groups/{id}/ansible-credential:
+    get:
+      tags: [credentials]
+      summary: Get the credential slot for one group.
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: The group's slot.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CredentialSlot"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [credentials]
+      summary: Set or replace the credential slot for one group.
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CredentialUpsert"
+      responses:
+        "200":
+          description: Updated slot.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CredentialSlot"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [credentials]
+      summary: Delete the group's credential slot.
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+      responses:
+        "204": { description: Slot deleted. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/systems/{id}/ansible-credential:
+    get:
+      tags: [credentials]
+      summary: Get the credential slot scoped to one system.
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: The system's slot.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CredentialSlot"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [credentials]
+      summary: Set or replace the credential slot for one system.
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CredentialUpsert"
+      responses:
+        "200":
+          description: Updated slot.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CredentialSlot"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [credentials]
+      summary: Delete the system's credential slot.
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+      responses:
+        "204": { description: Slot deleted. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/systems/{id}/effective-credential:
+    get:
+      tags: [credentials]
+      summary: Resolve the effective ansible credential for one system.
+      description: |
+        Walks system → group → global per field. The response records
+        which slot supplied each field so the UI can surface
+        "inherited from group X" badges.
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: Resolved credential.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EffectiveCredential"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404":
+          description: System not found, hidden from scope, or no credentials configured.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: Slot configuration is incomplete (user or key missing at every level).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/systems/{id}/host-keys:
+    get:
+      tags: [hostkeys]
+      summary: List a system's accepted and pending SSH host keys.
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: Every host-key row for the system, accepted rows first.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [hostKeys]
+                properties:
+                  hostKeys:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/HostKey"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/systems/{id}/test-connection:
+    post:
+      tags: [ansible]
+      summary: Run `ansible <host> -m ping` against the system.
+      description: |
+        End-to-end connectivity probe. Resolves the credential
+        slot, materializes per-run private key + known_hosts +
+        inventory, invokes `ansible` ad-hoc with `-m ping`, and
+        reports whether the module returned `pong`. Emits one
+        `system.connection.test` audit row. Disabled (503) when
+        the server has no vault configured.
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: |
+            The probe completed. `status` is the verdict:
+            `success` (pong returned), `failure`,
+            `host_key_mismatch`, `no_accepted_host_key`, or
+            `missing_credentials`.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, reason, exitCode, durationMs]
+                properties:
+                  status:
+                    type: string
+                    enum: [success, failure, host_key_mismatch, no_accepted_host_key, missing_credentials]
+                  reason: { type: string }
+                  exitCode: { type: integer }
+                  durationMs: { type: integer }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "503":
+          description: Runner not configured on this server (no vault).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/systems/{id}/host-keys/scan:
+    post:
+      tags: [hostkeys]
+      summary: Run ssh-keyscan against the system and record offered keys as pending.
+      description: |
+        Operator-facing affordance for "I just added this system;
+        capture its host keys now without waiting for an ansible
+        run." Each offered key is upserted into the pending slot
+        for its algorithm and emits a `system.host_key.pending`
+        audit row. Returns the captured rows.
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: The captured host-key rows (with store-assigned ids).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [hostKeys]
+                properties:
+                  hostKeys:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/HostKey"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "502":
+          description: ssh-keyscan could not reach the host or produced no parseable output.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: Scan endpoint disabled (executor not configured on this server).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/systems/{id}/host-keys/accept:
+    post:
+      tags: [hostkeys]
+      summary: Promote a pending host key to accepted.
+      description: |
+        Body carries `{algorithm, fingerprint}`. The fingerprint
+        must match the current pending row's fingerprint — defeats
+        stale-banner accepts where the operator was looking at an
+        older offered key. If an accepted row already exists for
+        the same algorithm it is replaced atomically, and the
+        emitted audit row is `system.host_key.replace` (otherwise
+        `system.host_key.accept`).
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [algorithm, fingerprint]
+              properties:
+                algorithm: { type: string }
+                fingerprint: { type: string }
+      responses:
+        "200":
+          description: The promoted host-key row.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HostKey"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404":
+          description: System not found, or no pending host key for this algorithm.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: Fingerprint does not match the current pending row.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/systems/{id}/host-keys/{keyId}:
+    delete:
+      tags: [hostkeys]
+      summary: Reject a pending host key, or delete an accepted one.
+      description: |
+        DELETE on a pending row emits `system.host_key.reject` and
+        is the operator's "no, that's not the key I expected" path.
+        DELETE on an accepted row emits `system.host_key.delete`
+        and is used before re-enrolling a system that's been
+        reinstalled.
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+        - { in: path, name: keyId, required: true, schema: { type: string } }
+      responses:
+        "204": { description: Host-key row deleted. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
   /api/admin/backup:
     post:
       tags: [backup]
@@ -1141,6 +1517,92 @@ components:
           type: [string, "null"]
           description: Omit (or `null`) for a global assignment.
         role: { $ref: "#/components/schemas/Role" }
+
+    CredentialScopeKind:
+      type: string
+      enum: [global, group, system]
+
+    CredentialOrigin:
+      type: string
+      enum: [sw_generated, user_supplied]
+
+    CredentialSlot:
+      type: object
+      required: [scopeKind, createdAt, updatedAt]
+      properties:
+        scopeKind: { $ref: "#/components/schemas/CredentialScopeKind" }
+        scopeId:
+          type: string
+          description: Empty for global; group/system UUID otherwise.
+        ansibleUser: { type: string }
+        publicKey:
+          type: string
+          description: OpenSSH authorized_keys line. Private key bytes are never returned.
+        origin: { $ref: "#/components/schemas/CredentialOrigin" }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    CredentialKeyInput:
+      type: object
+      required: [origin]
+      properties:
+        origin: { $ref: "#/components/schemas/CredentialOrigin" }
+        privateKeyPem:
+          type: string
+          description: |
+            Required when origin is `user_supplied`. Ignored when
+            origin is `sw_generated` (the server mints a fresh ed25519
+            keypair and discards any pasted PEM).
+
+    CredentialUpsert:
+      type: object
+      description: |
+        At least one of `ansibleUser` or `key` (or `clearKey: true`)
+        must be set. Fields not present on the request leave the
+        existing slot value untouched.
+      properties:
+        ansibleUser:
+          type: string
+          description: Set to override or clear (empty string) the slot's ansible user.
+        key:
+          $ref: "#/components/schemas/CredentialKeyInput"
+        clearKey:
+          type: boolean
+          description: Remove the slot's existing key without supplying a replacement.
+
+    EffectiveCredential:
+      type: object
+      required: [ansibleUser, userSource, publicKey, keySource, keyOrigin]
+      properties:
+        ansibleUser: { type: string }
+        userSource: { $ref: "#/components/schemas/CredentialScopeKind" }
+        publicKey: { type: string }
+        keySource: { $ref: "#/components/schemas/CredentialScopeKind" }
+        keyOrigin: { $ref: "#/components/schemas/CredentialOrigin" }
+
+    HostKey:
+      type: object
+      required: [id, systemId, state, algorithm, publicKey, fingerprint, firstSeenAt]
+      properties:
+        id: { type: string }
+        systemId: { type: string }
+        state:
+          type: string
+          enum: [pending, accepted]
+        algorithm:
+          type: string
+          description: "SSH host-key algorithm (e.g. ssh-ed25519, ssh-rsa, ecdsa-sha2-nistp256)."
+        publicKey:
+          type: string
+          description: Authorized_keys-style body of the host key.
+        fingerprint:
+          type: string
+          description: SHA256 fingerprint shown in the UI.
+        firstSeenAt: { type: string, format: date-time }
+        acceptedAt: { type: string, format: date-time }
+        acceptedBy:
+          type: string
+          description: User id of the operator who clicked Accept. Empty for pending rows.
 
     AuditRecord:
       type: object

@@ -14,9 +14,11 @@ import (
 
 	"system-wrangler-backend/internal/audit"
 	"system-wrangler-backend/internal/auth"
+	"system-wrangler-backend/internal/credentials"
 	"system-wrangler-backend/internal/database"
 	"system-wrangler-backend/internal/events"
 	"system-wrangler-backend/internal/groups"
+	"system-wrangler-backend/internal/hostkeys"
 	"system-wrangler-backend/internal/rbac"
 	"system-wrangler-backend/internal/systems"
 )
@@ -64,11 +66,19 @@ func newTestMuxWithAudit(t *testing.T) (http.Handler, *audit.Store) {
 	if err != nil {
 		t.Fatalf("rbac.NewSQLiteStore: %v", err)
 	}
+	credStore, err := credentials.NewSQLiteStore(db)
+	if err != nil {
+		t.Fatalf("credentials.NewSQLiteStore: %v", err)
+	}
+	hostKeyStore, err := hostkeys.NewSQLiteStore(db)
+	if err != nil {
+		t.Fatalf("hostkeys.NewSQLiteStore: %v", err)
+	}
 	svc := auth.NewService(authStore, secret, false)
 	svc.Audit = auditStore
 	svc.DB = db
 	hub := events.NewHub(nil)
-	return newMux(db, invStore, groupStore, authStore, svc, secret, nil, hub, auditStore, rbacStore, nil, nil), auditStore
+	return newMux(db, invStore, groupStore, authStore, svc, secret, nil, hub, auditStore, rbacStore, credStore, hostKeyStore, nil, nil), auditStore
 }
 
 func TestHandleHealth(t *testing.T) {
