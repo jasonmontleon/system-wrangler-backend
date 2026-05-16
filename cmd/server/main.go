@@ -36,6 +36,7 @@ import (
 	"system-wrangler-backend/internal/router"
 	"system-wrangler-backend/internal/secrets"
 	"system-wrangler-backend/internal/secretscan"
+	"system-wrangler-backend/internal/settings"
 	"system-wrangler-backend/internal/systems"
 	"system-wrangler-backend/internal/updaters"
 	"system-wrangler-backend/web"
@@ -128,6 +129,11 @@ func main() {
 		slog.Error("init updaters store", "err", err)
 		os.Exit(1)
 	}
+	settingsStore, err := settings.NewSQLiteStore(db)
+	if err != nil {
+		slog.Error("init settings store", "err", err)
+		os.Exit(1)
+	}
 	authSvc := auth.NewService(authStore, secret, useTLS)
 	authSvc.TOTPStore = authStore
 	authSvc.RecoveryStore = authStore
@@ -162,7 +168,7 @@ func main() {
 		Handler: withRequestMeta(
 			withLogging(
 				auth.CSRF(auditStore)(
-					newMux(db, store, groupStore, authStore, authSvc, secret, vault, hub, auditStore, rbacStore, credStore, hostKeyStore, updaterStore, onCreate, broadcastSystemsChanged),
+					newMux(db, store, groupStore, authStore, authSvc, secret, vault, hub, auditStore, rbacStore, credStore, hostKeyStore, updaterStore, settingsStore, onCreate, broadcastSystemsChanged),
 				),
 			),
 		),
@@ -210,9 +216,9 @@ func main() {
 	<-probeDone
 }
 
-func newMux(db *sql.DB, store systems.Store, groupStore groups.Store, authStore *auth.SQLiteAuthStore, authSvc *auth.Service, secret []byte, vault *secrets.Vault, hub *events.Hub, auditStore *audit.Store, rbacStore rbac.Store, credStore credentials.Store, hostKeyStore hostkeys.Store, updaterStore updaters.Store, onSystemCreate, onSystemDelete func()) *http.ServeMux {
+func newMux(db *sql.DB, store systems.Store, groupStore groups.Store, authStore *auth.SQLiteAuthStore, authSvc *auth.Service, secret []byte, vault *secrets.Vault, hub *events.Hub, auditStore *audit.Store, rbacStore rbac.Store, credStore credentials.Store, hostKeyStore hostkeys.Store, updaterStore updaters.Store, settingsStore settings.Store, onSystemCreate, onSystemDelete func()) *http.ServeMux {
 	mux := http.NewServeMux()
-	populateMux(mux, db, store, groupStore, authStore, authSvc, secret, vault, hub, auditStore, rbacStore, credStore, hostKeyStore, updaterStore, onSystemCreate, onSystemDelete)
+	populateMux(mux, db, store, groupStore, authStore, authSvc, secret, vault, hub, auditStore, rbacStore, credStore, hostKeyStore, updaterStore, settingsStore, onSystemCreate, onSystemDelete)
 	return mux
 }
 
@@ -221,7 +227,7 @@ func newMux(db *sql.DB, store systems.Store, groupStore groups.Store, authStore 
 // that captures every (method, path) pattern without spinning up a real
 // *http.ServeMux. main.go and tests reach for newMux; only the drift
 // test needs this entry point.
-func populateMux(mux router.Mux, db *sql.DB, store systems.Store, groupStore groups.Store, authStore *auth.SQLiteAuthStore, authSvc *auth.Service, secret []byte, vault *secrets.Vault, hub *events.Hub, auditStore *audit.Store, rbacStore rbac.Store, credStore credentials.Store, hostKeyStore hostkeys.Store, updaterStore updaters.Store, onSystemCreate, onSystemDelete func()) {
+func populateMux(mux router.Mux, db *sql.DB, store systems.Store, groupStore groups.Store, authStore *auth.SQLiteAuthStore, authSvc *auth.Service, secret []byte, vault *secrets.Vault, hub *events.Hub, auditStore *audit.Store, rbacStore rbac.Store, credStore credentials.Store, hostKeyStore hostkeys.Store, updaterStore updaters.Store, settingsStore settings.Store, onSystemCreate, onSystemDelete func()) {
 	mux.Handle("GET /api/health", http.HandlerFunc(handleHealth))
 	authSvc.Register(mux)
 	requireUserOnly := auth.RequireUser(secret, authStore, time.Now)
@@ -274,8 +280,11 @@ func populateMux(mux router.Mux, db *sql.DB, store systems.Store, groupStore gro
 		out := make(map[string]systems.Stats, len(raw))
 		for id, s := range raw {
 			out[id] = systems.Stats{
-				LastCheckedAt:  s.LastCheckedAt,
-				PendingUpdates: s.PendingUpdates,
+				LastCheckedAt:   s.LastCheckedAt,
+				PendingUpdates:  s.PendingUpdates,
+				PendingPackages: s.PendingPackages,
+				LastRunFailed:   s.LastRunFailed,
+				LastRunReason:   s.LastRunReason,
 			}
 		}
 		return out, nil
@@ -417,6 +426,9 @@ func populateMux(mux router.Mux, db *sql.DB, store systems.Store, groupStore gro
 			Store:    updaterStore,
 			Ansible:  ansibleRunner,
 			Audit:    auditStore,
+			RunHistoryLimit: func() int {
+				return settings.RunHistoryLimit(settingsStore)
+			},
 		}
 		updaterHandler := &updaters.Handler{
 			Runner:  updaterRunner,
@@ -472,6 +484,15 @@ func populateMux(mux router.Mux, db *sql.DB, store systems.Store, groupStore gro
 	if hub != nil {
 		mux.Handle("GET /api/events", requireUser(events.SSEHandler(hub)))
 	}
+	settingsHandler := &settings.Handler{
+		Store: settingsStore,
+		Audit: auditStore,
+		CanManage: func(ctx context.Context) bool {
+			scope, ok := rbac.ScopeFromContext(ctx)
+			return ok && scope.IsGlobalAdmin()
+		},
+	}
+	settingsHandler.Register(mux, requireUser)
 	openapi.Handler{}.Register(mux)
 	// Catchall for unmatched /api/* — without this they fall through to the
 	// SPA handler and get index.html as a misleading 200. The SPA handler

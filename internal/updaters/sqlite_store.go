@@ -4,8 +4,10 @@ package updaters
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 )
@@ -49,10 +51,22 @@ type Store interface {
 	// (systemID, updaterID) — enablement only makes sense for
 	// updaters the inspection has already confirmed installed.
 	SetEnabled(systemID, updaterID string, enabled bool) error
+	// SetPendingPackages replaces the per-(system, updater)
+	// pending-package list. Called from the runner after each check
+	// run with the JSON-encoded marker output. Missing rows are
+	// silently ignored — only detected updaters carry a list.
+	SetPendingPackages(systemID, updaterID string, packages []string) error
 
 	// InsertRun stores a starting run row. The caller assigns the
 	// id (so the matching audit start-row can share it).
 	InsertRun(r Run) error
+	// TrimRunsForSystem deletes rows for systemID older than the
+	// keep-th most recent started_at. A non-positive `keep` is
+	// treated as a no-op so the trim is safe to call with an
+	// unparseable setting. Keep this inline rather than behind a
+	// background goroutine so the table stays bounded without a
+	// scheduler.
+	TrimRunsForSystem(systemID string, keep int) error
 	// FinishRun stamps finished_at, exit_code, affected_count and
 	// log_tail on an existing run. The store truncates log_tail to
 	// MaxLogTailBytes on write.
@@ -102,7 +116,29 @@ func NewSQLiteStore(db *sql.DB) (*SQLiteStore, error) {
 	if err := addAffectedCountColumn(db); err != nil {
 		return nil, fmt.Errorf("updaters: migrate affected_count: %w", err)
 	}
+	if err := addPendingPackagesColumn(db); err != nil {
+		return nil, fmt.Errorf("updaters: migrate pending_packages: %w", err)
+	}
 	return &SQLiteStore{db: db, NewID: newUUID, Now: time.Now}, nil
+}
+
+// addPendingPackagesColumn brings databases predating per-package
+// state up to schema. The column holds a JSON-encoded []string of
+// the packages the latest check run reported pending; default '[]'
+// keeps the column non-null and unmarshals cleanly for stores that
+// have never been checked.
+func addPendingPackagesColumn(db *sql.DB) error {
+	row := db.QueryRow(`SELECT 1 FROM pragma_table_info('system_updaters') WHERE name = 'pending_packages'`)
+	var found int
+	switch err := row.Scan(&found); {
+	case err == nil:
+		return nil
+	case errors.Is(err, sql.ErrNoRows):
+		_, err := db.Exec(`ALTER TABLE system_updaters ADD COLUMN pending_packages TEXT NOT NULL DEFAULT '[]'`)
+		return err
+	default:
+		return err
+	}
 }
 
 // addAffectedCountColumn brings databases predating affected_count
@@ -160,10 +196,11 @@ CREATE TABLE IF NOT EXISTS updater_definitions (
 ) STRICT;
 
 CREATE TABLE IF NOT EXISTS system_updaters (
-    system_id     TEXT NOT NULL,
-    updater_id    TEXT NOT NULL,
-    last_seen_at  INTEGER,
-    enabled       INTEGER NOT NULL DEFAULT 1,
+    system_id        TEXT NOT NULL,
+    updater_id       TEXT NOT NULL,
+    last_seen_at     INTEGER,
+    enabled          INTEGER NOT NULL DEFAULT 1,
+    pending_packages TEXT NOT NULL DEFAULT '[]',
     PRIMARY KEY (system_id, updater_id)
 ) STRICT;
 
@@ -406,7 +443,7 @@ func (s *SQLiteStore) RemoveAvailability(systemID, updaterID string) error {
 // AvailabilityFor satisfies Store.AvailabilityFor.
 func (s *SQLiteStore) AvailabilityFor(systemID string) ([]Availability, error) {
 	rows, err := s.db.Query(
-		`SELECT system_id, updater_id, last_seen_at, enabled
+		`SELECT system_id, updater_id, last_seen_at, enabled, pending_packages
 		 FROM system_updaters
 		 WHERE system_id = ?
 		 ORDER BY updater_id`,
@@ -421,7 +458,8 @@ func (s *SQLiteStore) AvailabilityFor(systemID string) ([]Availability, error) {
 		var a Availability
 		var lastSeen sql.NullInt64
 		var enabled int
-		if err := rows.Scan(&a.SystemID, &a.UpdaterID, &lastSeen, &enabled); err != nil {
+		var pending string
+		if err := rows.Scan(&a.SystemID, &a.UpdaterID, &lastSeen, &enabled, &pending); err != nil {
 			return nil, fmt.Errorf("updaters: scan availability: %w", err)
 		}
 		if lastSeen.Valid {
@@ -429,9 +467,32 @@ func (s *SQLiteStore) AvailabilityFor(systemID string) ([]Availability, error) {
 			a.LastSeenAt = &t
 		}
 		a.Enabled = enabled != 0
+		a.PendingPackages = decodePendingPackages(pending)
 		out = append(out, a)
 	}
 	return out, rows.Err()
+}
+
+// SetPendingPackages satisfies Store.SetPendingPackages. The
+// caller's slice is JSON-encoded so SQLite stores a single TEXT
+// column; nil and empty inputs both serialize to `[]` for a
+// consistent decode on the read path.
+func (s *SQLiteStore) SetPendingPackages(systemID, updaterID string, packages []string) error {
+	if strings.TrimSpace(systemID) == "" || strings.TrimSpace(updaterID) == "" {
+		return fmt.Errorf("%w: system_id and updater_id required", ErrInvalid)
+	}
+	encoded, err := encodePendingPackages(packages)
+	if err != nil {
+		return fmt.Errorf("updaters: encode pending packages: %w", err)
+	}
+	_, err = s.db.Exec(
+		`UPDATE system_updaters SET pending_packages = ? WHERE system_id = ? AND updater_id = ?`,
+		encoded, systemID, updaterID,
+	)
+	if err != nil {
+		return fmt.Errorf("updaters: set pending packages: %w", err)
+	}
+	return nil
 }
 
 // InsertRun satisfies Store.InsertRun. The caller assigns the id
@@ -452,6 +513,35 @@ func (s *SQLiteStore) InsertRun(r Run) error {
 	)
 	if err != nil {
 		return fmt.Errorf("updaters: insert run: %w", err)
+	}
+	return nil
+}
+
+// TrimRunsForSystem satisfies Store.TrimRunsForSystem. The DELETE
+// uses a window on started_at via a correlated subquery so we keep
+// the most recent `keep` rows across every (updater, kind) for the
+// system — a sloppy operator running Check ten times in a row
+// won't push their last Apply off the bottom.
+func (s *SQLiteStore) TrimRunsForSystem(systemID string, keep int) error {
+	if systemID == "" {
+		return fmt.Errorf("%w: system_id required", ErrInvalid)
+	}
+	if keep <= 0 {
+		return nil
+	}
+	_, err := s.db.Exec(
+		`DELETE FROM updater_runs
+		 WHERE system_id = ?
+		   AND id NOT IN (
+		       SELECT id FROM updater_runs
+		       WHERE system_id = ?
+		       ORDER BY started_at DESC
+		       LIMIT ?
+		   )`,
+		systemID, systemID, keep,
+	)
+	if err != nil {
+		return fmt.Errorf("updaters: trim runs: %w", err)
 	}
 	return nil
 }
@@ -551,7 +641,85 @@ func (s *SQLiteStore) SystemStatsAll() (map[string]SystemStats, error) {
 		stats.PendingUpdates = pending
 		out[sysID] = stats
 	}
-	return out, pendingRows.Err()
+	if err := pendingRows.Err(); err != nil {
+		return nil, fmt.Errorf("updaters: stats pending rows: %w", err)
+	}
+
+	// Union of per-(system, updater) pending_packages, scoped per
+	// system. Two-pass aggregation in Go avoids leaning on SQLite
+	// JSON1 (which is available in modernc but adds a coupling we
+	// don't otherwise need). De-dupe and sort so callers get a
+	// stable order without re-sorting on the SPA side.
+	packageRows, err := s.db.Query(
+		`SELECT system_id, pending_packages FROM system_updaters
+		 WHERE pending_packages != '[]' AND pending_packages != ''`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("updaters: stats packages: %w", err)
+	}
+	defer func() { _ = packageRows.Close() }()
+	bySys := map[string]map[string]bool{}
+	for packageRows.Next() {
+		var sysID, raw string
+		if err := packageRows.Scan(&sysID, &raw); err != nil {
+			return nil, fmt.Errorf("updaters: stats scan packages: %w", err)
+		}
+		set := bySys[sysID]
+		if set == nil {
+			set = map[string]bool{}
+			bySys[sysID] = set
+		}
+		for _, p := range decodePendingPackages(raw) {
+			set[p] = true
+		}
+	}
+	if err := packageRows.Err(); err != nil {
+		return nil, fmt.Errorf("updaters: stats packages rows: %w", err)
+	}
+	for sysID, set := range bySys {
+		names := make([]string, 0, len(set))
+		for n := range set {
+			names = append(names, n)
+		}
+		sort.Strings(names)
+		stats := out[sysID]
+		stats.PendingPackages = names
+		out[sysID] = stats
+	}
+
+	// Most-recent terminated run per system. Order on finished_at
+	// descending and take the head; any non-zero exit code flips
+	// LastRunFailed. In-flight runs (finished_at IS NULL) are
+	// deliberately skipped so a still-running check doesn't show
+	// red — the row is back to normal once it terminates.
+	lastRunRows, err := s.db.Query(
+		`SELECT r1.system_id, r1.kind, r1.exit_code
+		 FROM updater_runs r1
+		 WHERE r1.finished_at IS NOT NULL
+		   AND r1.finished_at = (
+		       SELECT MAX(r2.finished_at) FROM updater_runs r2
+		       WHERE r2.system_id = r1.system_id
+		         AND r2.finished_at IS NOT NULL
+		   )`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("updaters: stats last-run: %w", err)
+	}
+	defer func() { _ = lastRunRows.Close() }()
+	for lastRunRows.Next() {
+		var sysID, kind string
+		var exit sql.NullInt64
+		if err := lastRunRows.Scan(&sysID, &kind, &exit); err != nil {
+			return nil, fmt.Errorf("updaters: stats scan last-run: %w", err)
+		}
+		if exit.Valid && exit.Int64 != 0 {
+			stats := out[sysID]
+			stats.LastRunFailed = true
+			stats.LastRunReason = fmt.Sprintf("%s exit %d", kind, exit.Int64)
+			out[sysID] = stats
+		}
+	}
+	return out, lastRunRows.Err()
 }
 
 // ListRuns satisfies Store.ListRuns.
@@ -701,4 +869,35 @@ func scanRun(s scanner) (Run, error) {
 // and the test for it is the same approach hostkeys uses.
 func isUniqueErr(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "UNIQUE constraint failed")
+}
+
+// encodePendingPackages JSON-encodes the slice for SQLite storage.
+// nil and empty both round-trip to `[]` so the read path returns
+// an empty slice rather than nil.
+func encodePendingPackages(pkgs []string) (string, error) {
+	if pkgs == nil {
+		pkgs = []string{}
+	}
+	b, err := json.Marshal(pkgs)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
+}
+
+// decodePendingPackages turns the stored TEXT back into a slice.
+// Empty / invalid input returns an empty (non-nil) slice so callers
+// never have to nil-check the field.
+func decodePendingPackages(raw string) []string {
+	if raw == "" {
+		return []string{}
+	}
+	var out []string
+	if err := json.Unmarshal([]byte(raw), &out); err != nil {
+		return []string{}
+	}
+	if out == nil {
+		return []string{}
+	}
+	return out
 }

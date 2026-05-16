@@ -25,6 +25,14 @@ const detectMarker = "SW_DETECTED:"
 // row's exit_code is the source of truth for success/failure.
 const affectedMarker = "SW_AFFECTED_COUNT:"
 
+// pendingPackageMarker is one line per pending package emitted by
+// check playbooks via a debug `with_items` task. The runner gathers
+// every marker into the system_updaters.pending_packages list so
+// the SPA can render "what's actually pending" without re-running
+// the playbook. Apply playbooks do not emit it — the column always
+// reflects the most recent check.
+const pendingPackageMarker = "SW_PENDING_PACKAGE:"
+
 // inspectionPlaybook composes a one-shot playbook that probes the
 // target system for every registered updater's DetectBinary. Each
 // updater contributes two tasks: a `command -v` test (failed_when
@@ -96,6 +104,33 @@ func parseDetected(stdout []byte) map[string]bool {
 		if rest != "" {
 			out[rest] = true
 		}
+	}
+	return out
+}
+
+// parsePendingPackages collects every SW_PENDING_PACKAGE marker
+// from stdout, preserving the playbook's emission order and
+// de-duplicating exact repeats (a chatty debug callback can dump
+// the same line twice). Returns an empty slice when no marker is
+// emitted — playbooks that don't surface package names produce an
+// empty list, which the SPA handles as "count only, no detail."
+func parsePendingPackages(stdout []byte) []string {
+	scanner := bufio.NewScanner(bytes.NewReader(stdout))
+	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+	out := []string{}
+	seen := map[string]bool{}
+	for scanner.Scan() {
+		line := scanner.Text()
+		idx := strings.Index(line, pendingPackageMarker)
+		if idx < 0 {
+			continue
+		}
+		rest := strings.Trim(line[idx+len(pendingPackageMarker):], " \t\r\n\",}")
+		if rest == "" || seen[rest] {
+			continue
+		}
+		seen[rest] = true
+		out = append(out, rest)
 	}
 	return out
 }

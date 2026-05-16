@@ -40,6 +40,11 @@ type Runner struct {
 
 	Now   func() time.Time
 	NewID func() string
+	// RunHistoryLimit returns the per-system cap on updater_runs
+	// rows. Bound in main.go to the settings package's typed
+	// accessor; left nil in tests where retention is irrelevant
+	// (the trim is then a no-op).
+	RunHistoryLimit func() int
 }
 
 // InspectResult is the outcome of one inspect call. Detected lists
@@ -103,6 +108,7 @@ func (r *Runner) Inspect(ctx context.Context, systemID string) (InspectResult, e
 	if err := r.Store.InsertRun(run); err != nil {
 		return InspectResult{}, err
 	}
+	r.trimHistory(systemID)
 	if err := r.Store.AcquireLock(systemID, runID, now); err != nil {
 		if errors.Is(err, ErrConflict) {
 			r.finishRun(run, now, -1, 0, "conflict: another run is in progress")
@@ -258,6 +264,7 @@ func (r *Runner) runUpdater(ctx context.Context, systemID, updaterID string, kin
 	if err := r.Store.InsertRun(run); err != nil {
 		return RunResult{}, err
 	}
+	r.trimHistory(systemID)
 	if err := r.Store.AcquireLock(systemID, runID, now); err != nil {
 		if errors.Is(err, ErrConflict) {
 			r.finishRun(run, now, -1, 0, "conflict: another run is in progress")
@@ -303,6 +310,20 @@ func (r *Runner) runUpdater(ctx context.Context, systemID, updaterID string, kin
 	logTail := combineOutput(aRun.Stdout, aRun.Stderr)
 	affected := parseAffectedCount(aRun.Stdout)
 	r.finishRun(run, finishedAt, exit, affected, logTail)
+	// Persist the per-package list only on check runs and only when
+	// the ansible call itself succeeded structurally. Apply runs
+	// don't refresh the list (auto-Check after Apply does that), and
+	// a transport-level failure leaves the previous snapshot in
+	// place rather than zeroing it out.
+	if kind == RunKindCheck && aErr == nil {
+		pkgs := parsePendingPackages(aRun.Stdout)
+		if err := r.Store.SetPendingPackages(systemID, updaterID, pkgs); err != nil {
+			// system_id / updater_id are user-controlled but slog's
+			// structured kv form doesn't interpolate them into the
+			// message — gosec G706 false positive.
+			slog.Warn("updaters: set pending packages", "err", err, "system_id", systemID, "updater_id", updaterID) //nolint:gosec
+		}
+	}
 
 	if aErr != nil {
 		r.logComplete(ctx, completeAction, audit.Failure, systemID, runID, run.StartedAt, audit.Detail{
@@ -337,6 +358,23 @@ func (r *Runner) runUpdater(ctx context.Context, systemID, updaterID string, kin
 		ExitCode:      exit,
 		AffectedCount: affected,
 	}, nil
+}
+
+// trimHistory invokes the per-system retention trim using the
+// limit callback wired in main. A nil callback or a non-positive
+// return value makes the trim a no-op so tests and bootstrap
+// states behave safely.
+func (r *Runner) trimHistory(systemID string) {
+	if r.RunHistoryLimit == nil {
+		return
+	}
+	keep := r.RunHistoryLimit()
+	if keep <= 0 {
+		return
+	}
+	if err := r.Store.TrimRunsForSystem(systemID, keep); err != nil {
+		slog.Warn("updaters: trim run history", "err", err, "system_id", systemID)
+	}
 }
 
 func (r *Runner) finishRun(run Run, finishedAt time.Time, exit, affectedCount int, logTail string) {

@@ -93,6 +93,49 @@ func TestListSystemUpdatersUnion(t *testing.T) {
 	}
 }
 
+func TestListSystemUpdatersIncludesPendingPackages(t *testing.T) {
+	_, srv, rf := newHandlerFixture(t)
+	if err := rf.store.UpsertAvailability(rf.systemID, "builtin.dnf", time.Now()); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if err := rf.store.SetPendingPackages(rf.systemID, "builtin.dnf", []string{"kernel", "glibc"}); err != nil {
+		t.Fatalf("SetPendingPackages: %v", err)
+	}
+	resp, err := http.Get(srv.URL + "/api/systems/" + rf.systemID + "/updaters")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	var got systemUpdatersResponseDTO
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	var dnf *systemUpdaterDTO
+	var other *systemUpdaterDTO
+	for i := range got.Updaters {
+		switch got.Updaters[i].UpdaterID {
+		case "builtin.dnf":
+			dnf = &got.Updaters[i]
+		default:
+			if other == nil {
+				other = &got.Updaters[i]
+			}
+		}
+	}
+	if dnf == nil {
+		t.Fatalf("dnf row missing from %+v", got.Updaters)
+	}
+	if len(dnf.PendingPackages) != 2 || dnf.PendingPackages[0] != "kernel" || dnf.PendingPackages[1] != "glibc" {
+		t.Errorf("dnf.PendingPackages = %v, want [kernel glibc]", dnf.PendingPackages)
+	}
+	// Undetected / unchecked rows must serialize an empty slice (not
+	// nil) so the SPA can ExpandableSection on .length without
+	// guarding for undefined.
+	if other != nil && other.PendingPackages == nil {
+		t.Errorf("other row PendingPackages was nil — must serialize []")
+	}
+}
+
 func TestSetEnabledHandlerToggle(t *testing.T) {
 	_, srv, rf := newHandlerFixture(t)
 	if err := rf.store.UpsertAvailability(rf.systemID, "builtin.dnf", time.Now()); err != nil {

@@ -125,6 +125,11 @@ type Availability struct {
 	UpdaterID  string
 	Enabled    bool
 	LastSeenAt *time.Time
+	// PendingPackages is the JSON-decoded list of package names the
+	// latest check run reported as pending. Empty when the updater's
+	// check playbook does not emit SW_PENDING_PACKAGE markers, or
+	// when no check has ever run.
+	PendingPackages []string
 }
 
 // RunKind classifies an updater_runs row. Inspect is reserved for
@@ -180,6 +185,21 @@ type SystemStats struct {
 	// when every updater reported zero pending changes; the SPA
 	// distinguishes "never checked" via LastCheckedAt.
 	PendingUpdates int
+	// PendingPackages is the de-duplicated union of every
+	// `system_updaters.pending_packages` row for this system —
+	// what the operator would update if they hit Apply. Surfaced
+	// for the systems-list hover tooltip; empty when no check has
+	// ever produced markers.
+	PendingPackages []string
+	// LastRunFailed is true when the most recent terminated run
+	// against this system (any kind) exited non-zero. The systems
+	// handler exposes this so the SPA can flip the row glyph to
+	// red even on a reachable host.
+	LastRunFailed bool
+	// LastRunReason summarises the failure for the "Needs
+	// Attention" line on the detail page — short and stable, like
+	// "apply exit 2".
+	LastRunReason string
 }
 
 // MaxLogTailBytes is the cap on Run.LogTail at write time. ~12 KB

@@ -96,6 +96,42 @@ func TestListSystemStatsFailureLogsAndContinues(t *testing.T) {
 	}
 }
 
+// TestListSurfacesLastRunFailure verifies the stats producer's
+// LastRunFailed / LastRunReason flow through to the JSON response.
+func TestListSurfacesLastRunFailure(t *testing.T) {
+	store := newTestStore()
+	a, _ := store.Create(SystemInput{Name: "a", Hostname: "a.example"})
+	h := NewHandler(store)
+	h.SystemStats = func() (map[string]Stats, error) {
+		return map[string]Stats{
+			a.ID: {LastRunFailed: true, LastRunReason: "apply exit 2"},
+		}, nil
+	}
+	mux := http.NewServeMux()
+	h.Register(mux, nil)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/api/systems")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	var got []System
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("len = %d", len(got))
+	}
+	if !got[0].LastRunFailed {
+		t.Errorf("LastRunFailed = false, want true")
+	}
+	if got[0].LastRunReason != "apply exit 2" {
+		t.Errorf("LastRunReason = %q", got[0].LastRunReason)
+	}
+}
+
 // TestGetEnrichesWithSystemStats covers the single-system path.
 func TestGetEnrichesWithSystemStats(t *testing.T) {
 	store := newTestStore()

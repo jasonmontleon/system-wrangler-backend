@@ -5,6 +5,7 @@ package systems
 import (
 	"errors"
 	"fmt"
+	"reflect"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -82,7 +83,7 @@ func TestMemStoreCreateAndGet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	if got != h {
+	if !reflect.DeepEqual(got, h) {
 		t.Errorf("Get returned %+v, want %+v", got, h)
 	}
 }

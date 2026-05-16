@@ -88,12 +88,13 @@ type runDTO struct {
 // and enablement state. The detail page renders these as a
 // checkbox-per-row card.
 type systemUpdaterDTO struct {
-	UpdaterID   string     `json:"updaterId"`
-	Source      Source     `json:"source"`
-	DisplayName string     `json:"displayName"`
-	Installed   bool       `json:"installed"`
-	Enabled     bool       `json:"enabled"`
-	LastSeenAt  *time.Time `json:"lastSeenAt,omitempty"`
+	UpdaterID       string     `json:"updaterId"`
+	Source          Source     `json:"source"`
+	DisplayName     string     `json:"displayName"`
+	Installed       bool       `json:"installed"`
+	Enabled         bool       `json:"enabled"`
+	LastSeenAt      *time.Time `json:"lastSeenAt,omitempty"`
+	PendingPackages []string   `json:"pendingPackages"`
 }
 
 type systemUpdatersResponseDTO struct {
@@ -300,14 +301,18 @@ func (h *Handler) listSystemUpdaters(w http.ResponseWriter, r *http.Request) {
 	out := make([]systemUpdaterDTO, 0, len(defs))
 	for _, d := range defs {
 		row := systemUpdaterDTO{
-			UpdaterID:   d.ID,
-			Source:      d.Source,
-			DisplayName: d.DisplayName,
+			UpdaterID:       d.ID,
+			Source:          d.Source,
+			DisplayName:     d.DisplayName,
+			PendingPackages: []string{},
 		}
 		if a, found := byID[d.ID]; found {
 			row.Installed = true
 			row.Enabled = a.Enabled
 			row.LastSeenAt = a.LastSeenAt
+			if a.PendingPackages != nil {
+				row.PendingPackages = a.PendingPackages
+			}
 		}
 		out = append(out, row)
 	}

@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"errors"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -209,6 +210,51 @@ func TestUpsertAvailability(t *testing.T) {
 	}
 }
 
+func TestSetPendingPackages(t *testing.T) {
+	store := newStore(t)
+	now := time.Now()
+	if err := store.UpsertAvailability("sys-1", "builtin.dnf", now); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+	// Round-trip a populated list.
+	if err := store.SetPendingPackages("sys-1", "builtin.dnf", []string{"kernel", "glibc"}); err != nil {
+		t.Fatalf("SetPendingPackages: %v", err)
+	}
+	list, err := store.AvailabilityFor("sys-1")
+	if err != nil {
+		t.Fatalf("AvailabilityFor: %v", err)
+	}
+	if len(list) != 1 {
+		t.Fatalf("len = %d, want 1", len(list))
+	}
+	if got := list[0].PendingPackages; len(got) != 2 || got[0] != "kernel" || got[1] != "glibc" {
+		t.Errorf("PendingPackages = %v, want [kernel glibc]", got)
+	}
+	// nil input round-trips to empty slice.
+	if err := store.SetPendingPackages("sys-1", "builtin.dnf", nil); err != nil {
+		t.Fatalf("SetPendingPackages nil: %v", err)
+	}
+	list, _ = store.AvailabilityFor("sys-1")
+	if got := list[0].PendingPackages; got == nil || len(got) != 0 {
+		t.Errorf("PendingPackages after nil = %v, want empty non-nil slice", got)
+	}
+	// Missing row is a silent no-op — the column lives on
+	// system_updaters, and only detected updaters get an entry.
+	if err := store.SetPendingPackages("sys-1", "builtin.absent", []string{"foo"}); err != nil {
+		t.Errorf("SetPendingPackages missing row: %v, want nil", err)
+	}
+}
+
+func TestSetPendingPackagesValidation(t *testing.T) {
+	store := newStore(t)
+	if err := store.SetPendingPackages("", "x", nil); !errors.Is(err, ErrInvalid) {
+		t.Errorf("empty system: err = %v, want ErrInvalid", err)
+	}
+	if err := store.SetPendingPackages("s", "", nil); !errors.Is(err, ErrInvalid) {
+		t.Errorf("empty updater: err = %v, want ErrInvalid", err)
+	}
+}
+
 func TestRemoveAvailability(t *testing.T) {
 	store := newStore(t)
 	if err := store.UpsertAvailability("sys-1", "builtin.dnf", time.Now()); err != nil {
@@ -220,6 +266,87 @@ func TestRemoveAvailability(t *testing.T) {
 	list, _ := store.AvailabilityFor("sys-1")
 	if len(list) != 0 {
 		t.Errorf("len = %d, want 0", len(list))
+	}
+}
+
+func TestTrimRunsForSystem(t *testing.T) {
+	store := newStore(t)
+	// Insert 5 runs across two systems; trim sys-1 to keep=2 should
+	// leave the two newest on sys-1 and leave sys-2 alone.
+	base := time.Now().UTC()
+	for i, kind := range []RunKind{RunKindInspect, RunKindCheck, RunKindApply, RunKindCheck, RunKindCheck} {
+		if err := store.InsertRun(Run{
+			ID:          "sys1-run-" + strconv.Itoa(i),
+			SystemID:    "sys-1",
+			UpdaterID:   "builtin.dnf",
+			Kind:        kind,
+			StartedAt:   base.Add(time.Duration(i) * time.Minute),
+			ActorID:     "actor",
+			PlaybookSHA: "sha",
+		}); err != nil {
+			t.Fatalf("InsertRun sys-1[%d]: %v", i, err)
+		}
+	}
+	for i := 0; i < 3; i++ {
+		if err := store.InsertRun(Run{
+			ID:          "sys2-run-" + strconv.Itoa(i),
+			SystemID:    "sys-2",
+			UpdaterID:   "builtin.dnf",
+			Kind:        RunKindCheck,
+			StartedAt:   base.Add(time.Duration(i) * time.Minute),
+			ActorID:     "actor",
+			PlaybookSHA: "sha",
+		}); err != nil {
+			t.Fatalf("InsertRun sys-2[%d]: %v", i, err)
+		}
+	}
+
+	if err := store.TrimRunsForSystem("sys-1", 2); err != nil {
+		t.Fatalf("TrimRunsForSystem: %v", err)
+	}
+	got, err := store.ListRuns("sys-1", 50)
+	if err != nil {
+		t.Fatalf("ListRuns sys-1: %v", err)
+	}
+	if len(got) != 2 {
+		t.Errorf("sys-1 rows = %d, want 2", len(got))
+	}
+	// The newest two should survive (sys1-run-4 and sys1-run-3).
+	if got[0].ID != "sys1-run-4" || got[1].ID != "sys1-run-3" {
+		t.Errorf("survivors = %s/%s, want sys1-run-4/sys1-run-3", got[0].ID, got[1].ID)
+	}
+	// sys-2 untouched.
+	sys2, _ := store.ListRuns("sys-2", 50)
+	if len(sys2) != 3 {
+		t.Errorf("sys-2 rows = %d, want 3 (trim must be scoped per system)", len(sys2))
+	}
+}
+
+func TestTrimRunsForSystemNoOpOnNonPositiveKeep(t *testing.T) {
+	store := newStore(t)
+	base := time.Now().UTC()
+	if err := store.InsertRun(Run{
+		ID: "r1", SystemID: "sys-1", UpdaterID: "builtin.dnf",
+		Kind: RunKindCheck, StartedAt: base, ActorID: "a", PlaybookSHA: "s",
+	}); err != nil {
+		t.Fatalf("InsertRun: %v", err)
+	}
+	if err := store.TrimRunsForSystem("sys-1", 0); err != nil {
+		t.Errorf("keep=0: err = %v, want nil (no-op)", err)
+	}
+	if err := store.TrimRunsForSystem("sys-1", -1); err != nil {
+		t.Errorf("keep=-1: err = %v, want nil (no-op)", err)
+	}
+	got, _ := store.ListRuns("sys-1", 50)
+	if len(got) != 1 {
+		t.Errorf("rows = %d, want 1 (no-op trim should preserve)", len(got))
+	}
+}
+
+func TestTrimRunsForSystemRejectsEmptyID(t *testing.T) {
+	store := newStore(t)
+	if err := store.TrimRunsForSystem("", 5); !errors.Is(err, ErrInvalid) {
+		t.Errorf("err = %v, want ErrInvalid", err)
 	}
 }
 

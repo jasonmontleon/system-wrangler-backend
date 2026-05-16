@@ -1667,6 +1667,59 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
 
+  /api/admin/settings:
+    get:
+      tags: [settings]
+      summary: List instance-wide settings. Global Admin only.
+      description: |
+        Returns the full set of known settings as a `{key: value}` map.
+        Unset known keys are filled in with their default so the SPA
+        always sees the value that's in effect.
+      responses:
+        "200":
+          description: The current set of settings.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [settings]
+                properties:
+                  settings:
+                    type: object
+                    additionalProperties: { type: string }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/admin/settings/{key}:
+    put:
+      tags: [settings]
+      summary: Set a single setting by key. Global Admin only.
+      parameters:
+        - in: path
+          name: key
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [value]
+              properties:
+                value: { type: string }
+      responses:
+        "204": { description: Setting stored. }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404":
+          description: Unknown setting key.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /api/events:
     get:
       tags: [events]
@@ -1793,6 +1846,16 @@ components:
         pendingUpdates:
           type: integer
           description: Cumulative count of pending updates across this system's enabled updaters, from each updater's latest check run. Absent when no check has ever run.
+        pendingPackages:
+          type: array
+          items: { type: string }
+          description: De-duplicated union of package names every enabled updater on this system reported pending on its latest check. Empty when no check has produced markers; surfaced for the systems-list hover tooltip without an N+1 round trip.
+        lastRunFailed:
+          type: boolean
+          description: True when the most recent terminated updater run against this system exited non-zero. Drives the red "Needs Attention" glyph on the SPA regardless of probe status.
+        lastRunReason:
+          type: string
+          description: Short operator-readable summary of the last-run failure (e.g. "apply exit 2"). Empty when no run has failed.
 
     SystemInput:
       type: object
@@ -2037,7 +2100,7 @@ components:
 
     SystemUpdater:
       type: object
-      required: [updaterId, source, displayName, installed, enabled]
+      required: [updaterId, source, displayName, installed, enabled, pendingPackages]
       properties:
         updaterId: { type: string }
         source:
@@ -2054,6 +2117,10 @@ components:
           type: string
           format: date-time
           description: Timestamp of the inspection that last confirmed the binary present.
+        pendingPackages:
+          type: array
+          items: { type: string }
+          description: Package names the most recent check run surfaced via SW_PENDING_PACKAGE markers. Empty for updaters whose check playbook does not emit them or that have never been checked.
 
     UpdaterRunResult:
       type: object

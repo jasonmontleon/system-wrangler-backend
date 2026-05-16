@@ -158,6 +158,130 @@ func TestSystemStatsAllPendingOnlyFinishedRuns(t *testing.T) {
 	}
 }
 
+func TestSystemStatsAllAggregatesPendingPackages(t *testing.T) {
+	store := newStore(t)
+	now := time.Now().UTC()
+	// sys-1 has dnf + pip detected and seeded.
+	if err := store.UpsertAvailability("sys-1", "builtin.dnf", now); err != nil {
+		t.Fatalf("upsert dnf: %v", err)
+	}
+	if err := store.UpsertAvailability("sys-1", "custom.pip", now); err != nil {
+		t.Fatalf("upsert pip: %v", err)
+	}
+	// kernel appears on both updaters — must de-dupe in the union.
+	if err := store.SetPendingPackages("sys-1", "builtin.dnf", []string{"kernel", "glibc"}); err != nil {
+		t.Fatalf("set dnf: %v", err)
+	}
+	if err := store.SetPendingPackages("sys-1", "custom.pip", []string{"kernel", "numpy"}); err != nil {
+		t.Fatalf("set pip: %v", err)
+	}
+	// sys-2: no markers stored.
+	if err := store.UpsertAvailability("sys-2", "builtin.dnf", now); err != nil {
+		t.Fatalf("upsert sys-2: %v", err)
+	}
+
+	stats, err := store.SystemStatsAll()
+	if err != nil {
+		t.Fatalf("SystemStatsAll: %v", err)
+	}
+	got := stats["sys-1"].PendingPackages
+	want := []string{"glibc", "kernel", "numpy"}
+	if len(got) != len(want) {
+		t.Fatalf("PendingPackages = %v, want %v", got, want)
+	}
+	for i, name := range want {
+		if got[i] != name {
+			t.Errorf("PendingPackages[%d] = %q, want %q", i, got[i], name)
+		}
+	}
+	if pkgs := stats["sys-2"].PendingPackages; len(pkgs) != 0 {
+		t.Errorf("sys-2 PendingPackages = %v, want empty", pkgs)
+	}
+}
+
+func TestSystemStatsAllReportsLastRunFailure(t *testing.T) {
+	store := newStore(t)
+	now := time.Now().UTC()
+	// Most recent run on sys-1 is a failed apply.
+	if err := store.InsertRun(Run{
+		ID: "r1", SystemID: "sys-1", UpdaterID: "builtin.dnf",
+		Kind: RunKindCheck, StartedAt: now.Add(-2 * time.Hour),
+	}); err != nil {
+		t.Fatalf("insert check: %v", err)
+	}
+	if err := store.FinishRun("r1", now.Add(-2*time.Hour).Add(time.Minute), 0, 3, ""); err != nil {
+		t.Fatalf("finish check: %v", err)
+	}
+	if err := store.InsertRun(Run{
+		ID: "r2", SystemID: "sys-1", UpdaterID: "builtin.dnf",
+		Kind: RunKindApply, StartedAt: now.Add(-time.Hour),
+	}); err != nil {
+		t.Fatalf("insert apply: %v", err)
+	}
+	if err := store.FinishRun("r2", now.Add(-time.Hour).Add(time.Minute), 2, 0, "task failed"); err != nil {
+		t.Fatalf("finish apply: %v", err)
+	}
+	// sys-2: most recent run succeeded.
+	if err := store.InsertRun(Run{
+		ID: "r3", SystemID: "sys-2", UpdaterID: "builtin.dnf",
+		Kind: RunKindCheck, StartedAt: now,
+	}); err != nil {
+		t.Fatalf("insert sys-2: %v", err)
+	}
+	if err := store.FinishRun("r3", now.Add(time.Minute), 0, 0, ""); err != nil {
+		t.Fatalf("finish sys-2: %v", err)
+	}
+	stats, err := store.SystemStatsAll()
+	if err != nil {
+		t.Fatalf("SystemStatsAll: %v", err)
+	}
+	got1 := stats["sys-1"]
+	if !got1.LastRunFailed {
+		t.Errorf("sys-1 LastRunFailed = false, want true")
+	}
+	if got1.LastRunReason != "apply exit 2" {
+		t.Errorf("sys-1 LastRunReason = %q, want %q", got1.LastRunReason, "apply exit 2")
+	}
+	got2 := stats["sys-2"]
+	if got2.LastRunFailed {
+		t.Errorf("sys-2 LastRunFailed = true, want false (most recent run succeeded)")
+	}
+	if got2.LastRunReason != "" {
+		t.Errorf("sys-2 LastRunReason = %q, want empty", got2.LastRunReason)
+	}
+}
+
+func TestSystemStatsAllIgnoresInFlightForFailure(t *testing.T) {
+	// An in-flight run shouldn't be considered the "most recent
+	// terminated run" — the previous failure should keep showing.
+	store := newStore(t)
+	now := time.Now().UTC()
+	if err := store.InsertRun(Run{
+		ID: "fail", SystemID: "sys-1", UpdaterID: "builtin.dnf",
+		Kind: RunKindApply, StartedAt: now.Add(-time.Hour),
+	}); err != nil {
+		t.Fatalf("insert fail: %v", err)
+	}
+	if err := store.FinishRun("fail", now.Add(-time.Hour).Add(time.Minute), 7, 0, ""); err != nil {
+		t.Fatalf("finish fail: %v", err)
+	}
+	// Newer run, still in-flight (no FinishRun call).
+	if err := store.InsertRun(Run{
+		ID: "inflight", SystemID: "sys-1", UpdaterID: "builtin.dnf",
+		Kind: RunKindCheck, StartedAt: now,
+	}); err != nil {
+		t.Fatalf("insert inflight: %v", err)
+	}
+	stats, _ := store.SystemStatsAll()
+	got := stats["sys-1"]
+	if !got.LastRunFailed {
+		t.Errorf("LastRunFailed = false, want true (in-flight should be ignored)")
+	}
+	if got.LastRunReason != "apply exit 7" {
+		t.Errorf("LastRunReason = %q", got.LastRunReason)
+	}
+}
+
 func TestAddAffectedCountColumnIdempotent(t *testing.T) {
 	_, _, _, db := newStoreWithSiblings(t)
 	if err := addAffectedCountColumn(db); err != nil {

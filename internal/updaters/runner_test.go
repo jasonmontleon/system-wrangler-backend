@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -184,6 +185,118 @@ func TestCheckEmitsPairAndStoresRun(t *testing.T) {
 	verifyAuditPair(t, f.auditStore, "system.update.check.start", "system.update.check.complete", res.Run.ID)
 }
 
+func TestCheckPersistsPendingPackages(t *testing.T) {
+	f := newRunnerFixture(t)
+	// Seed availability so SetPendingPackages has a row to update.
+	if err := f.store.UpsertAvailability(f.systemID, "builtin.dnf", time.Now()); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	f.queue(ansible.Run{
+		Status:   ansible.RunSuccess,
+		ExitCode: 0,
+		Stdout: []byte(
+			"\"msg\": \"SW_AFFECTED_COUNT: 2\"\n" +
+				"\"msg\": \"SW_PENDING_PACKAGE: kernel\"\n" +
+				"\"msg\": \"SW_PENDING_PACKAGE: glibc\"\n",
+		),
+	}, nil)
+	if _, err := f.runner.Check(context.Background(), f.systemID, "builtin.dnf"); err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+	avail, _ := f.store.AvailabilityFor(f.systemID)
+	if len(avail) != 1 {
+		t.Fatalf("avail = %+v", avail)
+	}
+	got := avail[0].PendingPackages
+	if len(got) != 2 || got[0] != "kernel" || got[1] != "glibc" {
+		t.Errorf("PendingPackages = %v, want [kernel glibc]", got)
+	}
+}
+
+func TestApplyDoesNotPersistPendingPackages(t *testing.T) {
+	f := newRunnerFixture(t)
+	// Seed a populated list so we can verify Apply does not clobber
+	// it. The auto-Check-after-Apply lives client-side; the server-
+	// side Apply must leave the list alone.
+	if err := f.store.UpsertAvailability(f.systemID, "builtin.dnf", time.Now()); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if err := f.store.SetPendingPackages(f.systemID, "builtin.dnf", []string{"keep-me"}); err != nil {
+		t.Fatalf("seed packages: %v", err)
+	}
+	f.queue(ansible.Run{
+		Status:   ansible.RunSuccess,
+		ExitCode: 0,
+		Stdout: []byte(
+			"\"msg\": \"SW_AFFECTED_COUNT: 1\"\n" +
+				"\"msg\": \"SW_PENDING_PACKAGE: ignore-me\"\n",
+		),
+	}, nil)
+	if _, err := f.runner.Apply(context.Background(), f.systemID, "builtin.dnf"); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	avail, _ := f.store.AvailabilityFor(f.systemID)
+	if len(avail) != 1 || len(avail[0].PendingPackages) != 1 || avail[0].PendingPackages[0] != "keep-me" {
+		t.Errorf("PendingPackages = %v, want [keep-me] (apply must not overwrite)", avail[0].PendingPackages)
+	}
+}
+
+func TestCheckTrimsRunHistoryAfterInsert(t *testing.T) {
+	f := newRunnerFixture(t)
+	f.runner.RunHistoryLimit = func() int { return 2 }
+	// Seed three pre-existing rows, then drive a check; the runner
+	// must trim back to 2 (the new run plus the newest survivor).
+	base := time.Now().UTC()
+	for i := 0; i < 3; i++ {
+		if err := f.store.InsertRun(Run{
+			ID: "old-" + strconv.Itoa(i), SystemID: f.systemID,
+			UpdaterID: "builtin.dnf", Kind: RunKindCheck,
+			StartedAt: base.Add(time.Duration(i) * time.Minute),
+			ActorID:   "a", PlaybookSHA: "s",
+		}); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+	}
+	f.queue(ansible.Run{
+		Status:   ansible.RunSuccess,
+		ExitCode: 0,
+		Stdout:   []byte(`"msg": "SW_AFFECTED_COUNT: 0"` + "\n"),
+	}, nil)
+	if _, err := f.runner.Check(context.Background(), f.systemID, "builtin.dnf"); err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+	rows, _ := f.store.ListRuns(f.systemID, 50)
+	if len(rows) != 2 {
+		t.Errorf("rows after trim = %d, want 2", len(rows))
+	}
+}
+
+func TestRunnerNoTrimWhenLimitUnset(t *testing.T) {
+	f := newRunnerFixture(t)
+	// RunHistoryLimit left nil — retention is a no-op, every row
+	// persists. The tests above already rely on this so the failure
+	// here would mean the trim regressed to be unconditional.
+	base := time.Now().UTC()
+	for i := 0; i < 3; i++ {
+		if err := f.store.InsertRun(Run{
+			ID: "keep-" + strconv.Itoa(i), SystemID: f.systemID,
+			UpdaterID: "builtin.dnf", Kind: RunKindCheck,
+			StartedAt: base.Add(time.Duration(i) * time.Minute),
+			ActorID:   "a", PlaybookSHA: "s",
+		}); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+	}
+	f.queue(ansible.Run{Status: ansible.RunSuccess, ExitCode: 0}, nil)
+	if _, err := f.runner.Check(context.Background(), f.systemID, "builtin.dnf"); err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+	rows, _ := f.store.ListRuns(f.systemID, 50)
+	if len(rows) != 4 {
+		t.Errorf("rows = %d, want 4 (no trim with nil RunHistoryLimit)", len(rows))
+	}
+}
+
 func TestApplyEmitsAffectedAndLogSha(t *testing.T) {
 	f := newRunnerFixture(t)
 	f.queue(ansible.Run{
@@ -340,6 +453,22 @@ func TestParseAffectedCount(t *testing.T) {
 		if got := parseAffectedCount([]byte(tt.in)); got != tt.want {
 			t.Errorf("parseAffectedCount(%q) = %d, want %d", tt.in, got, tt.want)
 		}
+	}
+}
+
+func TestParsePendingPackages(t *testing.T) {
+	out := []byte(
+		`ok: [h] => { "msg": "SW_PENDING_PACKAGE: kernel" }` + "\n" +
+			`ok: [h] => { "msg": "SW_PENDING_PACKAGE: glibc" }` + "\n" +
+			`unrelated noise` + "\n" +
+			`ok: [h] => { "msg": "SW_PENDING_PACKAGE: kernel" }` + "\n",
+	)
+	got := parsePendingPackages(out)
+	if len(got) != 2 || got[0] != "kernel" || got[1] != "glibc" {
+		t.Errorf("parsePendingPackages = %v, want [kernel glibc] (preserve order, dedupe)", got)
+	}
+	if got := parsePendingPackages([]byte("nothing here\n")); len(got) != 0 {
+		t.Errorf("empty stdout: parsePendingPackages = %v, want []", got)
 	}
 }
 
