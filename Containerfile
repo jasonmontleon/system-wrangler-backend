@@ -36,7 +36,10 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
 
 FROM quay.io/centos/centos:stream10
 RUN dnf update -y \
- && dnf install -y --setopt=install_weak_deps=False ca-certificates \
+ && dnf install -y --setopt=install_weak_deps=False \
+        ca-certificates \
+        openssh-clients \
+        ansible-core \
  && dnf clean all && rm -rf /var/cache/dnf \
  && useradd --uid 65532 --user-group --create-home --shell /sbin/nologin app
 COPY --from=backend-build /out/server /usr/local/bin/server
