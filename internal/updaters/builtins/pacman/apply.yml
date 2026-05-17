@@ -1,0 +1,21 @@
+- name: Apply pending pacman updates
+  hosts: all
+  gather_facts: false
+  become: true
+  tasks:
+    - name: Run pacman -Syu  # noqa: command-instead-of-module
+      ansible.builtin.command:
+        cmd: pacman -Syu --noconfirm
+      register: pacman_result
+      changed_when: pacman_result.stdout is search('^upgrading ', multiline=True)
+    - name: Compute upgraded package count from the progress lines
+      ansible.builtin.set_fact:
+        sw_upgraded_count: >-
+          {{ pacman_result.stdout_lines
+             | default([])
+             | select('match', '^upgrading ')
+             | list
+             | length }}
+    - name: Surface upgrade count to the run log
+      ansible.builtin.debug:
+        msg: "SW_AFFECTED_COUNT: {{ sw_upgraded_count }}"

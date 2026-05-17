@@ -1,0 +1,47 @@
+- name: Test FreeBSD pkg check parsing
+  hosts: localhost
+  gather_facts: false
+  vars:
+    pkg_pending_typical:
+      stdout_lines:
+        - "Updating FreeBSD repository catalogue..."
+        - "FreeBSD repository is up to date."
+        - "The following 3 package(s) will be affected (of 0 checked):"
+        - ""
+        - "Installed packages to be UPGRADED:"
+        - "        libfoo: 1.0 -> 1.1"
+        - "        bar: 2.0 -> 2.1"
+        - "        py39-requests: 2.31.0 -> 2.32.0"
+        - ""
+        - "Number of packages to be upgraded: 3"
+    pkg_pending_empty:
+      stdout_lines:
+        - "Updating FreeBSD repository catalogue..."
+        - "FreeBSD repository is up to date."
+        - "Checking for upgrades (0 candidates): 100%"
+        - "Your packages are up to date."
+  tasks:
+    - name: Parse typical pkg upgrade -n output
+      ansible.builtin.set_fact:
+        typical_pkgs: >-
+          {{ pkg_pending_typical.stdout_lines
+             | select('match', '^\s+\S+: .* -> ')
+             | map('regex_replace', '^\s+([^:]+):.*$', '\1')
+             | list }}
+    - name: Assert typical extracts package names
+      ansible.builtin.assert:
+        that:
+          - typical_pkgs == ['libfoo', 'bar', 'py39-requests']
+        fail_msg: "typical_pkgs={{ typical_pkgs }}"
+    - name: Parse empty pkg upgrade -n output
+      ansible.builtin.set_fact:
+        empty_pkgs: >-
+          {{ pkg_pending_empty.stdout_lines
+             | select('match', '^\s+\S+: .* -> ')
+             | map('regex_replace', '^\s+([^:]+):.*$', '\1')
+             | list }}
+    - name: Assert empty produces empty list
+      ansible.builtin.assert:
+        that:
+          - empty_pkgs == []
+        fail_msg: "empty_pkgs={{ empty_pkgs }}, want []"

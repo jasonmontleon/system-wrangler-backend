@@ -1,0 +1,30 @@
+- name: List pending FreeBSD pkg updates
+  hosts: all
+  gather_facts: false
+  become: true
+  tasks:
+    - name: Update pkg repository catalogue  # noqa: command-instead-of-module
+      ansible.builtin.command:
+        cmd: pkg update -q
+      register: pkg_update
+      changed_when: false
+    - name: Dry-run pkg upgrade to enumerate pending packages  # noqa: command-instead-of-module
+      ansible.builtin.command:
+        cmd: pkg upgrade -n -q
+      register: pkg_pending
+      changed_when: false
+      failed_when: pkg_pending.rc not in [0, 1]
+    - name: Extract package names from the upgrade summary
+      ansible.builtin.set_fact:
+        sw_pending_packages: >-
+          {{ pkg_pending.stdout_lines
+             | select('match', '^\s+\S+: .* -> ')
+             | map('regex_replace', '^\s+([^:]+):.*$', '\1')
+             | list }}
+    - name: Surface count to the run log
+      ansible.builtin.debug:
+        msg: "SW_AFFECTED_COUNT: {{ sw_pending_packages | length }}"
+    - name: Surface each pending package
+      ansible.builtin.debug:
+        msg: "SW_PENDING_PACKAGE: {{ item }}"
+      loop: "{{ sw_pending_packages }}"

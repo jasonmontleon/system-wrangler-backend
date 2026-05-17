@@ -1,0 +1,36 @@
+- name: Test NetBSD pkgin check parsing
+  hosts: localhost
+  gather_facts: false
+  vars:
+    pkgin_pending_typical:
+      stdout_lines:
+        - "bash-5.2.21"
+        - "curl-8.5.0"
+        - "py311-requests-2.32.0nb1"
+    pkgin_pending_empty:
+      stdout_lines: []
+  tasks:
+    - name: Parse typical pkgin list-upgrades output
+      ansible.builtin.set_fact:
+        typical_pkgs: >-
+          {{ pkgin_pending_typical.stdout_lines
+             | reject('equalto', '')
+             | map('regex_replace', '^(.+)-[0-9][^-\s]*\s*.*$', '\1')
+             | list }}
+    - name: Assert typical extracts package names
+      ansible.builtin.assert:
+        that:
+          - typical_pkgs == ['bash', 'curl', 'py311-requests']
+        fail_msg: "typical_pkgs={{ typical_pkgs }}"
+    - name: Parse empty pkgin list-upgrades output
+      ansible.builtin.set_fact:
+        empty_pkgs: >-
+          {{ pkgin_pending_empty.stdout_lines
+             | reject('equalto', '')
+             | map('regex_replace', '^(.+)-[0-9][^-\s]*\s*.*$', '\1')
+             | list }}
+    - name: Assert empty produces empty list
+      ansible.builtin.assert:
+        that:
+          - empty_pkgs == []
+        fail_msg: "empty_pkgs={{ empty_pkgs }}, want []"

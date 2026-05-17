@@ -30,6 +30,42 @@ var builtinFlatpakCheck []byte
 //go:embed builtins/flatpak/apply.yml
 var builtinFlatpakApply []byte
 
+//go:embed builtins/pacman/check.yml
+var builtinPacmanCheck []byte
+
+//go:embed builtins/pacman/apply.yml
+var builtinPacmanApply []byte
+
+//go:embed builtins/zypper/check.yml
+var builtinZypperCheck []byte
+
+//go:embed builtins/zypper/apply.yml
+var builtinZypperApply []byte
+
+//go:embed builtins/apk/check.yml
+var builtinAPKCheck []byte
+
+//go:embed builtins/apk/apply.yml
+var builtinAPKApply []byte
+
+//go:embed builtins/pkg/check.yml
+var builtinPkgCheck []byte
+
+//go:embed builtins/pkg/apply.yml
+var builtinPkgApply []byte
+
+//go:embed builtins/pkg_add/check.yml
+var builtinPkgAddCheck []byte
+
+//go:embed builtins/pkg_add/apply.yml
+var builtinPkgAddApply []byte
+
+//go:embed builtins/pkgin/check.yml
+var builtinPkginCheck []byte
+
+//go:embed builtins/pkgin/apply.yml
+var builtinPkginApply []byte
+
 // Builtins returns every code-registered updater. Order is stable so
 // callers that don't sort still produce deterministic output. The
 // registry calls this once at startup and merges the result into
@@ -71,6 +107,60 @@ func Builtins() []Definition {
 			DetectBinary:  "flatpak",
 			CheckPlaybook: builtinFlatpakCheck,
 			ApplyPlaybook: builtinFlatpakApply,
+		},
+		{
+			ID:            "builtin.pacman",
+			Source:        SourceBuiltin,
+			DisplayName:   "pacman",
+			Description:   "Arch Linux / Manjaro / EndeavourOS package manager",
+			DetectBinary:  "pacman",
+			CheckPlaybook: builtinPacmanCheck,
+			ApplyPlaybook: builtinPacmanApply,
+		},
+		{
+			ID:            "builtin.zypper",
+			Source:        SourceBuiltin,
+			DisplayName:   "zypper",
+			Description:   "openSUSE / SLES package manager",
+			DetectBinary:  "zypper",
+			CheckPlaybook: builtinZypperCheck,
+			ApplyPlaybook: builtinZypperApply,
+		},
+		{
+			ID:            "builtin.apk",
+			Source:        SourceBuiltin,
+			DisplayName:   "apk",
+			Description:   "Alpine Linux package manager",
+			DetectBinary:  "apk",
+			CheckPlaybook: builtinAPKCheck,
+			ApplyPlaybook: builtinAPKApply,
+		},
+		{
+			ID:            "builtin.pkg",
+			Source:        SourceBuiltin,
+			DisplayName:   "pkg",
+			Description:   "FreeBSD package manager",
+			DetectBinary:  "pkg",
+			CheckPlaybook: builtinPkgCheck,
+			ApplyPlaybook: builtinPkgApply,
+		},
+		{
+			ID:            "builtin.pkg_add",
+			Source:        SourceBuiltin,
+			DisplayName:   "pkg_add",
+			Description:   "OpenBSD package manager",
+			DetectBinary:  "pkg_add",
+			CheckPlaybook: builtinPkgAddCheck,
+			ApplyPlaybook: builtinPkgAddApply,
+		},
+		{
+			ID:            "builtin.pkgin",
+			Source:        SourceBuiltin,
+			DisplayName:   "pkgin",
+			Description:   "NetBSD pkgsrc binary package manager",
+			DetectBinary:  "pkgin",
+			CheckPlaybook: builtinPkginCheck,
+			ApplyPlaybook: builtinPkginApply,
 		},
 	}
 }

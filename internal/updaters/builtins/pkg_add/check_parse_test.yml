@@ -1,0 +1,38 @@
+- name: Test OpenBSD pkg_add check parsing
+  hosts: localhost
+  gather_facts: false
+  vars:
+    pkg_add_pending_typical:
+      stdout_lines:
+        - "quirks-7.10 signed on 2026-01-15T00:00:00Z"
+        - "quirks-7.10 to update quirks-7.11"
+        - "curl-8.4.0 to update curl-8.5.0"
+        - "firefox-esr-115.4.0 to update firefox-esr-115.5.0"
+    pkg_add_pending_empty:
+      stdout_lines:
+        - "quirks-7.10 signed on 2026-01-15T00:00:00Z"
+  tasks:
+    - name: Parse typical pkg_add -un output
+      ansible.builtin.set_fact:
+        typical_pkgs: >-
+          {{ pkg_add_pending_typical.stdout_lines
+             | select('search', ' to update ')
+             | map('regex_replace', '^(.+)-[0-9][^-\s]* to update .*$', '\1')
+             | list }}
+    - name: Assert typical extracts package names
+      ansible.builtin.assert:
+        that:
+          - typical_pkgs == ['quirks', 'curl', 'firefox-esr']
+        fail_msg: "typical_pkgs={{ typical_pkgs }}"
+    - name: Parse empty pkg_add -un output
+      ansible.builtin.set_fact:
+        empty_pkgs: >-
+          {{ pkg_add_pending_empty.stdout_lines
+             | select('search', ' to update ')
+             | map('regex_replace', '^(.+)-[0-9][^-\s]* to update .*$', '\1')
+             | list }}
+    - name: Assert empty produces empty list
+      ansible.builtin.assert:
+        that:
+          - empty_pkgs == []
+        fail_msg: "empty_pkgs={{ empty_pkgs }}, want []"

@@ -1,0 +1,30 @@
+- name: List pending apk updates
+  hosts: all
+  gather_facts: false
+  become: true
+  tasks:
+    - name: Update apk index  # noqa: command-instead-of-module
+      ansible.builtin.command:
+        cmd: apk update
+      register: apk_update
+      changed_when: false
+    - name: Query apk for upgradable packages
+      ansible.builtin.command:
+        cmd: apk version -l '<'
+      register: apk_pending
+      changed_when: false
+    - name: Extract package names (strip the trailing -version-rN suffix)
+      ansible.builtin.set_fact:
+        sw_pending_packages: >-
+          {{ apk_pending.stdout_lines
+             | reject('match', '^Installed:')
+             | reject('equalto', '')
+             | map('regex_replace', '^(.+)-[^-\s]+-r[0-9]+\s.*$', '\1')
+             | list }}
+    - name: Surface count to the run log
+      ansible.builtin.debug:
+        msg: "SW_AFFECTED_COUNT: {{ sw_pending_packages | length }}"
+    - name: Surface each pending package
+      ansible.builtin.debug:
+        msg: "SW_PENDING_PACKAGE: {{ item }}"
+      loop: "{{ sw_pending_packages }}"

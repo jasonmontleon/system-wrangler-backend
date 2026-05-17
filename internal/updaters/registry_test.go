@@ -62,6 +62,12 @@ func TestBuiltinsShipExpectedSet(t *testing.T) {
 		"builtin.apt":     "apt",
 		"builtin.snap":    "snap",
 		"builtin.flatpak": "flatpak",
+		"builtin.pacman":  "pacman",
+		"builtin.zypper":  "zypper",
+		"builtin.apk":     "apk",
+		"builtin.pkg":     "pkg",
+		"builtin.pkg_add": "pkg_add",
+		"builtin.pkgin":   "pkgin",
 	}
 	got := map[string]Definition{}
 	for _, d := range Builtins() {

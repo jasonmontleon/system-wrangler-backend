@@ -1,0 +1,29 @@
+- name: List pending NetBSD pkgin updates
+  hosts: all
+  gather_facts: false
+  become: true
+  tasks:
+    - name: Update pkgin database  # noqa: command-instead-of-module
+      ansible.builtin.command:
+        cmd: pkgin -y update
+      register: pkgin_update
+      changed_when: false
+    - name: Query pkgin for upgradable packages  # noqa: command-instead-of-module
+      ansible.builtin.command:
+        cmd: pkgin list-upgrades
+      register: pkgin_pending
+      changed_when: false
+    - name: Extract package names (strip the trailing -version suffix)
+      ansible.builtin.set_fact:
+        sw_pending_packages: >-
+          {{ pkgin_pending.stdout_lines
+             | reject('equalto', '')
+             | map('regex_replace', '^(.+)-[0-9][^-\s]*\s*.*$', '\1')
+             | list }}
+    - name: Surface count to the run log
+      ansible.builtin.debug:
+        msg: "SW_AFFECTED_COUNT: {{ sw_pending_packages | length }}"
+    - name: Surface each pending package
+      ansible.builtin.debug:
+        msg: "SW_PENDING_PACKAGE: {{ item }}"
+      loop: "{{ sw_pending_packages }}"

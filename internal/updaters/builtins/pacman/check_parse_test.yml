@@ -1,0 +1,36 @@
+- name: Test pacman check parsing
+  hosts: localhost
+  gather_facts: false
+  vars:
+    pacman_pending_typical:
+      stdout_lines:
+        - "linux 6.6.1.arch1-1 -> 6.6.2.arch1-1"
+        - "firefox 119.0-1 -> 119.0.1-1"
+        - "lib32-glibc 2.38-7 -> 2.38-8"
+    pacman_pending_empty:
+      stdout_lines: []
+  tasks:
+    - name: Parse typical pacman -Qu output
+      ansible.builtin.set_fact:
+        typical_pkgs: >-
+          {{ pacman_pending_typical.stdout_lines
+             | reject('equalto', '')
+             | map('regex_replace', '^(\S+)\s.*$', '\1')
+             | list }}
+    - name: Assert typical extracts package names
+      ansible.builtin.assert:
+        that:
+          - typical_pkgs == ['linux', 'firefox', 'lib32-glibc']
+        fail_msg: "typical_pkgs={{ typical_pkgs }}"
+    - name: Parse empty pacman -Qu output
+      ansible.builtin.set_fact:
+        empty_pkgs: >-
+          {{ pacman_pending_empty.stdout_lines
+             | reject('equalto', '')
+             | map('regex_replace', '^(\S+)\s.*$', '\1')
+             | list }}
+    - name: Assert empty produces empty list
+      ansible.builtin.assert:
+        that:
+          - empty_pkgs == []
+        fail_msg: "empty_pkgs={{ empty_pkgs }}, want []"

@@ -1,0 +1,21 @@
+- name: Apply pending zypper updates
+  hosts: all
+  gather_facts: false
+  become: true
+  tasks:
+    - name: Run zypper update  # noqa: command-instead-of-module
+      ansible.builtin.command:
+        cmd: zypper --non-interactive update
+      register: zypper_result
+      changed_when: "'Nothing to do.' not in zypper_result.stdout"
+    - name: Compute upgraded package count from progress markers
+      ansible.builtin.set_fact:
+        sw_upgraded_count: >-
+          {{ zypper_result.stdout_lines
+             | default([])
+             | select('match', '^\([0-9]+/[0-9]+\) ')
+             | list
+             | length }}
+    - name: Surface upgrade count to the run log
+      ansible.builtin.debug:
+        msg: "SW_AFFECTED_COUNT: {{ sw_upgraded_count }}"

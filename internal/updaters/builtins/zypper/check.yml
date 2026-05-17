@@ -1,0 +1,32 @@
+- name: List pending zypper updates
+  hosts: all
+  gather_facts: false
+  become: true
+  tasks:
+    - name: Refresh zypper repositories  # noqa: command-instead-of-module
+      ansible.builtin.command:
+        cmd: zypper --non-interactive refresh
+      register: zypper_refresh
+      changed_when: false
+    - name: Query zypper for available package updates  # noqa: command-instead-of-module
+      ansible.builtin.command:
+        cmd: zypper --non-interactive --quiet list-updates
+      register: zypper_pending
+      changed_when: false
+    - name: Extract package names from the table (column 3)
+      ansible.builtin.set_fact:
+        sw_pending_packages: >-
+          {{ zypper_pending.stdout_lines
+             | reject('match', '^--')
+             | reject('match', '^S\s*\|')
+             | reject('equalto', '')
+             | select('search', '\|.*\|.*\|.*\|.*\|')
+             | map('regex_replace', '^[^|]*\|[^|]*\|\s*(\S+)\s*\|.*$', '\1')
+             | list }}
+    - name: Surface count to the run log
+      ansible.builtin.debug:
+        msg: "SW_AFFECTED_COUNT: {{ sw_pending_packages | length }}"
+    - name: Surface each pending package
+      ansible.builtin.debug:
+        msg: "SW_PENDING_PACKAGE: {{ item }}"
+      loop: "{{ sw_pending_packages }}"

@@ -1,0 +1,45 @@
+- name: Test zypper check parsing
+  hosts: localhost
+  gather_facts: false
+  vars:
+    zypper_pending_typical:
+      stdout_lines:
+        - "S  | Repository           | Name      | Current Version | Available Version | Arch"
+        - "---+----------------------+-----------+-----------------+-------------------+-------"
+        - "v  | Update repository    | bash      | 5.1.16-150400.3 | 5.1.16-150400.4   | x86_64"
+        - "v  | Update repository    | coreutils | 8.32-150400.6   | 8.32-150400.7     | x86_64"
+        - "v  | OSS                  | libssh    | 0.10.5-1.1      | 0.10.6-1.1        | x86_64"
+    zypper_pending_empty:
+      stdout_lines:
+        - "No updates found."
+  tasks:
+    - name: Parse typical zypper list-updates output
+      ansible.builtin.set_fact:
+        typical_pkgs: >-
+          {{ zypper_pending_typical.stdout_lines
+             | reject('match', '^--')
+             | reject('match', '^S\s*\|')
+             | reject('equalto', '')
+             | select('search', '\|.*\|.*\|.*\|.*\|')
+             | map('regex_replace', '^[^|]*\|[^|]*\|\s*(\S+)\s*\|.*$', '\1')
+             | list }}
+    - name: Assert typical extracts package names
+      ansible.builtin.assert:
+        that:
+          - typical_pkgs == ['bash', 'coreutils', 'libssh']
+        fail_msg: "typical_pkgs={{ typical_pkgs }}"
+    - name: Parse empty zypper list-updates output
+      ansible.builtin.set_fact:
+        empty_pkgs: >-
+          {{ zypper_pending_empty.stdout_lines
+             | reject('match', '^--')
+             | reject('match', '^S\s*\|')
+             | reject('equalto', '')
+             | select('search', '\|.*\|.*\|.*\|.*\|')
+             | map('regex_replace', '^[^|]*\|[^|]*\|\s*(\S+)\s*\|.*$', '\1')
+             | list }}
+    - name: Assert empty produces empty list
+      ansible.builtin.assert:
+        that:
+          - empty_pkgs == []
+        fail_msg: "empty_pkgs={{ empty_pkgs }}, want []"
