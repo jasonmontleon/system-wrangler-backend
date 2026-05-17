@@ -61,6 +61,45 @@ func TestListSurfacesDefaultWhenUnset(t *testing.T) {
 	if got.Settings[KeyRunHistoryLimit] != "100" {
 		t.Errorf("run_history_limit = %q, want default 100", got.Settings[KeyRunHistoryLimit])
 	}
+	if got.Settings[KeyUpdateConcurrencyLimit] != "4" {
+		t.Errorf("update_concurrency_limit = %q, want default 4", got.Settings[KeyUpdateConcurrencyLimit])
+	}
+}
+
+func TestPutUpdateConcurrencyLimit(t *testing.T) {
+	h, srv := newHandlerSrv(t, true)
+	req, _ := http.NewRequest(
+		http.MethodPut,
+		srv.URL+"/api/admin/settings/"+KeyUpdateConcurrencyLimit,
+		strings.NewReader(`{"value":"8"}`),
+	)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("put: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", resp.StatusCode)
+	}
+	if v, _ := h.Store.Get(KeyUpdateConcurrencyLimit); v != "8" {
+		t.Errorf("stored = %q, want 8", v)
+	}
+	// Out-of-range value should 400.
+	req2, _ := http.NewRequest(
+		http.MethodPut,
+		srv.URL+"/api/admin/settings/"+KeyUpdateConcurrencyLimit,
+		strings.NewReader(`{"value":"0"}`),
+	)
+	req2.Header.Set("Content-Type", "application/json")
+	resp2, err := http.DefaultClient.Do(req2)
+	if err != nil {
+		t.Fatalf("put: %v", err)
+	}
+	defer func() { _ = resp2.Body.Close() }()
+	if resp2.StatusCode != http.StatusBadRequest {
+		t.Errorf("out-of-range status = %d, want 400", resp2.StatusCode)
+	}
 }
 
 func TestPutHappyPath(t *testing.T) {

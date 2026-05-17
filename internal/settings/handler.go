@@ -70,6 +70,9 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 	if _, ok := all[KeyRunHistoryLimit]; !ok {
 		all[KeyRunHistoryLimit] = strconv.Itoa(RunHistoryLimit(h.Store))
 	}
+	if _, ok := all[KeyUpdateConcurrencyLimit]; !ok {
+		all[KeyUpdateConcurrencyLimit] = strconv.Itoa(UpdateConcurrencyLimit(h.Store))
+	}
 	writeJSON(w, http.StatusOK, settingsResponseDTO{Settings: all})
 }
 
@@ -106,6 +109,21 @@ func (h *Handler) put(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "set failed")
 			// key is user-controlled but slog's structured kv form doesn't
 			// interpolate it into the message — gosec G706 false positive.
+			slog.Error("settings set", "err", err, "key", key) //nolint:gosec
+			return
+		}
+	case KeyUpdateConcurrencyLimit:
+		n, err := strconv.Atoi(in.Value)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "value must be an integer")
+			return
+		}
+		if err := SetUpdateConcurrencyLimit(h.Store, n); err != nil {
+			if errors.Is(err, ErrInvalid) {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			writeError(w, http.StatusInternalServerError, "set failed")
 			slog.Error("settings set", "err", err, "key", key) //nolint:gosec
 			return
 		}

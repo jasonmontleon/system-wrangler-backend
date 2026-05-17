@@ -429,6 +429,11 @@ func populateMux(mux router.Mux, db *sql.DB, store systems.Store, groupStore gro
 			RunHistoryLimit: func() int {
 				return settings.RunHistoryLimit(settingsStore)
 			},
+			Gate: &updaters.Gate{
+				Limit: func() int {
+					return settings.UpdateConcurrencyLimit(settingsStore)
+				},
+			},
 		}
 		updaterHandler := &updaters.Handler{
 			Runner:  updaterRunner,

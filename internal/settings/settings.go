@@ -36,6 +36,25 @@ const MinRunHistoryLimit = 1
 // and still trims in a single statement.
 const MaxRunHistoryLimit = 10000
 
+// KeyUpdateConcurrencyLimit caps how many check/apply runs the
+// Runner will execute simultaneously. Extra requests wait in a FIFO
+// queue and start as in-flight runs complete.
+const KeyUpdateConcurrencyLimit = "update_concurrency_limit"
+
+// DefaultUpdateConcurrencyLimit picks a small parallelism that suits
+// a homelab without saturating the ansible/ssh stack. Operators with
+// a beefier control node can raise it.
+const DefaultUpdateConcurrencyLimit = 4
+
+// MinUpdateConcurrencyLimit guards against a value that would
+// effectively halt the runner. A value of 1 is the serial floor.
+const MinUpdateConcurrencyLimit = 1
+
+// MaxUpdateConcurrencyLimit bounds the upper end. 100 is plenty for
+// a homelab fleet and still leaves headroom against the OS's open-
+// file and child-process limits.
+const MaxUpdateConcurrencyLimit = 100
+
 // ErrNotFound is returned by Store.Get when no row exists for the
 // requested key. Typed accessors translate this to the matching
 // default rather than propagating the error.

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -268,6 +269,125 @@ func TestCheckTrimsRunHistoryAfterInsert(t *testing.T) {
 	rows, _ := f.store.ListRuns(f.systemID, 50)
 	if len(rows) != 2 {
 		t.Errorf("rows after trim = %d, want 2", len(rows))
+	}
+}
+
+// blockingAnsible is a fakeAnsible variant whose Run only returns
+// after release is signalled. Used to prove that the Gate serialises
+// concurrent Check calls under a limit of 1.
+type blockingAnsible struct {
+	mu       sync.Mutex
+	active   int
+	maxSeen  int
+	release  chan struct{}
+	finished chan struct{}
+}
+
+func newBlockingAnsible() *blockingAnsible {
+	return &blockingAnsible{
+		release:  make(chan struct{}),
+		finished: make(chan struct{}, 64),
+	}
+}
+
+func (b *blockingAnsible) Run(ctx context.Context, _ ansible.Request) (ansible.Run, error) {
+	b.mu.Lock()
+	b.active++
+	if b.active > b.maxSeen {
+		b.maxSeen = b.active
+	}
+	b.mu.Unlock()
+	select {
+	case <-b.release:
+	case <-ctx.Done():
+	}
+	b.mu.Lock()
+	b.active--
+	b.mu.Unlock()
+	b.finished <- struct{}{}
+	return ansible.Run{Status: ansible.RunSuccess, ExitCode: 0}, nil
+}
+
+func TestRunnerGateSerialisesParallelChecks(t *testing.T) {
+	dsn := "file:" + filepath.Join(t.TempDir(), "gate-runner.db")
+	db, err := database.Open(dsn)
+	if err != nil {
+		t.Fatalf("database.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	sysStore, err := systems.NewSQLiteStore(db)
+	if err != nil {
+		t.Fatalf("systems.NewSQLiteStore: %v", err)
+	}
+	if _, err := groups.NewSQLiteStore(db); err != nil {
+		t.Fatalf("groups.NewSQLiteStore: %v", err)
+	}
+	store, err := NewSQLiteStore(db)
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	auditStore, err := audit.NewSQLiteStore(db)
+	if err != nil {
+		t.Fatalf("audit.NewSQLiteStore: %v", err)
+	}
+	sysA, err := sysStore.Create(systems.SystemInput{Name: "a", Hostname: "a.example"})
+	if err != nil {
+		t.Fatalf("create a: %v", err)
+	}
+	sysB, err := sysStore.Create(systems.SystemInput{Name: "b", Hostname: "b.example"})
+	if err != nil {
+		t.Fatalf("create b: %v", err)
+	}
+	ba := newBlockingAnsible()
+	runner := &Runner{
+		Registry: NewRegistry(store),
+		Store:    store,
+		Ansible:  ba,
+		Audit:    auditStore,
+		Gate:     &Gate{Limit: func() int { return 1 }},
+	}
+	// Fire two Checks concurrently against different systems so the
+	// per-system advisory lock can't be what serialises them — only
+	// the Gate's limit of 1 should.
+	errs := make(chan error, 2)
+	go func() {
+		_, e := runner.Check(context.Background(), sysA.ID, "builtin.dnf")
+		errs <- e
+	}()
+	go func() {
+		_, e := runner.Check(context.Background(), sysB.ID, "builtin.dnf")
+		errs <- e
+	}()
+	// Wait long enough for both to reach the gate; only one should
+	// progress into ansible.Run.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		ba.mu.Lock()
+		active := ba.active
+		ba.mu.Unlock()
+		if active == 1 && runner.Gate.Waiting() == 1 {
+			break
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	ba.mu.Lock()
+	if ba.active != 1 {
+		ba.mu.Unlock()
+		t.Fatalf("ansible.active = %d, want 1 (gate must hold the second)", ba.active)
+	}
+	ba.mu.Unlock()
+	// Release the first; the second should advance after.
+	ba.release <- struct{}{}
+	<-ba.finished
+	ba.release <- struct{}{}
+	<-ba.finished
+	for i := 0; i < 2; i++ {
+		if e := <-errs; e != nil {
+			t.Fatalf("check %d: %v", i, e)
+		}
+	}
+	if ba.maxSeen != 1 {
+		t.Fatalf("max concurrent ansible runs = %d, want 1", ba.maxSeen)
 	}
 }
 

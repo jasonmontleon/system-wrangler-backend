@@ -122,3 +122,47 @@ func TestSetRunHistoryLimitValidation(t *testing.T) {
 		t.Errorf("RunHistoryLimit = %d, want 250", got)
 	}
 }
+
+func TestUpdateConcurrencyLimitFallback(t *testing.T) {
+	store := newStore(t)
+	if got := UpdateConcurrencyLimit(store); got != DefaultUpdateConcurrencyLimit {
+		t.Errorf("unset: got %d, want %d", got, DefaultUpdateConcurrencyLimit)
+	}
+	if err := store.Set(KeyUpdateConcurrencyLimit, "junk"); err != nil {
+		t.Fatalf("Set junk: %v", err)
+	}
+	if got := UpdateConcurrencyLimit(store); got != DefaultUpdateConcurrencyLimit {
+		t.Errorf("junk: got %d, want %d", got, DefaultUpdateConcurrencyLimit)
+	}
+	if err := store.Set(KeyUpdateConcurrencyLimit, "0"); err != nil {
+		t.Fatalf("Set 0: %v", err)
+	}
+	if got := UpdateConcurrencyLimit(store); got != DefaultUpdateConcurrencyLimit {
+		t.Errorf("0: got %d, want %d", got, DefaultUpdateConcurrencyLimit)
+	}
+	if err := store.Set(KeyUpdateConcurrencyLimit, "9999"); err != nil {
+		t.Fatalf("Set huge: %v", err)
+	}
+	if got := UpdateConcurrencyLimit(store); got != MaxUpdateConcurrencyLimit {
+		t.Errorf("huge: got %d, want %d", got, MaxUpdateConcurrencyLimit)
+	}
+	if got := UpdateConcurrencyLimit(nil); got != DefaultUpdateConcurrencyLimit {
+		t.Errorf("nil store: got %d, want %d", got, DefaultUpdateConcurrencyLimit)
+	}
+}
+
+func TestSetUpdateConcurrencyLimitValidation(t *testing.T) {
+	store := newStore(t)
+	if err := SetUpdateConcurrencyLimit(store, 0); !errors.Is(err, ErrInvalid) {
+		t.Errorf("zero: err = %v, want ErrInvalid", err)
+	}
+	if err := SetUpdateConcurrencyLimit(store, MaxUpdateConcurrencyLimit+1); !errors.Is(err, ErrInvalid) {
+		t.Errorf("over max: err = %v, want ErrInvalid", err)
+	}
+	if err := SetUpdateConcurrencyLimit(store, 8); err != nil {
+		t.Errorf("valid: err = %v, want nil", err)
+	}
+	if got := UpdateConcurrencyLimit(store); got != 8 {
+		t.Errorf("UpdateConcurrencyLimit = %d, want 8", got)
+	}
+}

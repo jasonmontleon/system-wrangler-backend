@@ -45,6 +45,10 @@ type Runner struct {
 	// accessor; left nil in tests where retention is irrelevant
 	// (the trim is then a no-op).
 	RunHistoryLimit func() int
+	// Gate caps how many check/apply tasks run simultaneously
+	// across the fleet. A nil Gate disables the cap entirely; tests
+	// that don't exercise queuing leave it unset.
+	Gate *Gate
 }
 
 // InspectResult is the outcome of one inspect call. Detected lists
@@ -286,6 +290,19 @@ func (r *Runner) runUpdater(ctx context.Context, systemID, updaterID string, kin
 			"playbook_sha": sha,
 		},
 	})
+
+	if r.Gate != nil {
+		if err := r.Gate.Acquire(ctx); err != nil {
+			r.finishRun(run, r.now(), -1, 0, "cancelled in queue: "+err.Error())
+			r.logComplete(ctx, completeAction, audit.Failure, systemID, runID, run.StartedAt, audit.Detail{
+				"updater_id": updaterID,
+				"status":     string(ansible.RunFailure),
+				"reason":     "cancelled in queue: " + err.Error(),
+			})
+			return RunResult{Run: run, UpdaterID: updaterID, Kind: kind, Status: ansible.RunFailure, Reason: err.Error()}, err
+		}
+		defer r.Gate.Release()
+	}
 
 	playbookPath, cleanup, err := writePlaybook(body, string(kind))
 	if err != nil {
