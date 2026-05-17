@@ -1,0 +1,41 @@
+- name: Test snap check parsing
+  hosts: localhost
+  gather_facts: false
+  vars:
+    snap_pending_typical:
+      stdout_lines:
+        - "Name       Version       Rev   Size    Publisher    Notes"
+        - "hello      2.10          45    8KB     canonical    -"
+        - "core22     20240101      1234  77MB    canonical    base"
+    snap_pending_empty:
+      stdout_lines:
+        - "All snaps up to date."
+  tasks:
+    - name: Parse typical snap refresh --list output
+      ansible.builtin.set_fact:
+        typical_pkgs: >-
+          {{ snap_pending_typical.stdout_lines
+             | reject('match', '^Name ')
+             | reject('match', '^All snaps up to date')
+             | reject('equalto', '')
+             | map('regex_replace', '^([^ ]+) .*$', '\1')
+             | list }}
+    - name: Assert typical extracts snap names
+      ansible.builtin.assert:
+        that:
+          - typical_pkgs == ['hello', 'core22']
+        fail_msg: "typical_pkgs={{ typical_pkgs }}, want ['hello', 'core22']"
+    - name: Parse "all up to date" output
+      ansible.builtin.set_fact:
+        empty_pkgs: >-
+          {{ snap_pending_empty.stdout_lines
+             | reject('match', '^Name ')
+             | reject('match', '^All snaps up to date')
+             | reject('equalto', '')
+             | map('regex_replace', '^([^ ]+) .*$', '\1')
+             | list }}
+    - name: Assert empty produces empty list
+      ansible.builtin.assert:
+        that:
+          - empty_pkgs == []
+        fail_msg: "empty_pkgs={{ empty_pkgs }}, want []"

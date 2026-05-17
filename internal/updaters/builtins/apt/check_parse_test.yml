@@ -1,0 +1,42 @@
+- name: Test apt check parsing
+  hosts: localhost
+  gather_facts: false
+  vars:
+    apt_sim_typical:
+      stdout_lines:
+        - "Reading package lists..."
+        - "Building dependency tree..."
+        - "Inst libfoo [1.0-1] (1.1-1 ubuntu Ubuntu:24.04/noble [amd64])"
+        - "Inst bar [2.0-1] (2.1-1 ubuntu Ubuntu:24.04/noble [amd64])"
+        - "Conf libfoo (1.1-1 ubuntu)"
+        - "Conf bar (2.1-1 ubuntu)"
+    apt_sim_empty:
+      stdout_lines:
+        - "Reading package lists..."
+        - "Building dependency tree..."
+        - "0 upgraded, 0 newly installed, 0 to remove and 0 not upgraded."
+  tasks:
+    - name: Parse typical apt-get -s dist-upgrade output
+      ansible.builtin.set_fact:
+        typical_pkgs: >-
+          {{ apt_sim_typical.stdout_lines
+             | select('match', '^Inst ')
+             | map('regex_replace', '^Inst ([^ ]+) .*$', '\1')
+             | list }}
+    - name: Assert typical extracts package names
+      ansible.builtin.assert:
+        that:
+          - typical_pkgs == ['libfoo', 'bar']
+        fail_msg: "typical_pkgs={{ typical_pkgs }}, want ['libfoo', 'bar']"
+    - name: Parse empty apt-get -s output
+      ansible.builtin.set_fact:
+        empty_pkgs: >-
+          {{ apt_sim_empty.stdout_lines
+             | select('match', '^Inst ')
+             | map('regex_replace', '^Inst ([^ ]+) .*$', '\1')
+             | list }}
+    - name: Assert empty produces empty list
+      ansible.builtin.assert:
+        that:
+          - empty_pkgs == []
+        fail_msg: "empty_pkgs={{ empty_pkgs }}, want []"

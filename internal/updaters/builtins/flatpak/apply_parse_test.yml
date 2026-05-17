@@ -1,0 +1,46 @@
+- name: Test flatpak apply count parsing
+  hosts: localhost
+  gather_facts: false
+  vars:
+    flatpak_result_typical:
+      stdout_lines:
+        - "Looking for updates..."
+        - ""
+        - "         Ref                                                  Branch   Op"
+        - " 1.      app/org.example.A/x86_64/stable                      stable   u"
+        - " 2.      app/org.example.B/x86_64/stable                      stable   u"
+        - " 3.      runtime/org.freedesktop.Platform/x86_64/22.08        22.08    u"
+        - ""
+        - "Updating in system:"
+        - "org.example.A stable u app          flathub  < 100.0 kB"
+    flatpak_result_empty:
+      stdout_lines:
+        - "Looking for updates..."
+        - "Nothing to do."
+  tasks:
+    - name: Count numbered changelist items in typical output
+      ansible.builtin.set_fact:
+        typical_count: >-
+          {{ flatpak_result_typical.stdout_lines
+             | default([])
+             | select('match', '^\s*[0-9]+\.\s')
+             | list
+             | length }}
+    - name: Assert typical counts the changelist entries
+      ansible.builtin.assert:
+        that:
+          - typical_count | int == 3
+        fail_msg: "typical_count={{ typical_count }}, want 3"
+    - name: Count empty output
+      ansible.builtin.set_fact:
+        empty_count: >-
+          {{ flatpak_result_empty.stdout_lines
+             | default([])
+             | select('match', '^\s*[0-9]+\.\s')
+             | list
+             | length }}
+    - name: Assert empty produces zero
+      ansible.builtin.assert:
+        that:
+          - empty_count | int == 0
+        fail_msg: "empty_count={{ empty_count }}, want 0"
