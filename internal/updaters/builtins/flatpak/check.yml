@@ -1,0 +1,24 @@
+- name: List pending flatpak updates
+  hosts: all
+  gather_facts: false
+  become: true
+  tasks:
+    - name: Query flatpak for available system updates
+      ansible.builtin.command:
+        cmd: flatpak --system remote-ls --updates --columns=application
+      register: flatpak_pending
+      changed_when: false
+    - name: Extract application IDs (drop the header)
+      ansible.builtin.set_fact:
+        sw_pending_packages: >-
+          {{ flatpak_pending.stdout_lines
+             | reject('equalto', 'Application')
+             | reject('equalto', '')
+             | list }}
+    - name: Surface count to the run log
+      ansible.builtin.debug:
+        msg: "SW_AFFECTED_COUNT: {{ sw_pending_packages | length }}"
+    - name: Surface each pending flatpak
+      ansible.builtin.debug:
+        msg: "SW_PENDING_PACKAGE: {{ item }}"
+      loop: "{{ sw_pending_packages }}"

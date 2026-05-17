@@ -56,6 +56,41 @@ func TestRegistryGetBuiltin(t *testing.T) {
 	}
 }
 
+func TestBuiltinsShipExpectedSet(t *testing.T) {
+	want := map[string]string{
+		"builtin.dnf":     "dnf",
+		"builtin.apt":     "apt",
+		"builtin.snap":    "snap",
+		"builtin.flatpak": "flatpak",
+	}
+	got := map[string]Definition{}
+	for _, d := range Builtins() {
+		got[d.ID] = d
+	}
+	if len(got) != len(want) {
+		t.Errorf("builtin count = %d, want %d", len(got), len(want))
+	}
+	for id, binary := range want {
+		d, ok := got[id]
+		if !ok {
+			t.Errorf("missing builtin %q", id)
+			continue
+		}
+		if d.Source != SourceBuiltin {
+			t.Errorf("%s.Source = %q, want builtin", id, d.Source)
+		}
+		if d.DetectBinary != binary {
+			t.Errorf("%s.DetectBinary = %q, want %q", id, d.DetectBinary, binary)
+		}
+		if len(d.CheckPlaybook) == 0 {
+			t.Errorf("%s.CheckPlaybook is empty (embed failed?)", id)
+		}
+		if len(d.ApplyPlaybook) == 0 {
+			t.Errorf("%s.ApplyPlaybook is empty (embed failed?)", id)
+		}
+	}
+}
+
 func TestRegistryGetCustomIncludesSoftDeleted(t *testing.T) {
 	store := newStore(t)
 	reg := NewRegistry(store)

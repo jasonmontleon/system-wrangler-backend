@@ -1,0 +1,31 @@
+- name: List pending APT updates
+  hosts: all
+  gather_facts: false
+  become: true
+  tasks:
+    - name: Update apt cache
+      ansible.builtin.apt:
+        update_cache: true
+      environment:
+        DEBIAN_FRONTEND: noninteractive
+    - name: Simulate dist-upgrade to enumerate pending packages  # noqa: command-instead-of-module
+      ansible.builtin.command:
+        cmd: apt-get -s -o Debug::NoLocking=true dist-upgrade
+      register: apt_sim
+      changed_when: false
+      environment:
+        DEBIAN_FRONTEND: noninteractive
+    - name: Extract package names from the simulation
+      ansible.builtin.set_fact:
+        sw_pending_packages: >-
+          {{ apt_sim.stdout_lines
+             | select('match', '^Inst ')
+             | map('regex_replace', '^Inst ([^ ]+) .*$', '\1')
+             | list }}
+    - name: Surface count to the run log
+      ansible.builtin.debug:
+        msg: "SW_AFFECTED_COUNT: {{ sw_pending_packages | length }}"
+    - name: Surface each pending package
+      ansible.builtin.debug:
+        msg: "SW_PENDING_PACKAGE: {{ item }}"
+      loop: "{{ sw_pending_packages }}"

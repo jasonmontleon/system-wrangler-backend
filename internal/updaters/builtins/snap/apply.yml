@@ -1,0 +1,21 @@
+- name: Refresh all snap packages
+  hosts: all
+  gather_facts: false
+  become: true
+  tasks:
+    - name: Run snap refresh
+      ansible.builtin.command:
+        cmd: snap refresh
+      register: snap_result
+      changed_when: snap_result.stdout != ''
+    - name: Compute refreshed snap count
+      ansible.builtin.set_fact:
+        sw_refreshed_count: >-
+          {{ snap_result.stdout_lines
+             | default([])
+             | select('search', ' refreshed$')
+             | list
+             | length }}
+    - name: Surface refresh count to the run log
+      ansible.builtin.debug:
+        msg: "SW_AFFECTED_COUNT: {{ sw_refreshed_count }}"

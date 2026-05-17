@@ -3,7 +3,7 @@
   gather_facts: false
   become: true
   tasks:
-    - name: Run dnf upgrade
+    - name: Run dnf upgrade  # noqa: package-latest
       ansible.builtin.dnf:
         name: "*"
         state: latest

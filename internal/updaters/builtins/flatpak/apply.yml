@@ -1,0 +1,21 @@
+- name: Apply pending flatpak updates
+  hosts: all
+  gather_facts: false
+  become: true
+  tasks:
+    - name: Run flatpak update
+      ansible.builtin.command:
+        cmd: flatpak --system update --assumeyes --noninteractive
+      register: flatpak_result
+      changed_when: flatpak_result.stdout != ''
+    - name: Compute updated flatpak count from the numbered changelist
+      ansible.builtin.set_fact:
+        sw_updated_count: >-
+          {{ flatpak_result.stdout_lines
+             | default([])
+             | select('match', '^\s*[0-9]+\.\s')
+             | list
+             | length }}
+    - name: Surface upgrade count to the run log
+      ansible.builtin.debug:
+        msg: "SW_AFFECTED_COUNT: {{ sw_updated_count }}"
