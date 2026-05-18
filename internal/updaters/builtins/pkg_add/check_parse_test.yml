@@ -4,32 +4,42 @@
   vars:
     pkg_add_pending_typical:
       stdout_lines:
-        - "quirks-7.10 signed on 2026-01-15T00:00:00Z"
-        - "quirks-7.10 to update quirks-7.11"
-        - "curl-8.4.0 to update curl-8.5.0"
-        - "firefox-esr-115.4.0 to update firefox-esr-115.5.0"
+        - "quirks-7.147 signed on 2025-10-10T23:15:26Z"
+        - "Update candidates: curl-8.15.0 -> curl-8.19.0"
+        - "curl-8.15.0->8.19.0 (processing)(pretending) "
+        - "curl-8.15.0 (hashing)(pretending) "
+        - "curl-8.19.0 (extracting)(pretending) "
+        - "curl-8.19.0 (installing)(pretending) "
+        - "Adding curl-8.15.0->8.19.0(pretending) "
+        - "Update candidates: libpng16-1.6.50 -> libpng16-1.6.50"
+        - "libpng16-1.6.50->1.6.50 (processing)(pretending) "
+        - "Update candidates: firefox-esr-115.4.0 -> firefox-esr-115.5.0"
+        - "firefox-esr-115.4.0->115.5.0 (processing)(pretending) "
+        - "Adding firefox-esr-115.4.0->115.5.0(pretending) "
     pkg_add_pending_empty:
       stdout_lines:
-        - "quirks-7.10 signed on 2026-01-15T00:00:00Z"
+        - "quirks-7.147 signed on 2025-10-10T23:15:26Z"
+        - "Update candidates: curl-8.19.0 -> curl-8.19.0"
+        - "curl-8.19.0->8.19.0 (processing)(pretending) "
   tasks:
-    - name: Parse typical pkg_add -un output
+    - name: Parse typical pkg_add -unv output
       ansible.builtin.set_fact:
         typical_pkgs: >-
           {{ pkg_add_pending_typical.stdout_lines
-             | select('search', ' to update ')
-             | map('regex_replace', '^(.+)-[0-9][^-\s]* to update .*$', '\1')
+             | select('match', '^Adding \S+->')
+             | map('regex_replace', '^Adding (\S+?)-[0-9]\S*->.*$', '\1')
              | list }}
-    - name: Assert typical extracts package names
+    - name: Assert typical extracts only the packages with version changes
       ansible.builtin.assert:
         that:
-          - typical_pkgs == ['quirks', 'curl', 'firefox-esr']
+          - typical_pkgs == ['curl', 'firefox-esr']
         fail_msg: "typical_pkgs={{ typical_pkgs }}"
-    - name: Parse empty pkg_add -un output
+    - name: Parse empty (no Adding lines) pkg_add -unv output
       ansible.builtin.set_fact:
         empty_pkgs: >-
           {{ pkg_add_pending_empty.stdout_lines
-             | select('search', ' to update ')
-             | map('regex_replace', '^(.+)-[0-9][^-\s]* to update .*$', '\1')
+             | select('match', '^Adding \S+->')
+             | map('regex_replace', '^Adding (\S+?)-[0-9]\S*->.*$', '\1')
              | list }}
     - name: Assert empty produces empty list
       ansible.builtin.assert:

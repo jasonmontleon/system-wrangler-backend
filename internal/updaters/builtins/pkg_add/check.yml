@@ -5,15 +5,15 @@
   tasks:
     - name: Dry-run pkg_add -u to enumerate pending packages
       ansible.builtin.command:
-        cmd: pkg_add -un
+        cmd: pkg_add -unv
       register: pkg_add_pending
       changed_when: false
-    - name: Extract package names from the "to update" lines
+    - name: Extract package names from "Adding ..." lines
       ansible.builtin.set_fact:
         sw_pending_packages: >-
           {{ pkg_add_pending.stdout_lines
-             | select('search', ' to update ')
-             | map('regex_replace', '^(.+)-[0-9][^-\s]* to update .*$', '\1')
+             | select('match', '^Adding \S+->')
+             | map('regex_replace', '^Adding (\S+?)-[0-9]\S*->.*$', '\1')
              | list }}
     - name: Surface count to the run log
       ansible.builtin.debug:

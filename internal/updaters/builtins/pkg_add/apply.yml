@@ -5,15 +5,16 @@
   tasks:
     - name: Run pkg_add -u
       ansible.builtin.command:
-        cmd: pkg_add -uI
+        cmd: pkg_add -uvI
       register: pkg_add_result
-      changed_when: pkg_add_result.stdout is search(' to update ', multiline=True)
-    - name: Compute upgraded package count from "to update" lines
+      changed_when: >-
+        pkg_add_result.stdout is search('^Adding \S+->', multiline=True)
+    - name: Compute upgraded package count from "Adding ..." lines
       ansible.builtin.set_fact:
         sw_upgraded_count: >-
           {{ pkg_add_result.stdout_lines
              | default([])
-             | select('search', ' to update ')
+             | select('match', '^Adding \S+->')
              | list
              | length }}
     - name: Surface upgrade count to the run log
