@@ -167,9 +167,15 @@ func (r *Runner) Run(ctx context.Context, req Request) (Run, error) {
 		"-i", inventoryPath,
 		"--private-key", keyPath,
 		"-u", resolved.AnsibleUser,
-		"-b",
-		req.PlaybookPath,
 	}
+	// Default become_method is sudo, which doesn't exist on Windows.
+	// The SSH-authenticated user typically already has Admin rights;
+	// builtins requiring elevation can opt back in via the playbook's
+	// own become directive once we have a use case (e.g. WinRM/runas).
+	if !sys.IsWindows {
+		args = append(args, "-b")
+	}
+	args = append(args, req.PlaybookPath)
 	args = append(args, extraVarsArg...)
 	env := append(os.Environ(),
 		"ANSIBLE_HOST_KEY_CHECKING=True",

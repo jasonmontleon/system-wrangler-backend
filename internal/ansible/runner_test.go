@@ -791,6 +791,33 @@ func TestPingUsesWinPingForWindowsSystems(t *testing.T) {
 	}
 }
 
+func TestRunSkipsBecomeForWindowsSystems(t *testing.T) {
+	f := newFixture(t)
+	if err := f.systems.SetPlatform(f.system.ID, true); err != nil {
+		t.Fatalf("SetPlatform: %v", err)
+	}
+	f.seedCredentials()
+	f.seedAcceptedHostKey()
+	f.exec.queue(AnsiblePlaybookBinary, fakeResp{stdout: "PLAY RECAP", exit: 0})
+
+	_, err := f.runner.Run(context.Background(), Request{
+		SystemID:     f.system.ID,
+		PlaybookPath: f.playbookPath,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	plays := f.exec.callsFor(AnsiblePlaybookBinary)
+	if len(plays) != 1 {
+		t.Fatalf("ansible-playbook calls = %d", len(plays))
+	}
+	for _, a := range plays[0].args {
+		if a == "-b" {
+			t.Fatalf("windows run should not pass -b (become defaults to sudo, which doesn't exist on Windows); args=%v", plays[0].args)
+		}
+	}
+}
+
 func TestExtractDiagnosticPrefersStderr(t *testing.T) {
 	got := extractDiagnostic([]byte("stdout line\n"), []byte("stderr trailer\n"))
 	if got != "stderr trailer" {
