@@ -1,0 +1,22 @@
+- name: Apply pending xbps updates
+  hosts: all
+  gather_facts: false
+  become: true
+  tasks:
+    - name: Run xbps-install update  # noqa: command-instead-of-module
+      ansible.builtin.command:
+        cmd: xbps-install -Suy
+      register: xbps_result
+      changed_when: >-
+        xbps_result.stdout is search('configuring ', multiline=True)
+    - name: Compute upgraded package count from configuring markers
+      ansible.builtin.set_fact:
+        sw_upgraded_count: >-
+          {{ xbps_result.stdout_lines
+             | default([])
+             | select('search', ': configuring ')
+             | list
+             | length }}
+    - name: Surface upgrade count to the run log
+      ansible.builtin.debug:
+        msg: "SW_AFFECTED_COUNT: {{ sw_upgraded_count }}"

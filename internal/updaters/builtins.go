@@ -72,6 +72,18 @@ var builtinWingetCheck []byte
 //go:embed builtins/winget/apply.yml
 var builtinWingetApply []byte
 
+//go:embed builtins/xbps/check.yml
+var builtinXBPSCheck []byte
+
+//go:embed builtins/xbps/apply.yml
+var builtinXBPSApply []byte
+
+//go:embed builtins/eopkg/check.yml
+var builtinEopkgCheck []byte
+
+//go:embed builtins/eopkg/apply.yml
+var builtinEopkgApply []byte
+
 // Builtins returns every code-registered updater. Order is stable so
 // callers that don't sort still produce deterministic output. The
 // registry calls this once at startup and merges the result into
@@ -136,7 +148,7 @@ func Builtins() []Definition {
 			ID:            "builtin.apk",
 			Source:        SourceBuiltin,
 			DisplayName:   "apk",
-			Description:   "Alpine Linux package manager",
+			Description:   "Alpine Linux / OpenWRT package manager",
 			DetectBinary:  "apk",
 			CheckPlaybook: builtinAPKCheck,
 			ApplyPlaybook: builtinAPKApply,
@@ -176,6 +188,24 @@ func Builtins() []Definition {
 			DetectBinary:  "winget",
 			CheckPlaybook: builtinWingetCheck,
 			ApplyPlaybook: builtinWingetApply,
+		},
+		{
+			ID:            "builtin.xbps",
+			Source:        SourceBuiltin,
+			DisplayName:   "xbps",
+			Description:   "Void Linux package manager",
+			DetectBinary:  "xbps-install",
+			CheckPlaybook: builtinXBPSCheck,
+			ApplyPlaybook: builtinXBPSApply,
+		},
+		{
+			ID:            "builtin.eopkg",
+			Source:        SourceBuiltin,
+			DisplayName:   "eopkg",
+			Description:   "Solus package manager",
+			DetectBinary:  "eopkg",
+			CheckPlaybook: builtinEopkgCheck,
+			ApplyPlaybook: builtinEopkgApply,
 		},
 	}
 }

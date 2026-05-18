@@ -1,0 +1,29 @@
+- name: List pending eopkg updates
+  hosts: all
+  gather_facts: false
+  become: true
+  tasks:
+    - name: Refresh eopkg repositories  # noqa: command-instead-of-module
+      ansible.builtin.command:
+        cmd: eopkg update-repo -y
+      register: eopkg_update
+      changed_when: false
+    - name: Query eopkg for upgradable packages  # noqa: command-instead-of-module
+      ansible.builtin.command:
+        cmd: eopkg list-upgrades -N
+      register: eopkg_pending
+      changed_when: false
+    - name: Extract package names (eopkg list-upgrades emits "name <pad> - description")
+      ansible.builtin.set_fact:
+        sw_pending_packages: >-
+          {{ eopkg_pending.stdout_lines
+             | select('match', '^\S+\s+-\s')
+             | map('regex_replace', '^(\S+)\s+-\s.*$', '\1')
+             | list }}
+    - name: Surface count to the run log
+      ansible.builtin.debug:
+        msg: "SW_AFFECTED_COUNT: {{ sw_pending_packages | length }}"
+    - name: Surface each pending package
+      ansible.builtin.debug:
+        msg: "SW_PENDING_PACKAGE: {{ item }}"
+      loop: "{{ sw_pending_packages }}"

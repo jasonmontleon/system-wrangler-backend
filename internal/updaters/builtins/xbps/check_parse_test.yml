@@ -1,0 +1,39 @@
+- name: Test xbps check parsing
+  hosts: localhost
+  gather_facts: false
+  vars:
+    xbps_pending_typical:
+      stdout_lines:
+        - "[*] Updating `https://repo-default.voidlinux.org/current/x86_64-repodata' ..."
+        - "[*] Building transaction ..."
+        - "foo-1.2.3_2 update x86_64 https://repo-default.voidlinux.org/current 12345B"
+        - "bar-2.0_1 install x86_64 https://repo-default.voidlinux.org/current 7890B"
+        - "gst-plugins-base1-1.20.5_1 update x86_64 https://repo-default.voidlinux.org/current 99999B"
+    xbps_pending_empty:
+      stdout_lines:
+        - "[*] Updating `https://repo-default.voidlinux.org/current/x86_64-repodata' ..."
+  tasks:
+    - name: Parse typical xbps-install -Sun output
+      ansible.builtin.set_fact:
+        typical_pkgs: >-
+          {{ xbps_pending_typical.stdout_lines
+             | select('match', '^\S+-[0-9]\S*\s+(update|install)\s+')
+             | map('regex_replace', '^(.+)-([0-9]\S*)\s+(update|install)\s+.*$', '\1||\2')
+             | list }}
+    - name: Assert typical extracts name||new tuples (xbps dry-run hides installed version)
+      ansible.builtin.assert:
+        that:
+          - typical_pkgs == ['foo||1.2.3_2', 'bar||2.0_1', 'gst-plugins-base1||1.20.5_1']
+        fail_msg: "typical_pkgs={{ typical_pkgs }}"
+    - name: Parse empty xbps-install -Sun output
+      ansible.builtin.set_fact:
+        empty_pkgs: >-
+          {{ xbps_pending_empty.stdout_lines
+             | select('match', '^\S+-[0-9]\S*\s+(update|install)\s+')
+             | map('regex_replace', '^(.+)-([0-9]\S*)\s+(update|install)\s+.*$', '\1||\2')
+             | list }}
+    - name: Assert empty produces empty list
+      ansible.builtin.assert:
+        that:
+          - empty_pkgs == []
+        fail_msg: "empty_pkgs={{ empty_pkgs }}, want []"

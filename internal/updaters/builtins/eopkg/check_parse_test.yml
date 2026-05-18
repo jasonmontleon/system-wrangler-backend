@@ -1,0 +1,37 @@
+- name: Test eopkg check parsing
+  hosts: localhost
+  gather_facts: false
+  vars:
+    eopkg_pending_typical:
+      stdout_lines:
+        - "adwaita-icon-theme            - The Adwaita Icon Theme package"
+        - "coreutils                     - GNU core utilities"
+        - "linux-firmware-mlxsw-spectrum - Firmware required for many devices"
+        - "shim-signed                   - Initial UEFI bootloader"
+    eopkg_pending_empty:
+      stdout_lines: []
+  tasks:
+    - name: Parse typical eopkg list-upgrades -N output
+      ansible.builtin.set_fact:
+        typical_pkgs: >-
+          {{ eopkg_pending_typical.stdout_lines
+             | select('match', '^\S+\s+-\s')
+             | map('regex_replace', '^(\S+)\s+-\s.*$', '\1')
+             | list }}
+    - name: Assert typical extracts bare package names
+      ansible.builtin.assert:
+        that:
+          - typical_pkgs == ['adwaita-icon-theme', 'coreutils', 'linux-firmware-mlxsw-spectrum', 'shim-signed']
+        fail_msg: "typical_pkgs={{ typical_pkgs }}"
+    - name: Parse empty eopkg list-upgrades -N output
+      ansible.builtin.set_fact:
+        empty_pkgs: >-
+          {{ eopkg_pending_empty.stdout_lines
+             | select('match', '^\S+\s+-\s')
+             | map('regex_replace', '^(\S+)\s+-\s.*$', '\1')
+             | list }}
+    - name: Assert empty produces empty list
+      ansible.builtin.assert:
+        that:
+          - empty_pkgs == []
+        fail_msg: "empty_pkgs={{ empty_pkgs }}, want []"

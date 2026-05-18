@@ -1,0 +1,24 @@
+- name: List pending xbps updates
+  hosts: all
+  gather_facts: false
+  become: true
+  tasks:
+    - name: Sync xbps repodata and dry-run the update  # noqa: command-instead-of-module
+      ansible.builtin.command:
+        cmd: xbps-install -Sun
+      register: xbps_pending
+      changed_when: false
+    - name: Extract name||new tuples (xbps dry-run only surfaces the target version)
+      ansible.builtin.set_fact:
+        sw_pending_packages: >-
+          {{ xbps_pending.stdout_lines
+             | select('match', '^\S+-[0-9]\S*\s+(update|install)\s+')
+             | map('regex_replace', '^(.+)-([0-9]\S*)\s+(update|install)\s+.*$', '\1||\2')
+             | list }}
+    - name: Surface count to the run log
+      ansible.builtin.debug:
+        msg: "SW_AFFECTED_COUNT: {{ sw_pending_packages | length }}"
+    - name: Surface each pending package
+      ansible.builtin.debug:
+        msg: "SW_PENDING_PACKAGE: {{ item }}"
+      loop: "{{ sw_pending_packages }}"
