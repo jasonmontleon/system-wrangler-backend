@@ -18,13 +18,13 @@
              | reject('match', '^Name ')
              | reject('match', '^All snaps up to date')
              | reject('equalto', '')
-             | map('regex_replace', '^([^ ]+) .*$', '\1')
+             | map('regex_replace', '^(\S+)\s+(\S+)\s+.*$', '\1||\2')
              | list }}
-    - name: Assert typical extracts snap names
+    - name: Assert typical extracts name||new tuples (snap doesn't surface installed version)
       ansible.builtin.assert:
         that:
-          - typical_pkgs == ['hello', 'core22']
-        fail_msg: "typical_pkgs={{ typical_pkgs }}, want ['hello', 'core22']"
+          - typical_pkgs == ['hello||2.10', 'core22||20240101']
+        fail_msg: "typical_pkgs={{ typical_pkgs }}"
     - name: Parse "all up to date" output
       ansible.builtin.set_fact:
         empty_pkgs: >-
@@ -32,7 +32,7 @@
              | reject('match', '^Name ')
              | reject('match', '^All snaps up to date')
              | reject('equalto', '')
-             | map('regex_replace', '^([^ ]+) .*$', '\1')
+             | map('regex_replace', '^(\S+)\s+(\S+)\s+.*$', '\1||\2')
              | list }}
     - name: Assert empty produces empty list
       ansible.builtin.assert:

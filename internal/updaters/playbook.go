@@ -26,11 +26,14 @@ const detectMarker = "SW_DETECTED:"
 const affectedMarker = "SW_AFFECTED_COUNT:"
 
 // pendingPackageMarker is one line per pending package emitted by
-// check playbooks via a debug `with_items` task. The runner gathers
-// every marker into the system_updaters.pending_packages list so
-// the SPA can render "what's actually pending" without re-running
-// the playbook. Apply playbooks do not emit it — the column always
-// reflects the most recent check.
+// check playbooks via a debug task. The payload format is
+// `<name>|<old>|<new>` — pipe-delimited so each marker carries the
+// installed and available versions. Either version may be empty
+// when the package manager can't surface it cheaply (flatpak,
+// snap). For backward compatibility a payload with no pipe is
+// treated as a bare name with both versions empty. Apply playbooks
+// do not emit the marker — the column always reflects the most
+// recent check.
 const pendingPackageMarker = "SW_PENDING_PACKAGE:"
 
 // inspectionPlaybook composes a one-shot playbook that probes the
@@ -114,11 +117,17 @@ func parseDetected(stdout []byte) map[string]bool {
 // the same line twice). Returns an empty slice when no marker is
 // emitted — playbooks that don't surface package names produce an
 // empty list, which the SPA handles as "count only, no detail."
-func parsePendingPackages(stdout []byte) []string {
+//
+// Payload is `<name>|<old>|<new>`. A payload with no pipe is the
+// pre-versions emission shape and is accepted as a bare name.
+// Trailing fields may be empty (e.g. `foo||1.2` when only the new
+// version is available); extra trailing pipes are tolerated and
+// ignored.
+func parsePendingPackages(stdout []byte) []PendingPackage {
 	scanner := bufio.NewScanner(bytes.NewReader(stdout))
 	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
-	out := []string{}
-	seen := map[string]bool{}
+	out := []PendingPackage{}
+	seen := map[PendingPackage]bool{}
 	for scanner.Scan() {
 		line := scanner.Text()
 		idx := strings.Index(line, pendingPackageMarker)
@@ -126,11 +135,22 @@ func parsePendingPackages(stdout []byte) []string {
 			continue
 		}
 		rest := strings.Trim(line[idx+len(pendingPackageMarker):], " \t\r\n\",}")
-		if rest == "" || seen[rest] {
+		if rest == "" {
 			continue
 		}
-		seen[rest] = true
-		out = append(out, rest)
+		parts := strings.SplitN(rest, "|", 3)
+		pkg := PendingPackage{Name: strings.TrimSpace(parts[0])}
+		if len(parts) > 1 {
+			pkg.OldVersion = strings.TrimSpace(parts[1])
+		}
+		if len(parts) > 2 {
+			pkg.NewVersion = strings.TrimSpace(parts[2])
+		}
+		if pkg.Name == "" || seen[pkg] {
+			continue
+		}
+		seen[pkg] = true
+		out = append(out, pkg)
 	}
 	return out
 }

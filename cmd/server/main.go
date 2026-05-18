@@ -279,10 +279,18 @@ func populateMux(mux router.Mux, db *sql.DB, store systems.Store, groupStore gro
 		}
 		out := make(map[string]systems.Stats, len(raw))
 		for id, s := range raw {
+			pkgs := make([]systems.PendingPackage, len(s.PendingPackages))
+			for i, p := range s.PendingPackages {
+				pkgs[i] = systems.PendingPackage{
+					Name:       p.Name,
+					OldVersion: p.OldVersion,
+					NewVersion: p.NewVersion,
+				}
+			}
 			out[id] = systems.Stats{
 				LastCheckedAt:   s.LastCheckedAt,
 				PendingUpdates:  s.PendingUpdates,
-				PendingPackages: s.PendingPackages,
+				PendingPackages: pkgs,
 				LastRunFailed:   s.LastRunFailed,
 				LastRunReason:   s.LastRunReason,
 			}

@@ -13,7 +13,7 @@
         cmd: zypper --non-interactive --quiet list-updates
       register: zypper_pending
       changed_when: false
-    - name: Extract package names from the table (column 3)
+    - name: Extract name|old|new tuples from the table (cols 3/4/5)
       ansible.builtin.set_fact:
         sw_pending_packages: >-
           {{ zypper_pending.stdout_lines
@@ -21,7 +21,7 @@
              | reject('match', '^S\s*\|')
              | reject('equalto', '')
              | select('search', '\|.*\|.*\|.*\|.*\|')
-             | map('regex_replace', '^[^|]*\|[^|]*\|\s*(\S+)\s*\|.*$', '\1')
+             | map('regex_replace', '^[^|]*\|[^|]*\|\s*(\S+)\s*\|\s*(\S+)\s*\|\s*(\S+)\s*\|.*$', '\1|\2|\3')
              | list }}
     - name: Surface count to the run log
       ansible.builtin.debug:

@@ -27,19 +27,19 @@
         typical_pkgs: >-
           {{ pkg_add_pending_typical.stdout_lines
              | select('match', '^Adding \S+->')
-             | map('regex_replace', '^Adding (\S+?)-[0-9]\S*->.*$', '\1')
+             | map('regex_replace', '^Adding (\S+?)-([0-9]\S*)->(?:\S+-)?(\S+?)(?:\(pretending\))?\s*$', '\1|\2|\3')
              | list }}
-    - name: Assert typical extracts only the packages with version changes
+    - name: Assert typical extracts name|old|new for packages with version changes
       ansible.builtin.assert:
         that:
-          - typical_pkgs == ['curl', 'firefox-esr']
+          - typical_pkgs == ['curl|8.15.0|8.19.0', 'firefox-esr|115.4.0|115.5.0']
         fail_msg: "typical_pkgs={{ typical_pkgs }}"
     - name: Parse empty (no Adding lines) pkg_add -unv output
       ansible.builtin.set_fact:
         empty_pkgs: >-
           {{ pkg_add_pending_empty.stdout_lines
              | select('match', '^Adding \S+->')
-             | map('regex_replace', '^Adding (\S+?)-[0-9]\S*->.*$', '\1')
+             | map('regex_replace', '^Adding (\S+?)-([0-9]\S*)->(?:\S+-)?(\S+?)(?:\(pretending\))?\s*$', '\1|\2|\3')
              | list }}
     - name: Assert empty produces empty list
       ansible.builtin.assert:

@@ -111,6 +111,19 @@ func (d Definition) Validate() error {
 	return nil
 }
 
+// PendingPackage is one entry surfaced by a check playbook's
+// SW_PENDING_PACKAGE markers. Name is the package identifier; the
+// version fields are the installed (OldVersion) and available
+// (NewVersion) strings as the package manager reports them. Either
+// version may be empty — flatpak and snap can only cheaply surface
+// the new version, and custom updaters that emit only a name are
+// accepted as `{Name: name}` (both versions empty).
+type PendingPackage struct {
+	Name       string `json:"name"`
+	OldVersion string `json:"oldVersion"`
+	NewVersion string `json:"newVersion"`
+}
+
 // Availability is one row from system_updaters — "as of the last
 // inspection, system X has updater Y detected." Absence of a row
 // means "not detected" (or "never inspected" — distinguished by the
@@ -125,11 +138,11 @@ type Availability struct {
 	UpdaterID  string
 	Enabled    bool
 	LastSeenAt *time.Time
-	// PendingPackages is the JSON-decoded list of package names the
-	// latest check run reported as pending. Empty when the updater's
-	// check playbook does not emit SW_PENDING_PACKAGE markers, or
-	// when no check has ever run.
-	PendingPackages []string
+	// PendingPackages is the JSON-decoded list the latest check run
+	// reported as pending. Empty when the updater's check playbook
+	// does not emit SW_PENDING_PACKAGE markers, or when no check has
+	// ever run.
+	PendingPackages []PendingPackage
 }
 
 // RunKind classifies an updater_runs row. Inspect is reserved for
@@ -189,8 +202,10 @@ type SystemStats struct {
 	// `system_updaters.pending_packages` row for this system —
 	// what the operator would update if they hit Apply. Surfaced
 	// for the systems-list hover tooltip; empty when no check has
-	// ever produced markers.
-	PendingPackages []string
+	// ever produced markers. De-dupe key is (Name, OldVersion,
+	// NewVersion) so two managers reporting the same package at
+	// different versions both surface.
+	PendingPackages []PendingPackage
 	// LastRunFailed is true when the most recent terminated run
 	// against this system (any kind) exited non-zero. The systems
 	// handler exposes this so the SPA can flip the row glyph to

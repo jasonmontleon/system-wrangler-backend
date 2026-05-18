@@ -8,6 +8,7 @@
         - "Building dependency tree..."
         - "Inst libfoo [1.0-1] (1.1-1 ubuntu Ubuntu:24.04/noble [amd64])"
         - "Inst bar [2.0-1] (2.1-1 ubuntu Ubuntu:24.04/noble [amd64])"
+        - "Inst freshpkg (3.0-1 ubuntu Ubuntu:24.04/noble [amd64])"
         - "Conf libfoo (1.1-1 ubuntu)"
         - "Conf bar (2.1-1 ubuntu)"
     apt_sim_empty:
@@ -21,19 +22,21 @@
         typical_pkgs: >-
           {{ apt_sim_typical.stdout_lines
              | select('match', '^Inst ')
-             | map('regex_replace', '^Inst ([^ ]+) .*$', '\1')
+             | map('regex_replace', '^Inst (\S+) \[([^]]*)\] \((\S+) .*$', '\1|\2|\3')
+             | map('regex_replace', '^Inst (\S+) \((\S+) .*$', '\1||\2')
              | list }}
-    - name: Assert typical extracts package names
+    - name: Assert typical extracts name|old|new tuples (last entry has empty old — new install)
       ansible.builtin.assert:
         that:
-          - typical_pkgs == ['libfoo', 'bar']
-        fail_msg: "typical_pkgs={{ typical_pkgs }}, want ['libfoo', 'bar']"
+          - typical_pkgs == ['libfoo|1.0-1|1.1-1', 'bar|2.0-1|2.1-1', 'freshpkg||3.0-1']
+        fail_msg: "typical_pkgs={{ typical_pkgs }}"
     - name: Parse empty apt-get -s output
       ansible.builtin.set_fact:
         empty_pkgs: >-
           {{ apt_sim_empty.stdout_lines
              | select('match', '^Inst ')
-             | map('regex_replace', '^Inst ([^ ]+) .*$', '\1')
+             | map('regex_replace', '^Inst (\S+) \[([^]]*)\] \((\S+) .*$', '\1|\2|\3')
+             | map('regex_replace', '^Inst (\S+) \((\S+) .*$', '\1||\2')
              | list }}
     - name: Assert empty produces empty list
       ansible.builtin.assert:

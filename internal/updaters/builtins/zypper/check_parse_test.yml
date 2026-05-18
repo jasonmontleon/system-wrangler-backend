@@ -21,12 +21,12 @@
              | reject('match', '^S\s*\|')
              | reject('equalto', '')
              | select('search', '\|.*\|.*\|.*\|.*\|')
-             | map('regex_replace', '^[^|]*\|[^|]*\|\s*(\S+)\s*\|.*$', '\1')
+             | map('regex_replace', '^[^|]*\|[^|]*\|\s*(\S+)\s*\|\s*(\S+)\s*\|\s*(\S+)\s*\|.*$', '\1|\2|\3')
              | list }}
-    - name: Assert typical extracts package names
+    - name: Assert typical extracts name|old|new tuples
       ansible.builtin.assert:
         that:
-          - typical_pkgs == ['bash', 'coreutils', 'libssh']
+          - typical_pkgs == ['bash|5.1.16-150400.3|5.1.16-150400.4', 'coreutils|8.32-150400.6|8.32-150400.7', 'libssh|0.10.5-1.1|0.10.6-1.1']
         fail_msg: "typical_pkgs={{ typical_pkgs }}"
     - name: Parse empty zypper list-updates output
       ansible.builtin.set_fact:
@@ -36,7 +36,7 @@
              | reject('match', '^S\s*\|')
              | reject('equalto', '')
              | select('search', '\|.*\|.*\|.*\|.*\|')
-             | map('regex_replace', '^[^|]*\|[^|]*\|\s*(\S+)\s*\|.*$', '\1')
+             | map('regex_replace', '^[^|]*\|[^|]*\|\s*(\S+)\s*\|\s*(\S+)\s*\|\s*(\S+)\s*\|.*$', '\1|\2|\3')
              | list }}
     - name: Assert empty produces empty list
       ansible.builtin.assert:

@@ -8,12 +8,12 @@
         cmd: pkg_add -unv
       register: pkg_add_pending
       changed_when: false
-    - name: Extract package names from "Adding ..." lines
+    - name: Extract name|old|new tuples from "Adding name-old->name-new" lines
       ansible.builtin.set_fact:
         sw_pending_packages: >-
           {{ pkg_add_pending.stdout_lines
              | select('match', '^Adding \S+->')
-             | map('regex_replace', '^Adding (\S+?)-[0-9]\S*->.*$', '\1')
+             | map('regex_replace', '^Adding (\S+?)-([0-9]\S*)->(?:\S+-)?(\S+?)(?:\(pretending\))?\s*$', '\1|\2|\3')
              | list }}
     - name: Surface count to the run log
       ansible.builtin.debug:

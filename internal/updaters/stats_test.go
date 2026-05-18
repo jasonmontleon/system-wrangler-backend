@@ -168,11 +168,20 @@ func TestSystemStatsAllAggregatesPendingPackages(t *testing.T) {
 	if err := store.UpsertAvailability("sys-1", "custom.pip", now); err != nil {
 		t.Fatalf("upsert pip: %v", err)
 	}
-	// kernel appears on both updaters — must de-dupe in the union.
-	if err := store.SetPendingPackages("sys-1", "builtin.dnf", []string{"kernel", "glibc"}); err != nil {
+	// "kernel" with identical versions appears on both updaters and
+	// must de-dupe; "glibc" and "numpy" are unique.
+	dnf := []PendingPackage{
+		{Name: "kernel", OldVersion: "6.8.0-31", NewVersion: "6.8.0-45"},
+		{Name: "glibc", OldVersion: "2.39-1", NewVersion: "2.39-3"},
+	}
+	pip := []PendingPackage{
+		{Name: "kernel", OldVersion: "6.8.0-31", NewVersion: "6.8.0-45"},
+		{Name: "numpy", OldVersion: "1.26.0", NewVersion: "1.26.4"},
+	}
+	if err := store.SetPendingPackages("sys-1", "builtin.dnf", dnf); err != nil {
 		t.Fatalf("set dnf: %v", err)
 	}
-	if err := store.SetPendingPackages("sys-1", "custom.pip", []string{"kernel", "numpy"}); err != nil {
+	if err := store.SetPendingPackages("sys-1", "custom.pip", pip); err != nil {
 		t.Fatalf("set pip: %v", err)
 	}
 	// sys-2: no markers stored.
@@ -185,14 +194,13 @@ func TestSystemStatsAllAggregatesPendingPackages(t *testing.T) {
 		t.Fatalf("SystemStatsAll: %v", err)
 	}
 	got := stats["sys-1"].PendingPackages
-	want := []string{"glibc", "kernel", "numpy"}
-	if len(got) != len(want) {
-		t.Fatalf("PendingPackages = %v, want %v", got, want)
+	want := []PendingPackage{
+		{Name: "glibc", OldVersion: "2.39-1", NewVersion: "2.39-3"},
+		{Name: "kernel", OldVersion: "6.8.0-31", NewVersion: "6.8.0-45"},
+		{Name: "numpy", OldVersion: "1.26.0", NewVersion: "1.26.4"},
 	}
-	for i, name := range want {
-		if got[i] != name {
-			t.Errorf("PendingPackages[%d] = %q, want %q", i, got[i], name)
-		}
+	if !equalPendingPackages(got, want) {
+		t.Fatalf("PendingPackages = %v, want %v", got, want)
 	}
 	if pkgs := stats["sys-2"].PendingPackages; len(pkgs) != 0 {
 		t.Errorf("sys-2 PendingPackages = %v, want empty", pkgs)

@@ -98,7 +98,11 @@ func TestListSystemUpdatersIncludesPendingPackages(t *testing.T) {
 	if err := rf.store.UpsertAvailability(rf.systemID, "builtin.dnf", time.Now()); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	if err := rf.store.SetPendingPackages(rf.systemID, "builtin.dnf", []string{"kernel", "glibc"}); err != nil {
+	want := []PendingPackage{
+		{Name: "kernel", OldVersion: "6.8.0-31", NewVersion: "6.8.0-45"},
+		{Name: "glibc", OldVersion: "2.39-1", NewVersion: "2.39-3"},
+	}
+	if err := rf.store.SetPendingPackages(rf.systemID, "builtin.dnf", want); err != nil {
 		t.Fatalf("SetPendingPackages: %v", err)
 	}
 	resp, err := http.Get(srv.URL + "/api/systems/" + rf.systemID + "/updaters")
@@ -125,8 +129,8 @@ func TestListSystemUpdatersIncludesPendingPackages(t *testing.T) {
 	if dnf == nil {
 		t.Fatalf("dnf row missing from %+v", got.Updaters)
 	}
-	if len(dnf.PendingPackages) != 2 || dnf.PendingPackages[0] != "kernel" || dnf.PendingPackages[1] != "glibc" {
-		t.Errorf("dnf.PendingPackages = %v, want [kernel glibc]", dnf.PendingPackages)
+	if !equalPendingPackages(dnf.PendingPackages, want) {
+		t.Errorf("dnf.PendingPackages = %v, want %v", dnf.PendingPackages, want)
 	}
 	// Undetected / unchecked rows must serialize an empty slice (not
 	// nil) so the SPA can ExpandableSection on .length without

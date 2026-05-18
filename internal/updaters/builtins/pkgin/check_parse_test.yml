@@ -42,43 +42,47 @@
         typical_pkgs: >-
           {{ pkgin_pending_typical.stdout_lines
              | select('match', '^\s*\S+-[0-9]')
-             | map('regex_replace', '^\s*(\S+?)-[0-9]\S*(?:\s.*)?$', '\1')
+             | map('regex_replace', '^\s*(\S+?)-([0-9]\S*)\s+to be replaced by\s+(?:\S+-)?(\S+)\s*$', '\1|\2|\3')
+             | map('regex_replace', '^\s*([^|\s]+?)-([0-9][^|\s]*)\s*$', '\1||\2')
              | list }}
-    - name: Assert typical extracts package names
+    - name: Assert typical extracts name|old|new tuples
       ansible.builtin.assert:
         that:
-          - typical_pkgs == ['bash', 'curl', 'py311-requests']
+          - typical_pkgs == ['bash|5.2.21|5.2.32', 'curl|8.5.0|8.6.0', 'py311-requests|2.32.0nb1|2.33.0']
         fail_msg: "typical_pkgs={{ typical_pkgs }}"
-    - name: Parse terse pkgin -n upgrade output
+    - name: Parse terse pkgin -n upgrade output (only new pkgname shown — old version unknown)
       ansible.builtin.set_fact:
         terse_pkgs: >-
           {{ pkgin_pending_terse.stdout_lines
              | select('match', '^\s*\S+-[0-9]')
-             | map('regex_replace', '^\s*(\S+?)-[0-9]\S*(?:\s.*)?$', '\1')
+             | map('regex_replace', '^\s*(\S+?)-([0-9]\S*)\s+to be replaced by\s+(?:\S+-)?(\S+)\s*$', '\1|\2|\3')
+             | map('regex_replace', '^\s*([^|\s]+?)-([0-9][^|\s]*)\s*$', '\1||\2')
              | list }}
-    - name: Assert terse extracts package names
+    - name: Assert terse emits empty old version
       ansible.builtin.assert:
         that:
-          - terse_pkgs == ['bash', 'curl']
+          - terse_pkgs == ['bash||5.2.32', 'curl||8.6.0']
         fail_msg: "terse_pkgs={{ terse_pkgs }}"
     - name: Parse unindented pkgin -n upgrade output (no-TTY format)
       ansible.builtin.set_fact:
         unindented_pkgs: >-
           {{ pkgin_pending_unindented.stdout_lines
              | select('match', '^\s*\S+-[0-9]')
-             | map('regex_replace', '^\s*(\S+?)-[0-9]\S*(?:\s.*)?$', '\1')
+             | map('regex_replace', '^\s*(\S+?)-([0-9]\S*)\s+to be replaced by\s+(?:\S+-)?(\S+)\s*$', '\1|\2|\3')
+             | map('regex_replace', '^\s*([^|\s]+?)-([0-9][^|\s]*)\s*$', '\1||\2')
              | list }}
-    - name: Assert unindented extracts package names (header/totals/stats filtered)
+    - name: Assert unindented emits empty old version
       ansible.builtin.assert:
         that:
-          - unindented_pkgs == ['vim-share']
+          - unindented_pkgs == ['vim-share||9.2.0461']
         fail_msg: "unindented_pkgs={{ unindented_pkgs }}"
     - name: Parse empty pkgin -n upgrade output
       ansible.builtin.set_fact:
         empty_pkgs: >-
           {{ pkgin_pending_empty.stdout_lines
              | select('match', '^\s*\S+-[0-9]')
-             | map('regex_replace', '^\s*(\S+?)-[0-9]\S*(?:\s.*)?$', '\1')
+             | map('regex_replace', '^\s*(\S+?)-([0-9]\S*)\s+to be replaced by\s+(?:\S+-)?(\S+)\s*$', '\1|\2|\3')
+             | map('regex_replace', '^\s*([^|\s]+?)-([0-9][^|\s]*)\s*$', '\1||\2')
              | list }}
     - name: Assert empty produces empty list
       ansible.builtin.assert:

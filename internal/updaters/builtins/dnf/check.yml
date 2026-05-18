@@ -7,13 +7,23 @@
       ansible.builtin.dnf:
         list: updates
       register: dnf_pending
-    - name: Emit the package list as a fact
+    - name: Gather installed package facts for old-version lookup
+      ansible.builtin.package_facts:
+        manager: rpm
+    - name: Compose pending entries with old/new versions
       ansible.builtin.set_fact:
-        sw_pending_packages: "{{ dnf_pending.results | map(attribute='name') | list }}"
+        sw_pending_packages: >-
+          {{ sw_pending_packages | default([])
+             + [item.name ~ '|'
+                ~ ((ansible_facts.packages[item.name] | default([{}]) | first).version | default(''))
+                ~ ('-' if (ansible_facts.packages[item.name] | default([{}]) | first).release | default('') else '')
+                ~ ((ansible_facts.packages[item.name] | default([{}]) | first).release | default(''))
+                ~ '|' ~ item.version ~ '-' ~ item.release] }}
+      loop: "{{ dnf_pending.results }}"
     - name: Surface count to the run log
       ansible.builtin.debug:
-        msg: "SW_AFFECTED_COUNT: {{ sw_pending_packages | length }}"
+        msg: "SW_AFFECTED_COUNT: {{ sw_pending_packages | default([]) | length }}"
     - name: Surface each pending package
       ansible.builtin.debug:
         msg: "SW_PENDING_PACKAGE: {{ item }}"
-      loop: "{{ sw_pending_packages }}"
+      loop: "{{ sw_pending_packages | default([]) }}"

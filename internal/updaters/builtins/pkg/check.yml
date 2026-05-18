@@ -14,12 +14,12 @@
       register: pkg_pending
       changed_when: false
       failed_when: pkg_pending.rc not in [0, 1]
-    - name: Extract package names from the upgrade summary
+    - name: Extract name|old|new tuples from the upgrade summary
       ansible.builtin.set_fact:
         sw_pending_packages: >-
           {{ pkg_pending.stdout_lines
              | select('match', '^\s+\S+: .* -> ')
-             | map('regex_replace', '^\s+([^:]+):.*$', '\1')
+             | map('regex_replace', '^\s+([^:]+):\s*(\S+)\s+->\s+(\S+).*$', '\1|\2|\3')
              | list }}
     - name: Surface count to the run log
       ansible.builtin.debug:

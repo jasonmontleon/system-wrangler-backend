@@ -26,19 +26,19 @@
         typical_pkgs: >-
           {{ pkg_pending_typical.stdout_lines
              | select('match', '^\s+\S+: .* -> ')
-             | map('regex_replace', '^\s+([^:]+):.*$', '\1')
+             | map('regex_replace', '^\s+([^:]+):\s*(\S+)\s+->\s+(\S+).*$', '\1|\2|\3')
              | list }}
-    - name: Assert typical extracts package names
+    - name: Assert typical extracts name|old|new tuples
       ansible.builtin.assert:
         that:
-          - typical_pkgs == ['libfoo', 'bar', 'py39-requests']
+          - typical_pkgs == ['libfoo|1.0|1.1', 'bar|2.0|2.1', 'py39-requests|2.31.0|2.32.0']
         fail_msg: "typical_pkgs={{ typical_pkgs }}"
     - name: Parse empty pkg upgrade -n output
       ansible.builtin.set_fact:
         empty_pkgs: >-
           {{ pkg_pending_empty.stdout_lines
              | select('match', '^\s+\S+: .* -> ')
-             | map('regex_replace', '^\s+([^:]+):.*$', '\1')
+             | map('regex_replace', '^\s+([^:]+):\s*(\S+)\s+->\s+(\S+).*$', '\1|\2|\3')
              | list }}
     - name: Assert empty produces empty list
       ansible.builtin.assert:

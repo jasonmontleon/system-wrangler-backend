@@ -53,9 +53,9 @@ type Store interface {
 	SetEnabled(systemID, updaterID string, enabled bool) error
 	// SetPendingPackages replaces the per-(system, updater)
 	// pending-package list. Called from the runner after each check
-	// run with the JSON-encoded marker output. Missing rows are
-	// silently ignored — only detected updaters carry a list.
-	SetPendingPackages(systemID, updaterID string, packages []string) error
+	// run with the parsed marker output. Missing rows are silently
+	// ignored — only detected updaters carry a list.
+	SetPendingPackages(systemID, updaterID string, packages []PendingPackage) error
 
 	// InsertRun stores a starting run row. The caller assigns the
 	// id (so the matching audit start-row can share it).
@@ -477,7 +477,7 @@ func (s *SQLiteStore) AvailabilityFor(systemID string) ([]Availability, error) {
 // caller's slice is JSON-encoded so SQLite stores a single TEXT
 // column; nil and empty inputs both serialize to `[]` for a
 // consistent decode on the read path.
-func (s *SQLiteStore) SetPendingPackages(systemID, updaterID string, packages []string) error {
+func (s *SQLiteStore) SetPendingPackages(systemID, updaterID string, packages []PendingPackage) error {
 	if strings.TrimSpace(systemID) == "" || strings.TrimSpace(updaterID) == "" {
 		return fmt.Errorf("%w: system_id and updater_id required", ErrInvalid)
 	}
@@ -648,8 +648,9 @@ func (s *SQLiteStore) SystemStatsAll() (map[string]SystemStats, error) {
 	// Union of per-(system, updater) pending_packages, scoped per
 	// system. Two-pass aggregation in Go avoids leaning on SQLite
 	// JSON1 (which is available in modernc but adds a coupling we
-	// don't otherwise need). De-dupe and sort so callers get a
-	// stable order without re-sorting on the SPA side.
+	// don't otherwise need). De-dupe on the full (Name, OldVersion,
+	// NewVersion) triple and sort so callers get a stable order
+	// without re-sorting on the SPA side.
 	packageRows, err := s.db.Query(
 		`SELECT system_id, pending_packages FROM system_updaters
 		 WHERE pending_packages != '[]' AND pending_packages != ''`,
@@ -658,7 +659,7 @@ func (s *SQLiteStore) SystemStatsAll() (map[string]SystemStats, error) {
 		return nil, fmt.Errorf("updaters: stats packages: %w", err)
 	}
 	defer func() { _ = packageRows.Close() }()
-	bySys := map[string]map[string]bool{}
+	bySys := map[string]map[PendingPackage]bool{}
 	for packageRows.Next() {
 		var sysID, raw string
 		if err := packageRows.Scan(&sysID, &raw); err != nil {
@@ -666,7 +667,7 @@ func (s *SQLiteStore) SystemStatsAll() (map[string]SystemStats, error) {
 		}
 		set := bySys[sysID]
 		if set == nil {
-			set = map[string]bool{}
+			set = map[PendingPackage]bool{}
 			bySys[sysID] = set
 		}
 		for _, p := range decodePendingPackages(raw) {
@@ -677,13 +678,21 @@ func (s *SQLiteStore) SystemStatsAll() (map[string]SystemStats, error) {
 		return nil, fmt.Errorf("updaters: stats packages rows: %w", err)
 	}
 	for sysID, set := range bySys {
-		names := make([]string, 0, len(set))
-		for n := range set {
-			names = append(names, n)
+		pkgs := make([]PendingPackage, 0, len(set))
+		for p := range set {
+			pkgs = append(pkgs, p)
 		}
-		sort.Strings(names)
+		sort.Slice(pkgs, func(i, j int) bool {
+			if pkgs[i].Name != pkgs[j].Name {
+				return pkgs[i].Name < pkgs[j].Name
+			}
+			if pkgs[i].OldVersion != pkgs[j].OldVersion {
+				return pkgs[i].OldVersion < pkgs[j].OldVersion
+			}
+			return pkgs[i].NewVersion < pkgs[j].NewVersion
+		})
 		stats := out[sysID]
-		stats.PendingPackages = names
+		stats.PendingPackages = pkgs
 		out[sysID] = stats
 	}
 
@@ -874,9 +883,9 @@ func isUniqueErr(err error) bool {
 // encodePendingPackages JSON-encodes the slice for SQLite storage.
 // nil and empty both round-trip to `[]` so the read path returns
 // an empty slice rather than nil.
-func encodePendingPackages(pkgs []string) (string, error) {
+func encodePendingPackages(pkgs []PendingPackage) (string, error) {
 	if pkgs == nil {
-		pkgs = []string{}
+		pkgs = []PendingPackage{}
 	}
 	b, err := json.Marshal(pkgs)
 	if err != nil {
@@ -886,18 +895,28 @@ func encodePendingPackages(pkgs []string) (string, error) {
 }
 
 // decodePendingPackages turns the stored TEXT back into a slice.
-// Empty / invalid input returns an empty (non-nil) slice so callers
+// Accepts both the current `[{name,oldVersion,newVersion}]` shape
+// and the legacy `["name", ...]` shape from databases written
+// before the per-package version columns landed — legacy entries
+// surface as PendingPackage{Name: s} with empty versions, and the
+// next successful Check overwrites the row in the new shape. Empty
+// / invalid input returns an empty (non-nil) slice so callers
 // never have to nil-check the field.
-func decodePendingPackages(raw string) []string {
+func decodePendingPackages(raw string) []PendingPackage {
 	if raw == "" {
-		return []string{}
+		return []PendingPackage{}
 	}
-	var out []string
-	if err := json.Unmarshal([]byte(raw), &out); err != nil {
-		return []string{}
+	var pkgs []PendingPackage
+	if err := json.Unmarshal([]byte(raw), &pkgs); err == nil {
+		return pkgs
 	}
-	if out == nil {
-		return []string{}
+	var names []string
+	if err := json.Unmarshal([]byte(raw), &names); err != nil {
+		return []PendingPackage{}
+	}
+	out := make([]PendingPackage, 0, len(names))
+	for _, n := range names {
+		out = append(out, PendingPackage{Name: n})
 	}
 	return out
 }

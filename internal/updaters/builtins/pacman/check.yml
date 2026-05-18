@@ -14,12 +14,12 @@
       register: pacman_pending
       changed_when: false
       failed_when: pacman_pending.rc not in [0, 1]
-    - name: Extract package names (first whitespace-delimited field)
+    - name: Extract name|old|new tuples (pacman -Qu prints "name old -> new")
       ansible.builtin.set_fact:
         sw_pending_packages: >-
           {{ pacman_pending.stdout_lines
              | reject('equalto', '')
-             | map('regex_replace', '^(\S+)\s.*$', '\1')
+             | map('regex_replace', '^(\S+)\s+(\S+)\s+->\s+(\S+).*$', '\1|\2|\3')
              | list }}
     - name: Surface count to the run log
       ansible.builtin.debug:

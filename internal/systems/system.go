@@ -49,11 +49,13 @@ type System struct {
 	GroupID        *string    `json:"groupId,omitempty"`
 	LastCheckedAt  *time.Time `json:"lastCheckedAt,omitempty"`
 	PendingUpdates *int       `json:"pendingUpdates,omitempty"`
-	// PendingPackages is the union of package names the system's
-	// enabled updaters reported pending on their most recent check.
-	// Surfaced here so the systems list can render a hover-tooltip
-	// without an N+1 fetch per row. Empty when no check has run.
-	PendingPackages []string `json:"pendingPackages,omitempty"`
+	// PendingPackages is the union of packages the system's enabled
+	// updaters reported pending on their most recent check, each
+	// with the installed and available version strings the
+	// underlying package manager surfaced. Empty when no check has
+	// run. Surfaced here so the systems list can render a
+	// hover-tooltip without an N+1 fetch per row.
+	PendingPackages []PendingPackage `json:"pendingPackages,omitempty"`
 	// LastRunFailed is true when the most recent terminated updater
 	// run (any kind: inspect/check/apply) exited non-zero. The SPA
 	// uses this to flip the row health glyph to red even when the
@@ -66,6 +68,16 @@ type System struct {
 	LastRunReason string `json:"lastRunReason,omitempty"`
 }
 
+// PendingPackage is the systems-package mirror of the updaters
+// PendingPackage struct. We don't import updaters here so systems
+// stays the lower layer in the dependency graph; the wiring layer
+// (cmd/server) converts between the two shapes.
+type PendingPackage struct {
+	Name       string `json:"name"`
+	OldVersion string `json:"oldVersion"`
+	NewVersion string `json:"newVersion"`
+}
+
 // Stats is the per-system updater aggregate the systems handler
 // merges into each row before serialization. The producer lives
 // outside this package (the updater store) and is injected via
@@ -73,7 +85,7 @@ type System struct {
 type Stats struct {
 	LastCheckedAt   *time.Time
 	PendingUpdates  int
-	PendingPackages []string
+	PendingPackages []PendingPackage
 	LastRunFailed   bool
 	LastRunReason   string
 }

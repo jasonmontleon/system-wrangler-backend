@@ -1,0 +1,60 @@
+- name: Test flatpak check parsing
+  hosts: localhost
+  gather_facts: false
+  vars:
+    flatpak_pending_typical:
+      stdout_lines:
+        - "Application                Version"
+        - "org.mozilla.firefox        124.0.2"
+        - "org.libreoffice.LibreOffice 24.2.1"
+    flatpak_pending_no_version_column:
+      stdout_lines:
+        - "Application"
+        - "org.mozilla.firefox"
+        - "org.libreoffice.LibreOffice"
+    flatpak_pending_empty:
+      stdout_lines:
+        - "Application"
+  tasks:
+    - name: Parse typical flatpak output (application + version)
+      ansible.builtin.set_fact:
+        typical_pkgs: >-
+          {{ flatpak_pending_typical.stdout_lines
+             | reject('match', '^Application')
+             | reject('equalto', '')
+             | map('regex_replace', '^(\S+)\s+(\S+).*$', '\1||\2')
+             | map('regex_replace', '^([^|\s]+)$', '\1||')
+             | list }}
+    - name: Assert typical extracts name||new tuples
+      ansible.builtin.assert:
+        that:
+          - typical_pkgs == ['org.mozilla.firefox||124.0.2', 'org.libreoffice.LibreOffice||24.2.1']
+        fail_msg: "typical_pkgs={{ typical_pkgs }}"
+    - name: Parse flatpak output with only application column (single-column fallback)
+      ansible.builtin.set_fact:
+        nv_pkgs: >-
+          {{ flatpak_pending_no_version_column.stdout_lines
+             | reject('match', '^Application')
+             | reject('equalto', '')
+             | map('regex_replace', '^(\S+)\s+(\S+).*$', '\1||\2')
+             | map('regex_replace', '^([^|\s]+)$', '\1||')
+             | list }}
+    - name: Assert single-column rows emit empty old and new
+      ansible.builtin.assert:
+        that:
+          - nv_pkgs == ['org.mozilla.firefox||', 'org.libreoffice.LibreOffice||']
+        fail_msg: "nv_pkgs={{ nv_pkgs }}"
+    - name: Parse empty flatpak output
+      ansible.builtin.set_fact:
+        empty_pkgs: >-
+          {{ flatpak_pending_empty.stdout_lines
+             | reject('match', '^Application')
+             | reject('equalto', '')
+             | map('regex_replace', '^(\S+)\s+(\S+).*$', '\1||\2')
+             | map('regex_replace', '^([^|\s]+)$', '\1||')
+             | list }}
+    - name: Assert empty produces empty list
+      ansible.builtin.assert:
+        that:
+          - empty_pkgs == []
+        fail_msg: "empty_pkgs={{ empty_pkgs }}, want []"

@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -197,8 +198,8 @@ func TestCheckPersistsPendingPackages(t *testing.T) {
 		ExitCode: 0,
 		Stdout: []byte(
 			"\"msg\": \"SW_AFFECTED_COUNT: 2\"\n" +
-				"\"msg\": \"SW_PENDING_PACKAGE: kernel\"\n" +
-				"\"msg\": \"SW_PENDING_PACKAGE: glibc\"\n",
+				"\"msg\": \"SW_PENDING_PACKAGE: kernel|6.8.0-31|6.8.0-45\"\n" +
+				"\"msg\": \"SW_PENDING_PACKAGE: glibc|2.39-1|2.39-3\"\n",
 		),
 	}, nil)
 	if _, err := f.runner.Check(context.Background(), f.systemID, "builtin.dnf"); err != nil {
@@ -209,8 +210,12 @@ func TestCheckPersistsPendingPackages(t *testing.T) {
 		t.Fatalf("avail = %+v", avail)
 	}
 	got := avail[0].PendingPackages
-	if len(got) != 2 || got[0] != "kernel" || got[1] != "glibc" {
-		t.Errorf("PendingPackages = %v, want [kernel glibc]", got)
+	want := []PendingPackage{
+		{Name: "kernel", OldVersion: "6.8.0-31", NewVersion: "6.8.0-45"},
+		{Name: "glibc", OldVersion: "2.39-1", NewVersion: "2.39-3"},
+	}
+	if !equalPendingPackages(got, want) {
+		t.Errorf("PendingPackages = %v, want %v", got, want)
 	}
 }
 
@@ -222,7 +227,8 @@ func TestApplyDoesNotPersistPendingPackages(t *testing.T) {
 	if err := f.store.UpsertAvailability(f.systemID, "builtin.dnf", time.Now()); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	if err := f.store.SetPendingPackages(f.systemID, "builtin.dnf", []string{"keep-me"}); err != nil {
+	seed := []PendingPackage{{Name: "keep-me", OldVersion: "1.0", NewVersion: "2.0"}}
+	if err := f.store.SetPendingPackages(f.systemID, "builtin.dnf", seed); err != nil {
 		t.Fatalf("seed packages: %v", err)
 	}
 	f.queue(ansible.Run{
@@ -230,16 +236,20 @@ func TestApplyDoesNotPersistPendingPackages(t *testing.T) {
 		ExitCode: 0,
 		Stdout: []byte(
 			"\"msg\": \"SW_AFFECTED_COUNT: 1\"\n" +
-				"\"msg\": \"SW_PENDING_PACKAGE: ignore-me\"\n",
+				"\"msg\": \"SW_PENDING_PACKAGE: ignore-me|9.0|9.1\"\n",
 		),
 	}, nil)
 	if _, err := f.runner.Apply(context.Background(), f.systemID, "builtin.dnf"); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
 	avail, _ := f.store.AvailabilityFor(f.systemID)
-	if len(avail) != 1 || len(avail[0].PendingPackages) != 1 || avail[0].PendingPackages[0] != "keep-me" {
-		t.Errorf("PendingPackages = %v, want [keep-me] (apply must not overwrite)", avail[0].PendingPackages)
+	if len(avail) != 1 || !equalPendingPackages(avail[0].PendingPackages, seed) {
+		t.Errorf("PendingPackages = %v, want %v (apply must not overwrite)", avail[0].PendingPackages, seed)
 	}
+}
+
+func equalPendingPackages(a, b []PendingPackage) bool {
+	return slices.Equal(a, b)
 }
 
 func TestCheckTrimsRunHistoryAfterInsert(t *testing.T) {
@@ -578,14 +588,22 @@ func TestParseAffectedCount(t *testing.T) {
 
 func TestParsePendingPackages(t *testing.T) {
 	out := []byte(
-		`ok: [h] => { "msg": "SW_PENDING_PACKAGE: kernel" }` + "\n" +
-			`ok: [h] => { "msg": "SW_PENDING_PACKAGE: glibc" }` + "\n" +
+		`ok: [h] => { "msg": "SW_PENDING_PACKAGE: kernel|6.8.0-31|6.8.0-45" }` + "\n" +
+			`ok: [h] => { "msg": "SW_PENDING_PACKAGE: glibc|2.39-1|2.39-3" }` + "\n" +
 			`unrelated noise` + "\n" +
-			`ok: [h] => { "msg": "SW_PENDING_PACKAGE: kernel" }` + "\n",
+			`ok: [h] => { "msg": "SW_PENDING_PACKAGE: kernel|6.8.0-31|6.8.0-45" }` + "\n" +
+			`ok: [h] => { "msg": "SW_PENDING_PACKAGE: org.example||1.0" }` + "\n" +
+			`ok: [h] => { "msg": "SW_PENDING_PACKAGE: legacy-name" }` + "\n",
 	)
 	got := parsePendingPackages(out)
-	if len(got) != 2 || got[0] != "kernel" || got[1] != "glibc" {
-		t.Errorf("parsePendingPackages = %v, want [kernel glibc] (preserve order, dedupe)", got)
+	want := []PendingPackage{
+		{Name: "kernel", OldVersion: "6.8.0-31", NewVersion: "6.8.0-45"},
+		{Name: "glibc", OldVersion: "2.39-1", NewVersion: "2.39-3"},
+		{Name: "org.example", OldVersion: "", NewVersion: "1.0"},
+		{Name: "legacy-name"},
+	}
+	if !equalPendingPackages(got, want) {
+		t.Errorf("parsePendingPackages = %v, want %v (preserve order, dedupe, accept legacy name-only)", got, want)
 	}
 	if got := parsePendingPackages([]byte("nothing here\n")); len(got) != 0 {
 		t.Errorf("empty stdout: parsePendingPackages = %v, want []", got)

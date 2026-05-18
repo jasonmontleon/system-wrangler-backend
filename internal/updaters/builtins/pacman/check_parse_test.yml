@@ -15,19 +15,19 @@
         typical_pkgs: >-
           {{ pacman_pending_typical.stdout_lines
              | reject('equalto', '')
-             | map('regex_replace', '^(\S+)\s.*$', '\1')
+             | map('regex_replace', '^(\S+)\s+(\S+)\s+->\s+(\S+).*$', '\1|\2|\3')
              | list }}
-    - name: Assert typical extracts package names
+    - name: Assert typical extracts name|old|new tuples
       ansible.builtin.assert:
         that:
-          - typical_pkgs == ['linux', 'firefox', 'lib32-glibc']
+          - typical_pkgs == ['linux|6.6.1.arch1-1|6.6.2.arch1-1', 'firefox|119.0-1|119.0.1-1', 'lib32-glibc|2.38-7|2.38-8']
         fail_msg: "typical_pkgs={{ typical_pkgs }}"
     - name: Parse empty pacman -Qu output
       ansible.builtin.set_fact:
         empty_pkgs: >-
           {{ pacman_pending_empty.stdout_lines
              | reject('equalto', '')
-             | map('regex_replace', '^(\S+)\s.*$', '\1')
+             | map('regex_replace', '^(\S+)\s+(\S+)\s+->\s+(\S+).*$', '\1|\2|\3')
              | list }}
     - name: Assert empty produces empty list
       ansible.builtin.assert:

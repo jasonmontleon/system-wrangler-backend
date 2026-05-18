@@ -216,8 +216,12 @@ func TestSetPendingPackages(t *testing.T) {
 	if err := store.UpsertAvailability("sys-1", "builtin.dnf", now); err != nil {
 		t.Fatalf("Upsert: %v", err)
 	}
+	want := []PendingPackage{
+		{Name: "kernel", OldVersion: "6.8.0-31", NewVersion: "6.8.0-45"},
+		{Name: "glibc", OldVersion: "2.39-1", NewVersion: "2.39-3"},
+	}
 	// Round-trip a populated list.
-	if err := store.SetPendingPackages("sys-1", "builtin.dnf", []string{"kernel", "glibc"}); err != nil {
+	if err := store.SetPendingPackages("sys-1", "builtin.dnf", want); err != nil {
 		t.Fatalf("SetPendingPackages: %v", err)
 	}
 	list, err := store.AvailabilityFor("sys-1")
@@ -227,8 +231,8 @@ func TestSetPendingPackages(t *testing.T) {
 	if len(list) != 1 {
 		t.Fatalf("len = %d, want 1", len(list))
 	}
-	if got := list[0].PendingPackages; len(got) != 2 || got[0] != "kernel" || got[1] != "glibc" {
-		t.Errorf("PendingPackages = %v, want [kernel glibc]", got)
+	if got := list[0].PendingPackages; !equalPendingPackages(got, want) {
+		t.Errorf("PendingPackages = %v, want %v", got, want)
 	}
 	// nil input round-trips to empty slice.
 	if err := store.SetPendingPackages("sys-1", "builtin.dnf", nil); err != nil {
@@ -240,7 +244,7 @@ func TestSetPendingPackages(t *testing.T) {
 	}
 	// Missing row is a silent no-op — the column lives on
 	// system_updaters, and only detected updaters get an entry.
-	if err := store.SetPendingPackages("sys-1", "builtin.absent", []string{"foo"}); err != nil {
+	if err := store.SetPendingPackages("sys-1", "builtin.absent", []PendingPackage{{Name: "foo"}}); err != nil {
 		t.Errorf("SetPendingPackages missing row: %v, want nil", err)
 	}
 }
@@ -252,6 +256,29 @@ func TestSetPendingPackagesValidation(t *testing.T) {
 	}
 	if err := store.SetPendingPackages("s", "", nil); !errors.Is(err, ErrInvalid) {
 		t.Errorf("empty updater: err = %v, want ErrInvalid", err)
+	}
+}
+
+func TestDecodePendingPackagesLegacyStringList(t *testing.T) {
+	// A row written before the version-aware schema landed contains
+	// a bare JSON string array. Decoder must lift each element into
+	// a PendingPackage with empty versions so the API and stats
+	// pipeline never see a nil-vs-empty mismatch.
+	got := decodePendingPackages(`["kernel","glibc"]`)
+	want := []PendingPackage{
+		{Name: "kernel"},
+		{Name: "glibc"},
+	}
+	if !equalPendingPackages(got, want) {
+		t.Errorf("legacy decode = %v, want %v", got, want)
+	}
+	// Empty string and unparseable garbage both produce a non-nil
+	// empty slice so callers never have to nil-check.
+	if got := decodePendingPackages(""); got == nil || len(got) != 0 {
+		t.Errorf("empty decode = %v, want non-nil empty", got)
+	}
+	if got := decodePendingPackages("not json"); got == nil || len(got) != 0 {
+		t.Errorf("garbage decode = %v, want non-nil empty", got)
 	}
 }
 

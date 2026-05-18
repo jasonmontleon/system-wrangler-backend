@@ -5,15 +5,17 @@
   tasks:
     - name: Query flatpak for available system updates
       ansible.builtin.command:
-        cmd: flatpak --system remote-ls --updates --columns=application
+        cmd: flatpak --system remote-ls --updates --columns=application,version
       register: flatpak_pending
       changed_when: false
-    - name: Extract application IDs (drop the header)
+    - name: Compose name||new tuples (flatpak doesn't surface the installed version cheaply)
       ansible.builtin.set_fact:
         sw_pending_packages: >-
           {{ flatpak_pending.stdout_lines
-             | reject('equalto', 'Application')
+             | reject('match', '^Application')
              | reject('equalto', '')
+             | map('regex_replace', '^(\S+)\s+(\S+).*$', '\1||\2')
+             | map('regex_replace', '^([^|\s]+)$', '\1||')
              | list }}
     - name: Surface count to the run log
       ansible.builtin.debug:
