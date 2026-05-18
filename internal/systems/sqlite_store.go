@@ -31,6 +31,9 @@ func NewSQLiteStore(db *sql.DB) (*SQLiteStore, error) {
 	if err := addGroupIDColumn(db); err != nil {
 		return nil, fmt.Errorf("systems: migrate group_id: %w", err)
 	}
+	if err := addIsWindowsColumn(db); err != nil {
+		return nil, fmt.Errorf("systems: migrate is_windows: %w", err)
+	}
 	return &SQLiteStore{db: db, NewID: newUUID, Now: time.Now}, nil
 }
 
@@ -49,7 +52,8 @@ CREATE TABLE IF NOT EXISTS hosts (
     created_at  INTEGER NOT NULL,
     status      TEXT NOT NULL,
     last_seen   INTEGER,
-    group_id    TEXT
+    group_id    TEXT,
+    is_windows  INTEGER NOT NULL DEFAULT 0
 ) STRICT;
 
 CREATE INDEX IF NOT EXISTS hosts_created_at ON hosts(created_at, id);
@@ -75,6 +79,23 @@ func addGroupIDColumn(db *sql.DB) error {
 	}
 	_, err := db.Exec(`CREATE INDEX IF NOT EXISTS hosts_group_id ON hosts(group_id)`)
 	return err
+}
+
+// addIsWindowsColumn brings older databases up to schema, mirroring the
+// addGroupIDColumn pattern. The column is the operator-set platform flag
+// the inventory writer and Ping module-selector branch on.
+func addIsWindowsColumn(db *sql.DB) error {
+	row := db.QueryRow(`SELECT 1 FROM pragma_table_info('hosts') WHERE name = 'is_windows'`)
+	var found int
+	switch err := row.Scan(&found); {
+	case err == nil:
+		return nil
+	case errors.Is(err, sql.ErrNoRows):
+		_, err := db.Exec(`ALTER TABLE hosts ADD COLUMN is_windows INTEGER NOT NULL DEFAULT 0`)
+		return err
+	default:
+		return err
+	}
 }
 
 // Create persists a new System after running SystemInput.Validate.
@@ -123,7 +144,7 @@ func (s *SQLiteStore) createWith(e execer, in SystemInput) (System, error) {
 // Get returns the System with the given ID, or ErrNotFound.
 func (s *SQLiteStore) Get(id string) (System, error) {
 	row := s.db.QueryRow(
-		`SELECT id, name, hostname, created_at, status, last_seen, group_id FROM hosts WHERE id = ?`,
+		`SELECT id, name, hostname, created_at, status, last_seen, group_id, is_windows FROM hosts WHERE id = ?`,
 		id,
 	)
 	h, err := scanHost(row)
@@ -137,7 +158,7 @@ func (s *SQLiteStore) Get(id string) (System, error) {
 // MemStore so handler behavior is identical regardless of backend.
 func (s *SQLiteStore) List() ([]System, error) {
 	rows, err := s.db.Query(
-		`SELECT id, name, hostname, created_at, status, last_seen, group_id FROM hosts ORDER BY created_at, id`,
+		`SELECT id, name, hostname, created_at, status, last_seen, group_id, is_windows FROM hosts ORDER BY created_at, id`,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("systems: list: %w", err)
@@ -256,8 +277,9 @@ func scanHost(r rowScanner) (System, error) {
 		lastSeen  sql.NullInt64
 		groupID   sql.NullString
 		status    string
+		isWindows int64
 	)
-	if err := r.Scan(&h.ID, &h.Name, &h.Hostname, &createdNs, &status, &lastSeen, &groupID); err != nil {
+	if err := r.Scan(&h.ID, &h.Name, &h.Hostname, &createdNs, &status, &lastSeen, &groupID, &isWindows); err != nil {
 		return System{}, err
 	}
 	h.CreatedAt = time.Unix(0, createdNs).UTC()
@@ -270,5 +292,39 @@ func scanHost(r rowScanner) (System, error) {
 		v := groupID.String
 		h.GroupID = &v
 	}
+	h.IsWindows = isWindows != 0
 	return h, nil
+}
+
+// SetPlatform updates the is_windows flag for systemID. Returns
+// ErrNotFound if no row matches.
+func (s *SQLiteStore) SetPlatform(systemID string, isWindows bool) error {
+	return s.setPlatformWith(s.db, systemID, isWindows)
+}
+
+// SetPlatformTx mirrors SetPlatform inside the caller's tx so the
+// mutation and its audit row commit together. nil tx falls back.
+func (s *SQLiteStore) SetPlatformTx(tx *sql.Tx, systemID string, isWindows bool) error {
+	if tx == nil {
+		return s.SetPlatform(systemID, isWindows)
+	}
+	return s.setPlatformWith(tx, systemID, isWindows)
+}
+
+func (s *SQLiteStore) setPlatformWith(e execer, systemID string, isWindows bool) error {
+	res, err := e.Exec(`UPDATE hosts SET is_windows = ? WHERE id = ?`, boolToInt(isWindows), systemID)
+	if err != nil {
+		return fmt.Errorf("systems: set platform: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }

@@ -224,6 +224,7 @@ func TestOpenAPISpecParserSanity(t *testing.T) {
 		"POST /api/admin/role-assignments",
 		"DELETE /api/groups/{id}/role-assignments/{userId}/{role}",
 		"PUT /api/systems/{id}/group",
+		"PUT /api/systems/{id}/platform",
 	}
 	for _, w := range want {
 		if !got[w] {

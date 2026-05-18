@@ -38,11 +38,17 @@ const pendingPackageMarker = "SW_PENDING_PACKAGE:"
 
 // inspectionPlaybook composes a one-shot playbook that probes the
 // target system for every registered updater's DetectBinary. Each
-// updater contributes two tasks: a `command -v` test (failed_when
-// false so the playbook always completes) and a `debug` task that
-// echoes SW_DETECTED with the updater's id when present. The
-// runner parses those lines to figure out which updaters are
-// installed.
+// updater contributes three tasks gated on the `sw_is_windows`
+// inventory var the runner writes per host: a Unix probe
+// (ansible.builtin.shell + `command -v`), a Windows probe
+// (ansible.windows.win_command + `where.exe`), and an emit task that
+// ORs the two registered rcs with `default(1)`.
+//
+// Facts are NOT gathered: the legacy setup module crashes over
+// OpenSSH-on-Windows (`Parameter format not correct - ;`) before
+// ansible can decide which platform variant to use. Routing the
+// branch through an inventory var the Go runner already knows
+// sidesteps the chicken-and-egg.
 //
 // The composer trusts that defs have already passed Validate — that
 // guarantees DetectBinary matches detectBinaryPattern and ID matches
@@ -57,15 +63,22 @@ func inspectionPlaybook(defs []Definition) []byte {
 	b.WriteString("  tasks:\n")
 	for _, d := range defs {
 		v := varName(d.ID)
-		fmt.Fprintf(&b, "    - name: detect %s\n", d.ID)
+		fmt.Fprintf(&b, "    - name: detect %s (unix)\n", d.ID)
 		fmt.Fprintf(&b, "      ansible.builtin.shell: 'command -v %s'\n", d.DetectBinary)
 		b.WriteString("      failed_when: false\n")
 		b.WriteString("      changed_when: false\n")
 		fmt.Fprintf(&b, "      register: %s\n", v)
+		b.WriteString("      when: not (sw_is_windows | default(false) | bool)\n")
+		fmt.Fprintf(&b, "    - name: detect %s (windows)\n", d.ID)
+		fmt.Fprintf(&b, "      ansible.windows.win_command: 'where.exe %s'\n", d.DetectBinary)
+		b.WriteString("      failed_when: false\n")
+		b.WriteString("      changed_when: false\n")
+		fmt.Fprintf(&b, "      register: %s_win\n", v)
+		b.WriteString("      when: sw_is_windows | default(false) | bool\n")
 		fmt.Fprintf(&b, "    - name: emit %s\n", d.ID)
 		b.WriteString("      ansible.builtin.debug:\n")
 		fmt.Fprintf(&b, "        msg: '%s %s'\n", detectMarker, d.ID)
-		fmt.Fprintf(&b, "      when: %s.rc == 0\n", v)
+		fmt.Fprintf(&b, "      when: (%s.rc | default(1)) == 0 or (%s_win.rc | default(1)) == 0\n", v, v)
 	}
 	return b.Bytes()
 }

@@ -58,6 +58,11 @@ type Handler struct {
 	// Admin can delete only systems in groups they admin). nil
 	// disables the check.
 	CanDelete func(ctx context.Context, s System) bool
+	// CanEdit, if non-nil, gates non-membership attribute mutations on
+	// the system row (currently: PUT /api/systems/{id}/platform). Same
+	// resolve-then-gate shape as CanDelete so the predicate can read the
+	// row's current group_id.
+	CanEdit func(ctx context.Context, s System) bool
 	// SystemStats, if non-nil, is called once per list / get request
 	// and its result merged into the System rows the handler
 	// serializes — populating LastCheckedAt and PendingUpdates from
@@ -82,6 +87,7 @@ func (h *Handler) Register(mux router.Mux, mw func(http.Handler) http.Handler) {
 	mux.Handle("POST /api/systems", mw(http.HandlerFunc(h.create)))
 	mux.Handle("GET /api/systems/{id}", mw(http.HandlerFunc(h.get)))
 	mux.Handle("DELETE /api/systems/{id}", mw(http.HandlerFunc(h.delete)))
+	mux.Handle("PUT /api/systems/{id}/platform", mw(http.HandlerFunc(h.setPlatform)))
 }
 
 func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
@@ -282,6 +288,76 @@ func (h *Handler) deleteWithAudit(ctx context.Context, sys System) error {
 		detail["group_id"] = *sys.GroupID
 	}
 	if err := h.AuditEmit(ctx, tx, "system.delete", sys, detail); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// setPlatform handles PUT /api/systems/{id}/platform with body
+// {"isWindows": bool} — flips the operator-declared platform flag the
+// inventory writer and Ping module-selector branch on. Same
+// resolve-then-gate flow as delete (404 for invisible systems, 403 for
+// visible-but-locked).
+func (h *Handler) setPlatform(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	var body struct {
+		IsWindows bool `json:"isWindows"`
+	}
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+	sys, err := h.Store.Get(id)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			writeError(w, http.StatusNotFound, "system not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "platform lookup failed")
+		slog.Error("systems setPlatform lookup", "err", err, "id", id) //nolint:gosec
+		return
+	}
+	if h.VisibleSystem != nil && !h.VisibleSystem(r.Context(), sys) {
+		writeError(w, http.StatusNotFound, "system not found")
+		return
+	}
+	if h.CanEdit != nil && !h.CanEdit(r.Context(), sys) {
+		writeError(w, http.StatusForbidden, "forbidden")
+		return
+	}
+	if err := h.setPlatformWithAudit(r.Context(), sys, body.IsWindows); err != nil {
+		if errors.Is(err, ErrNotFound) {
+			writeError(w, http.StatusNotFound, "system not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "set platform failed")
+		slog.Error("systems setPlatform", "err", err, "id", id) //nolint:gosec
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// setPlatformWithAudit wraps the mutation and a system.platform.set
+// audit row in one transaction when DB + AuditEmit are wired. The
+// MemStore-only test path (DB nil) just calls SetPlatform directly.
+func (h *Handler) setPlatformWithAudit(ctx context.Context, sys System, isWindows bool) error {
+	if h.DB == nil || h.AuditEmit == nil {
+		return h.Store.SetPlatform(sys.ID, isWindows)
+	}
+	tx, err := h.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := h.Store.SetPlatformTx(tx, sys.ID, isWindows); err != nil {
+		return err
+	}
+	sys.IsWindows = isWindows
+	if err := h.AuditEmit(ctx, tx, "system.platform.set", sys, map[string]any{
+		"is_windows": isWindows,
+	}); err != nil {
 		return err
 	}
 	return tx.Commit()

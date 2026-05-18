@@ -301,6 +301,10 @@ func populateMux(mux router.Mux, db *sql.DB, store systems.Store, groupStore gro
 		scope, ok := rbac.ScopeFromContext(ctx)
 		return ok && scope.CanDeleteSystem(s.GroupID)
 	}
+	sysHandler.CanEdit = func(ctx context.Context, s systems.System) bool {
+		scope, ok := rbac.ScopeFromContext(ctx)
+		return ok && scope.CanEditSystem(s.GroupID)
+	}
 	sysHandler.Register(mux, requireUser)
 	groupHandler := groups.NewHandler(groupStore, store)
 	groupHandler.OnChange = onSystemDelete

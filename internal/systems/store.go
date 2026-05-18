@@ -34,6 +34,12 @@ type Store interface {
 	// FK integrity (does the group exist?) is enforced by the groups
 	// table when present; SetGroup itself does not validate it.
 	SetGroup(systemID string, groupID *string) error
+	// SetPlatform updates the IsWindows flag for the system. Returns
+	// ErrNotFound if the system does not exist.
+	SetPlatform(systemID string, isWindows bool) error
+	// SetPlatformTx is the in-transaction sibling of SetPlatform so the
+	// row mutation and the accompanying audit row commit together.
+	SetPlatformTx(tx *sql.Tx, systemID string, isWindows bool) error
 }
 
 // MemStore is an in-memory Store. Safe for concurrent use. Data is lost on
@@ -162,6 +168,25 @@ func (s *MemStore) SetGroup(systemID string, groupID *string) error {
 		v := *groupID
 		h.GroupID = &v
 	}
+	s.systems[systemID] = h
+	return nil
+}
+
+// SetPlatformTx delegates to SetPlatform. MemStore has no real
+// transactions; the tx argument is accepted for interface parity.
+func (s *MemStore) SetPlatformTx(_ *sql.Tx, systemID string, isWindows bool) error {
+	return s.SetPlatform(systemID, isWindows)
+}
+
+// SetPlatform flips the IsWindows flag on the system.
+func (s *MemStore) SetPlatform(systemID string, isWindows bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	h, found := s.systems[systemID]
+	if !found {
+		return ErrNotFound
+	}
+	h.IsWindows = isWindows
 	s.systems[systemID] = h
 	return nil
 }

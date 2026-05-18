@@ -51,8 +51,8 @@ const MaxPlaybookBytes = 64 * 1024
 // Definition is a single registered updater. CheckPlaybook and
 // ApplyPlaybook are raw YAML bodies; the runner writes them to a
 // temp file at run time. DetectBinary is the executable name the
-// inspection playbook checks for (`command -v <this>` on the target
-// host).
+// inspection playbook checks for (`command -v <this>` on Unix
+// hosts, `where.exe <this>` on Windows hosts).
 type Definition struct {
 	ID            string
 	Source        Source

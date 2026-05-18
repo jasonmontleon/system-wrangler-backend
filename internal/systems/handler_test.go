@@ -4,6 +4,7 @@ package systems
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -254,6 +255,90 @@ func TestHandlerDelete(t *testing.T) {
 	}
 }
 
+func TestHandlerSetPlatform(t *testing.T) {
+	srv, store := newTestServer(t)
+	h, _ := store.Create(SystemInput{Name: "x", Hostname: "1.1.1.1"})
+
+	body := strings.NewReader(`{"isWindows":true}`)
+	req, _ := http.NewRequest(http.MethodPut, srv.URL+"/api/systems/"+h.ID+"/platform", body)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("put: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", resp.StatusCode)
+	}
+
+	got, err := store.Get(h.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if !got.IsWindows {
+		t.Errorf("IsWindows did not persist")
+	}
+
+	// Toggle back to false.
+	off := strings.NewReader(`{"isWindows":false}`)
+	req2, _ := http.NewRequest(http.MethodPut, srv.URL+"/api/systems/"+h.ID+"/platform", off)
+	req2.Header.Set("Content-Type", "application/json")
+	resp2, err := http.DefaultClient.Do(req2)
+	if err != nil {
+		t.Fatalf("put: %v", err)
+	}
+	_ = resp2.Body.Close()
+	if resp2.StatusCode != http.StatusNoContent {
+		t.Fatalf("toggle-off status = %d, want 204", resp2.StatusCode)
+	}
+	got, _ = store.Get(h.ID)
+	if got.IsWindows {
+		t.Errorf("IsWindows did not clear")
+	}
+}
+
+func TestHandlerSetPlatform404Missing(t *testing.T) {
+	srv, _ := newTestServer(t)
+	req, _ := http.NewRequest(http.MethodPut, srv.URL+"/api/systems/nope/platform",
+		strings.NewReader(`{"isWindows":true}`))
+	resp, _ := http.DefaultClient.Do(req)
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", resp.StatusCode)
+	}
+}
+
+func TestHandlerSetPlatform400BadJSON(t *testing.T) {
+	srv, store := newTestServer(t)
+	h, _ := store.Create(SystemInput{Name: "x", Hostname: "1.1.1.1"})
+	req, _ := http.NewRequest(http.MethodPut, srv.URL+"/api/systems/"+h.ID+"/platform",
+		strings.NewReader(`not json`))
+	resp, _ := http.DefaultClient.Do(req)
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", resp.StatusCode)
+	}
+}
+
+func TestHandlerSetPlatform403Locked(t *testing.T) {
+	store := newTestStore()
+	h, _ := store.Create(SystemInput{Name: "x", Hostname: "1.1.1.1"})
+	hh := NewHandler(store)
+	hh.CanEdit = func(_ context.Context, _ System) bool { return false }
+	mux := http.NewServeMux()
+	hh.Register(mux, nil)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	req, _ := http.NewRequest(http.MethodPut, srv.URL+"/api/systems/"+h.ID+"/platform",
+		strings.NewReader(`{"isWindows":true}`))
+	resp, _ := http.DefaultClient.Do(req)
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("status = %d, want 403", resp.StatusCode)
+	}
+}
+
 // Verifies internal errors from the store surface as 500. Uses a stub store
 // since MemStore can't be made to fail List/Get/Delete naturally.
 func TestHandlerStoreErrors(t *testing.T) {
@@ -311,4 +396,6 @@ func (s *stubStore) DeleteTx(*sql.Tx, string) error                { return s.er
 func (s *stubStore) UpdateProbe(string, bool, time.Time) error {
 	return s.err
 }
-func (s *stubStore) SetGroup(string, *string) error { return s.err }
+func (s *stubStore) SetGroup(string, *string) error            { return s.err }
+func (s *stubStore) SetPlatform(string, bool) error            { return s.err }
+func (s *stubStore) SetPlatformTx(*sql.Tx, string, bool) error { return s.err }

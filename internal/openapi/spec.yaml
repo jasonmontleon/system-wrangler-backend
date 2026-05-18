@@ -814,6 +814,30 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
 
+  /api/systems/{id}/platform:
+    put:
+      tags: [systems]
+      summary: Set the operator-declared platform flag (Windows vs Unix-like).
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [isWindows]
+              properties:
+                isWindows:
+                  type: boolean
+                  description: True to treat the host as Windows.
+      responses:
+        "204": { description: Platform flag updated. }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
   /api/systems/{id}/group:
     put:
       tags: [groups]
@@ -1182,6 +1206,14 @@ paths:
                   reason: { type: string }
                   exitCode: { type: integer }
                   durationMs: { type: integer }
+                  details:
+                    type: string
+                    description: |
+                      Diagnostic blurb extracted from stdout/stderr on
+                      failure — typically the trailing "fatal: ...
+                      FAILED!" lines including the module's stderr.
+                      Empty on success. Capped server-side; full
+                      transcripts only land in the audit log.
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
@@ -1856,6 +1888,9 @@ components:
         lastRunReason:
           type: string
           description: Short operator-readable summary of the last-run failure (e.g. "apply exit 2"). Empty when no run has failed.
+        isWindows:
+          type: boolean
+          description: Operator-declared platform flag. True flips the Ansible inventory to `ansible_shell_type=powershell` and the Ping module to `ansible.windows.win_ping`. Absent / false means the host is treated as Unix-like.
 
     SystemInput:
       type: object

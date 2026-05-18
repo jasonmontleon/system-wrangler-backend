@@ -209,6 +209,22 @@ func (s Scope) CanDeleteSystem(systemGroupID *string) bool {
 	return s.groupRole[*systemGroupID] == RoleAdmin
 }
 
+// CanEditSystem reports whether the user can mutate non-membership
+// attributes of a system whose current group_id is the supplied value
+// (e.g. the operator-declared platform flag). Same shape as
+// CanOperateGroup but parameterised against a system row's nullable
+// group_id: ungrouped systems are visible only to global Operators.
+func (s Scope) CanEditSystem(systemGroupID *string) bool {
+	if s.IsGlobalOperator() {
+		return true
+	}
+	if systemGroupID == nil {
+		return false
+	}
+	r := s.groupRole[*systemGroupID]
+	return r == RoleAdmin || r == RoleOperator
+}
+
 // CanMoveSystem reports whether the user can change the group_id of a
 // system from fromGroupID to toGroupID. Global Admin always; Group
 // Admin can move between groups they admin (both ends must be a group

@@ -66,6 +66,12 @@ type System struct {
 	// yet; the SPA pairs it with LastRunFailed for the "Needs
 	// Attention" line on the detail page.
 	LastRunReason string `json:"lastRunReason,omitempty"`
+	// IsWindows is the operator-declared platform flag. False means the
+	// host is treated as Unix-like (Linux/macOS/BSD) — Ansible probes use
+	// `command -v`, ad-hoc Ping uses `-m ping`. True swaps both halves to
+	// the PowerShell-on-OpenSSH path (`ansible_shell_type=powershell` in
+	// inventory, `where.exe` probes, `-m ansible.windows.win_ping`).
+	IsWindows bool `json:"isWindows,omitempty"`
 }
 
 // PendingPackage is the systems-package mirror of the updaters

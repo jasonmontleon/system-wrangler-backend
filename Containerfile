@@ -41,6 +41,7 @@ RUN dnf update -y \
         openssh-clients \
         ansible-core \
  && dnf clean all && rm -rf /var/cache/dnf \
+ && ansible-galaxy collection install --collections-path /usr/share/ansible/collections ansible.windows \
  && useradd --uid 65532 --user-group --create-home --shell /sbin/nologin app
 COPY --from=backend-build /out/server /usr/local/bin/server
 RUN install -d -o app -g app -m 0750 /var/lib/system-wrangler \

@@ -3,6 +3,7 @@
 package ansible
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -713,6 +714,131 @@ func TestPemRoundTripIsHandedToTempFile(t *testing.T) {
 	// `id`" — the runner-internal naming convention.
 	if !strings.Contains(capturedKeyPath, "/id") {
 		t.Errorf("captured path %q does not look like the runner's id file", capturedKeyPath)
+	}
+}
+
+func TestWriteInventoryAddsWindowsShellType(t *testing.T) {
+	tmp := t.TempDir()
+	sys := systems.System{Hostname: "win.example", IsWindows: true}
+	path, err := writeInventory(tmp, sys, "ansible")
+	if err != nil {
+		t.Fatalf("writeInventory: %v", err)
+	}
+	data, err := os.ReadFile(path) //nolint:gosec // path is from t.TempDir() via writeInventory
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	got := string(data)
+	if !strings.Contains(got, "ansible_shell_type=powershell") {
+		t.Errorf("windows inventory missing shell_type:\n%s", got)
+	}
+	if !strings.Contains(got, "ansible_user=ansible") {
+		t.Errorf("windows inventory missing ansible_user:\n%s", got)
+	}
+	if !strings.Contains(got, "sw_is_windows=true") {
+		t.Errorf("windows inventory missing sw_is_windows=true:\n%s", got)
+	}
+}
+
+func TestWriteInventoryOmitsShellTypeForUnix(t *testing.T) {
+	tmp := t.TempDir()
+	sys := systems.System{Hostname: "lin.example"}
+	path, err := writeInventory(tmp, sys, "ansible")
+	if err != nil {
+		t.Fatalf("writeInventory: %v", err)
+	}
+	data, err := os.ReadFile(path) //nolint:gosec // path is from t.TempDir() via writeInventory
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if strings.Contains(string(data), "ansible_shell_type") {
+		t.Errorf("unix inventory should not carry ansible_shell_type:\n%s", data)
+	}
+	if !strings.Contains(string(data), "sw_is_windows=false") {
+		t.Errorf("unix inventory should explicitly carry sw_is_windows=false:\n%s", data)
+	}
+}
+
+func TestPingUsesWinPingForWindowsSystems(t *testing.T) {
+	f := newFixture(t)
+	if err := f.systems.SetPlatform(f.system.ID, true); err != nil {
+		t.Fatalf("SetPlatform: %v", err)
+	}
+	f.seedCredentials()
+	f.seedAcceptedHostKey()
+	f.exec.queue(AnsibleAdHocBinary, fakeResp{
+		stdout: `win.example | SUCCESS => {"ping": "pong"}`,
+		exit:   0,
+	})
+
+	res, err := f.runner.Ping(context.Background(), f.system.ID)
+	if err != nil {
+		t.Fatalf("Ping: %v", err)
+	}
+	if res.Status != RunSuccess {
+		t.Errorf("status = %q, want success", res.Status)
+	}
+	calls := f.exec.callsFor(AnsibleAdHocBinary)
+	if len(calls) != 1 {
+		t.Fatalf("ansible calls = %d", len(calls))
+	}
+	args := strings.Join(calls[0].args, " ")
+	if !strings.Contains(args, "-m ansible.windows.win_ping") {
+		t.Errorf("windows ping should use win_ping module: %s", args)
+	}
+	if strings.Contains(args, "-m ping ") || strings.HasSuffix(args, "-m ping") {
+		t.Errorf("windows ping should not use the unix ping module: %s", args)
+	}
+}
+
+func TestExtractDiagnosticPrefersStderr(t *testing.T) {
+	got := extractDiagnostic([]byte("stdout line\n"), []byte("stderr trailer\n"))
+	if got != "stderr trailer" {
+		t.Errorf("got %q, want stderr trailer", got)
+	}
+}
+
+func TestExtractDiagnosticFallsBackToStdout(t *testing.T) {
+	got := extractDiagnostic([]byte("fatal: FAILED!\n"), []byte("   \n"))
+	if got != "fatal: FAILED!" {
+		t.Errorf("got %q, want stdout trailer", got)
+	}
+}
+
+func TestExtractDiagnosticEmpty(t *testing.T) {
+	if got := extractDiagnostic(nil, nil); got != "" {
+		t.Errorf("got %q, want empty", got)
+	}
+}
+
+func TestExtractDiagnosticCapsAtBudget(t *testing.T) {
+	big := bytes.Repeat([]byte("line\n"), 2000)
+	got := extractDiagnostic(nil, big)
+	if len(got) > diagnosticBudget {
+		t.Errorf("len=%d exceeds budget=%d", len(got), diagnosticBudget)
+	}
+	if !strings.HasSuffix(got, "line") {
+		t.Errorf("tail does not end in a whole line: %q", got[len(got)-10:])
+	}
+}
+
+func TestPingFailurePopulatesDetails(t *testing.T) {
+	f := newFixture(t)
+	f.seedCredentials()
+	f.seedAcceptedHostKey()
+	f.exec.queue(AnsibleAdHocBinary, fakeResp{
+		stderr: `fatal: [host-a]: FAILED! => {"module_stderr": "Parameter format not correct - ;"}`,
+		exit:   2,
+	})
+	res, err := f.runner.Ping(context.Background(), f.system.ID)
+	if err != nil {
+		t.Fatalf("Ping: %v", err)
+	}
+	if res.Status != RunFailure {
+		t.Fatalf("status = %q, want failure", res.Status)
+	}
+	if !strings.Contains(res.Details, "Parameter format not correct") {
+		t.Errorf("details did not carry the module stderr: %q", res.Details)
 	}
 }
 

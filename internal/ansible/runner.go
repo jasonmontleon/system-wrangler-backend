@@ -231,12 +231,48 @@ type PingResult struct {
 	Reason     string
 	Stdout     []byte
 	Stderr     []byte
+	// Details is a short diagnostic blurb extracted from stdout/stderr
+	// when the run fails — the meaningful "TASK [setup]: FAILED ...
+	// Parameter format not correct" trailer rather than just the exit
+	// code. Empty on success. Capped at diagnosticBudget bytes.
+	Details string
 }
 
 // pongMarker is the substring `ansible -m ping` emits on success.
 // We grep for it instead of parsing the JSON because the default
 // callback's output is line-oriented and easier to recognise.
 const pongMarker = `"ping": "pong"`
+
+// diagnosticBudget caps the Details blurb the Ping result surfaces.
+// Two-ish KB is enough to carry an ansible "fatal: ... FAILED!"
+// trailer with the module's stderr while still fitting in an HTTP
+// response without choking a browser-rendered <pre>.
+const diagnosticBudget = 2048
+
+// extractDiagnostic mines a failure trailer from ansible's output.
+// Prefers stderr (where module_stderr lands), falls back to stdout
+// (where the default callback prints "fatal: ... FAILED!"). Returns
+// the last diagnosticBudget bytes, anchored at a newline boundary so
+// we don't slice mid-line.
+func extractDiagnostic(stdout, stderr []byte) string {
+	source := stderr
+	if len(bytes.TrimSpace(source)) == 0 {
+		source = stdout
+	}
+	source = bytes.TrimRight(source, "\r\n\t ")
+	if len(source) == 0 {
+		return ""
+	}
+	if len(source) <= diagnosticBudget {
+		return string(source)
+	}
+	tail := source[len(source)-diagnosticBudget:]
+	// Don't lead with a partial line.
+	if nl := bytes.IndexByte(tail, '\n'); nl >= 0 && nl < len(tail)-1 {
+		tail = tail[nl+1:]
+	}
+	return string(tail)
+}
 
 // Ping runs `ansible <host> -m ping` against the resolved system.
 // Shares the credential + host-key gates and per-run temp-file
@@ -324,12 +360,16 @@ func (r *Runner) Ping(ctx context.Context, systemID string) (PingResult, error) 
 		return PingResult{}, err
 	}
 
+	pingModule := "ping"
+	if sys.IsWindows {
+		pingModule = "ansible.windows.win_ping"
+	}
 	args := []string{
 		sys.Hostname,
 		"-i", inventoryPath,
 		"--private-key", keyPath,
 		"-u", resolved.AnsibleUser,
-		"-m", "ping",
+		"-m", pingModule,
 	}
 	env := append(os.Environ(),
 		"ANSIBLE_HOST_KEY_CHECKING=True",
@@ -350,6 +390,7 @@ func (r *Runner) Ping(ctx context.Context, systemID string) (PingResult, error) 
 		if len(result.Stderr) == 0 {
 			result.Stderr = []byte(execErr.Error())
 		}
+		result.Details = extractDiagnostic(result.Stdout, result.Stderr)
 		r.logPing(ctx, sys, result)
 		return result, nil
 	}
@@ -367,6 +408,7 @@ func (r *Runner) Ping(ctx context.Context, systemID string) (PingResult, error) 
 		}
 		result.Status = RunHostKeyMismatch
 		result.Reason = "host key mismatch"
+		result.Details = extractDiagnostic(stdout, stderr)
 		r.logPing(ctx, sys, result)
 		return result, nil
 	}
@@ -379,6 +421,7 @@ func (r *Runner) Ping(ctx context.Context, systemID string) (PingResult, error) 
 	} else {
 		result.Reason = fmt.Sprintf("ansible exited %d", exitCode)
 	}
+	result.Details = extractDiagnostic(stdout, stderr)
 	r.logPing(ctx, sys, result)
 	return result, nil
 }
@@ -497,11 +540,20 @@ func writeKnownHosts(tmpDir, hostname string, accepted []hostkeys.HostKey) (stri
 // writeInventory writes a minimal INI inventory with one host and
 // the resolved ansible user pinned via host_vars. ansible-playbook
 // needs the `,` trailing form on -i to accept a host literal, but
-// a real file is friendlier for diffs and tests.
+// a real file is friendlier for diffs and tests. When the system is
+// flagged Windows, the host line also carries
+// `ansible_shell_type=powershell` so the temp-dir bootstrap and
+// `ansible.windows.*` modules route through PowerShell on the
+// OpenSSH-on-Windows connection.
 func writeInventory(tmpDir string, sys systems.System, ansibleUser string) (string, error) {
 	hostLine := sys.Hostname
 	if ansibleUser != "" {
 		hostLine += " ansible_user=" + ansibleUser
+	}
+	if sys.IsWindows {
+		hostLine += " ansible_shell_type=powershell sw_is_windows=true"
+	} else {
+		hostLine += " sw_is_windows=false"
 	}
 	// Quote IP-style hostnames defensively — ansible's INI parser
 	// is happy with bare IPs but a future change to the hostname

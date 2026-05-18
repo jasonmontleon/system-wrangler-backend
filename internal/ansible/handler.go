@@ -41,14 +41,17 @@ func (h *Handler) Register(mux router.Mux, mw func(http.Handler) http.Handler) {
 	mux.Handle("POST /api/systems/{id}/test-connection", mw(http.HandlerFunc(h.testConnection)))
 }
 
-// testConnectionDTO is the wire shape of the response. Stdout/stderr
-// are not surfaced — the UI only needs the verdict + a one-line
-// reason; the audit log carries the full record for forensics.
+// testConnectionDTO is the wire shape of the response. Details
+// carries a capped diagnostic blurb extracted from stdout/stderr on
+// failure so the SPA can show the operator *why* ansible exited
+// non-zero rather than just an overloaded exit code. The full
+// transcripts still live only in the audit log for forensics.
 type testConnectionDTO struct {
 	Status     RunStatus `json:"status"`
 	Reason     string    `json:"reason"`
 	ExitCode   int       `json:"exitCode"`
 	DurationMS int64     `json:"durationMs"`
+	Details    string    `json:"details,omitempty"`
 }
 
 func (h *Handler) testConnection(w http.ResponseWriter, r *http.Request) {
@@ -86,6 +89,7 @@ func (h *Handler) testConnection(w http.ResponseWriter, r *http.Request) {
 		Reason:     res.Reason,
 		ExitCode:   res.ExitCode,
 		DurationMS: res.FinishedAt.Sub(res.StartedAt).Milliseconds(),
+		Details:    res.Details,
 	})
 }
 

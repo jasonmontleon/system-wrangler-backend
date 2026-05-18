@@ -545,12 +545,24 @@ func TestPlaybookComposerWalksRegistry(t *testing.T) {
 	reg := NewRegistry(store)
 	defs, _ := reg.All()
 	body := inspectionPlaybook(defs)
+	if !strings.Contains(string(body), "gather_facts: false") {
+		t.Errorf("inspection playbook must skip facts (setup module crashes over OpenSSH-on-Windows):\n%s", body)
+	}
+	if !strings.Contains(string(body), "sw_is_windows | default(false) | bool") {
+		t.Errorf("inspection playbook must gate windows probes on the sw_is_windows inventory var:\n%s", body)
+	}
 	for _, d := range defs {
-		if !strings.Contains(string(body), "detect "+d.ID) {
-			t.Errorf("inspection playbook missing detect task for %q:\n%s", d.ID, body)
+		if !strings.Contains(string(body), "detect "+d.ID+" (unix)") {
+			t.Errorf("inspection playbook missing unix detect task for %q:\n%s", d.ID, body)
+		}
+		if !strings.Contains(string(body), "detect "+d.ID+" (windows)") {
+			t.Errorf("inspection playbook missing windows detect task for %q:\n%s", d.ID, body)
 		}
 		if !strings.Contains(string(body), "command -v "+d.DetectBinary) {
 			t.Errorf("inspection playbook missing command -v for %q", d.DetectBinary)
+		}
+		if !strings.Contains(string(body), "where.exe "+d.DetectBinary) {
+			t.Errorf("inspection playbook missing where.exe for %q", d.DetectBinary)
 		}
 	}
 }
