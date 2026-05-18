@@ -5,14 +5,15 @@
   tasks:
     - name: Run apk upgrade  # noqa: command-instead-of-module
       ansible.builtin.command:
-        cmd: apk upgrade
+        cmd: apk upgrade -U
       register: apk_result
-      changed_when: apk_result.stdout is search('^\([0-9]+/[0-9]+\) ', multiline=True)
+      changed_when: >-
+        apk_result.stdout is search('^\([0-9]+/[0-9]+\) ', multiline=True)
+        or apk_result.stderr is search('^\([0-9]+/[0-9]+\) ', multiline=True)
     - name: Compute upgraded package count from progress markers
       ansible.builtin.set_fact:
         sw_upgraded_count: >-
-          {{ apk_result.stdout_lines
-             | default([])
+          {{ ((apk_result.stdout_lines | default([])) + (apk_result.stderr_lines | default([])))
              | select('match', '^\([0-9]+/[0-9]+\) Upgrading ')
              | list
              | length }}
