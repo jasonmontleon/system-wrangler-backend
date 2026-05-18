@@ -66,6 +66,12 @@ var builtinPkginCheck []byte
 //go:embed builtins/pkgin/apply.yml
 var builtinPkginApply []byte
 
+//go:embed builtins/winget/check.yml
+var builtinWingetCheck []byte
+
+//go:embed builtins/winget/apply.yml
+var builtinWingetApply []byte
+
 // Builtins returns every code-registered updater. Order is stable so
 // callers that don't sort still produce deterministic output. The
 // registry calls this once at startup and merges the result into
@@ -161,6 +167,15 @@ func Builtins() []Definition {
 			DetectBinary:  "pkgin",
 			CheckPlaybook: builtinPkginCheck,
 			ApplyPlaybook: builtinPkginApply,
+		},
+		{
+			ID:            "builtin.winget",
+			Source:        SourceBuiltin,
+			DisplayName:   "winget",
+			Description:   "Windows Package Manager (preinstalled on modern Windows)",
+			DetectBinary:  "winget",
+			CheckPlaybook: builtinWingetCheck,
+			ApplyPlaybook: builtinWingetApply,
 		},
 	}
 }

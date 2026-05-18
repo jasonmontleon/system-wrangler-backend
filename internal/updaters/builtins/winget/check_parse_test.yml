@@ -1,0 +1,157 @@
+- name: Test winget check parsing
+  hosts: localhost
+  gather_facts: false
+  vars:
+    winget_pending_typical:
+      stdout_lines:
+        - "Name                                  Id                              Version           Available         Source"
+        - "----------------------------------------------------------------------------------------------------------------"
+        - "Microsoft Edge                        Microsoft.Edge                  120.0.2210.91     120.0.2210.121    winget"
+        - "Visual Studio Code                    Microsoft.VisualStudioCode      1.84.2            1.85.1            winget"
+        - "Git                                   Git.Git                         2.42.1            2.43.0            winget"
+        - "3 upgrades available."
+    winget_pending_empty:
+      stdout_lines:
+        - "No installed package found matching input criteria."
+    winget_pending_with_spinner:
+      stdout_lines:
+        - "\\"
+        - "|"
+        - "/"
+        - "-"
+        - "Name                                  Id                              Version           Available         Source"
+        - "----------------------------------------------------------------------------------------------------------------"
+        - "PowerShell                            Microsoft.PowerShell            7.3.10            7.4.1             winget"
+        - "1 upgrade available."
+    winget_pending_narrow:
+      stdout_lines:
+        - "Name Id        Version  Available Source"
+        - "----------------------------------------"
+        - "cURL cURL.cURL 8.19.0.8 8.20.0.2  winget"
+        - "1 upgrades available."
+    winget_pending_with_progress:
+      stdout_lines:
+        - "\\"
+        - "Found cURL [cURL.cURL] Version 8.20.0.2"
+        - "  ████████████████████  2.94 KB / 2.94 KB"
+        - "  ████████████████████  2.94 MB / 2.94 MB"
+        - "Name Id        Version  Available Source"
+        - "----------------------------------------"
+        - "cURL cURL.cURL 8.19.0.8 8.20.0.2  winget"
+        - "1 upgrades available."
+  tasks:
+    - name: Parse typical wide-padded winget upgrade output
+      ansible.builtin.set_fact:
+        typical_pkgs: >-
+          {{ winget_pending_typical.stdout_lines
+             | reject('match', '^Name\s')
+             | reject('match', '^[-\s]+$')
+             | reject('match', '^[\\|/-]\s*$')
+             | reject('match', '^\d+ upgrades? available')
+             | reject('match', '^No applicable upgrades')
+             | reject('match', '^No installed package')
+             | reject('match', '^The following packages')
+             | reject('match', '^Found ')
+             | reject('search', ' / ')
+             | reject('search', '[█▒░│]')
+             | reject('equalto', '')
+             | select('match', '^.+?\s+\S+\s+\S+\s+\S+\s+\S+\s*$')
+             | map('regex_replace', '^.+?\s+(\S+)\s+(\S+)\s+(\S+)\s+\S+\s*$', '\1|\2|\3')
+             | list }}
+    - name: Assert typical extracts Id|old|new tuples
+      ansible.builtin.assert:
+        that:
+          - typical_pkgs == ['Microsoft.Edge|120.0.2210.91|120.0.2210.121', 'Microsoft.VisualStudioCode|1.84.2|1.85.1', 'Git.Git|2.42.1|2.43.0']
+        fail_msg: "typical_pkgs={{ typical_pkgs }}"
+    - name: Parse "no upgrades" output
+      ansible.builtin.set_fact:
+        empty_pkgs: >-
+          {{ winget_pending_empty.stdout_lines
+             | reject('match', '^Name\s')
+             | reject('match', '^[-\s]+$')
+             | reject('match', '^[\\|/-]\s*$')
+             | reject('match', '^\d+ upgrades? available')
+             | reject('match', '^No applicable upgrades')
+             | reject('match', '^No installed package')
+             | reject('match', '^The following packages')
+             | reject('match', '^Found ')
+             | reject('search', ' / ')
+             | reject('search', '[█▒░│]')
+             | reject('equalto', '')
+             | select('match', '^.+?\s+\S+\s+\S+\s+\S+\s+\S+\s*$')
+             | map('regex_replace', '^.+?\s+(\S+)\s+(\S+)\s+(\S+)\s+\S+\s*$', '\1|\2|\3')
+             | list }}
+    - name: Assert empty produces empty list
+      ansible.builtin.assert:
+        that:
+          - empty_pkgs == []
+        fail_msg: "empty_pkgs={{ empty_pkgs }}, want []"
+    - name: Parse output that begins with the winget progress spinner
+      ansible.builtin.set_fact:
+        spinner_pkgs: >-
+          {{ winget_pending_with_spinner.stdout_lines
+             | reject('match', '^Name\s')
+             | reject('match', '^[-\s]+$')
+             | reject('match', '^[\\|/-]\s*$')
+             | reject('match', '^\d+ upgrades? available')
+             | reject('match', '^No applicable upgrades')
+             | reject('match', '^No installed package')
+             | reject('match', '^The following packages')
+             | reject('match', '^Found ')
+             | reject('search', ' / ')
+             | reject('search', '[█▒░│]')
+             | reject('equalto', '')
+             | select('match', '^.+?\s+\S+\s+\S+\s+\S+\s+\S+\s*$')
+             | map('regex_replace', '^.+?\s+(\S+)\s+(\S+)\s+(\S+)\s+\S+\s*$', '\1|\2|\3')
+             | list }}
+    - name: Assert spinner-prefixed output still parses cleanly
+      ansible.builtin.assert:
+        that:
+          - spinner_pkgs == ['Microsoft.PowerShell|7.3.10|7.4.1']
+        fail_msg: "spinner_pkgs={{ spinner_pkgs }}"
+    - name: Parse narrow non-TTY output (single-space column separators)
+      ansible.builtin.set_fact:
+        narrow_pkgs: >-
+          {{ winget_pending_narrow.stdout_lines
+             | reject('match', '^Name\s')
+             | reject('match', '^[-\s]+$')
+             | reject('match', '^[\\|/-]\s*$')
+             | reject('match', '^\d+ upgrades? available')
+             | reject('match', '^No applicable upgrades')
+             | reject('match', '^No installed package')
+             | reject('match', '^The following packages')
+             | reject('match', '^Found ')
+             | reject('search', ' / ')
+             | reject('search', '[█▒░│]')
+             | reject('equalto', '')
+             | select('match', '^.+?\s+\S+\s+\S+\s+\S+\s+\S+\s*$')
+             | map('regex_replace', '^.+?\s+(\S+)\s+(\S+)\s+(\S+)\s+\S+\s*$', '\1|\2|\3')
+             | list }}
+    - name: Assert narrow-format (non-TTY) output parses to one tuple
+      ansible.builtin.assert:
+        that:
+          - narrow_pkgs == ['cURL.cURL|8.19.0.8|8.20.0.2']
+        fail_msg: "narrow_pkgs={{ narrow_pkgs }}"
+    - name: Parse output mixed with winget download progress noise
+      ansible.builtin.set_fact:
+        progress_pkgs: >-
+          {{ winget_pending_with_progress.stdout_lines
+             | reject('match', '^Name\s')
+             | reject('match', '^[-\s]+$')
+             | reject('match', '^[\\|/-]\s*$')
+             | reject('match', '^\d+ upgrades? available')
+             | reject('match', '^No applicable upgrades')
+             | reject('match', '^No installed package')
+             | reject('match', '^The following packages')
+             | reject('match', '^Found ')
+             | reject('search', ' / ')
+             | reject('search', '[█▒░│]')
+             | reject('equalto', '')
+             | select('match', '^.+?\s+\S+\s+\S+\s+\S+\s+\S+\s*$')
+             | map('regex_replace', '^.+?\s+(\S+)\s+(\S+)\s+(\S+)\s+\S+\s*$', '\1|\2|\3')
+             | list }}
+    - name: Assert progress/download lines are stripped, only the real data row survives
+      ansible.builtin.assert:
+        that:
+          - progress_pkgs == ['cURL.cURL|8.19.0.8|8.20.0.2']
+        fail_msg: "progress_pkgs={{ progress_pkgs }} (expected only the cURL row; KB/MB progress lines should be filtered)"

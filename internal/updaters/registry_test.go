@@ -68,6 +68,7 @@ func TestBuiltinsShipExpectedSet(t *testing.T) {
 		"builtin.pkg":     "pkg",
 		"builtin.pkg_add": "pkg_add",
 		"builtin.pkgin":   "pkgin",
+		"builtin.winget":  "winget",
 	}
 	got := map[string]Definition{}
 	for _, d := range Builtins() {

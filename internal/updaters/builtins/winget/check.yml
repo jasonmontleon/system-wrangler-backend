@@ -1,0 +1,39 @@
+- name: List pending winget upgrades
+  hosts: all
+  gather_facts: false
+  become: false
+  tasks:
+    - name: Query winget upgrade
+      ansible.windows.win_shell: |
+        [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+        winget upgrade --include-unknown --disable-interactivity `
+          --accept-source-agreements
+        exit $LASTEXITCODE
+      register: winget_pending
+      changed_when: false
+      failed_when: winget_pending.rc not in [0]
+    - name: Extract Id|installed|available tuples
+      ansible.builtin.set_fact:
+        sw_pending_packages: >-
+          {{ winget_pending.stdout_lines
+             | reject('match', '^Name\s')
+             | reject('match', '^[-\s]+$')
+             | reject('match', '^[\\|/-]\s*$')
+             | reject('match', '^\d+ upgrades? available')
+             | reject('match', '^No applicable upgrades')
+             | reject('match', '^No installed package')
+             | reject('match', '^The following packages')
+             | reject('match', '^Found ')
+             | reject('search', ' / ')
+             | reject('search', '[█▒░│]')
+             | reject('equalto', '')
+             | select('match', '^.+?\s+\S+\s+\S+\s+\S+\s+\S+\s*$')
+             | map('regex_replace', '^.+?\s+(\S+)\s+(\S+)\s+(\S+)\s+\S+\s*$', '\1|\2|\3')
+             | list }}
+    - name: Surface count to the run log
+      ansible.builtin.debug:
+        msg: "SW_AFFECTED_COUNT: {{ sw_pending_packages | length }}"
+    - name: Surface each pending package
+      ansible.builtin.debug:
+        msg: "SW_PENDING_PACKAGE: {{ item }}"
+      loop: "{{ sw_pending_packages }}"
