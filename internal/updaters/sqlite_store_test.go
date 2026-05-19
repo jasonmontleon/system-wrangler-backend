@@ -143,6 +143,54 @@ func TestUpdateCustomNotFound(t *testing.T) {
 	}
 }
 
+// TestCheckOnlyRoundTrip exercises the check_only column end-to-end:
+// the field round-trips through CreateCustom and GetCustom, and the
+// Validate gate co-located on the store rejects a body that declares
+// CheckOnly while still carrying an apply playbook.
+func TestCheckOnlyRoundTrip(t *testing.T) {
+	store := newStore(t)
+	d := sampleDef("custom.firmware")
+	d.CheckOnly = true
+	d.ApplyPlaybook = nil
+	created, err := store.CreateCustom(d)
+	if err != nil {
+		t.Fatalf("CreateCustom check-only: %v", err)
+	}
+	if !created.CheckOnly {
+		t.Errorf("check_only lost on insert: %+v", created)
+	}
+	got, err := store.GetCustom("custom.firmware")
+	if err != nil {
+		t.Fatalf("GetCustom: %v", err)
+	}
+	if !got.CheckOnly {
+		t.Errorf("check_only lost on read: %+v", got)
+	}
+	if len(got.ApplyPlaybook) != 0 {
+		t.Errorf("check-only definition reloaded with apply body: %q", got.ApplyPlaybook)
+	}
+	// Flip back to a normal updater with both bodies; should succeed.
+	got.CheckOnly = false
+	got.ApplyPlaybook = []byte("- hosts: all\n  tasks: []\n")
+	updated, err := store.UpdateCustom(got)
+	if err != nil {
+		t.Fatalf("UpdateCustom flipping off check-only: %v", err)
+	}
+	if updated.CheckOnly {
+		t.Errorf("CheckOnly stuck on across update: %+v", updated)
+	}
+}
+
+func TestCheckOnlyRejectsApplyBody(t *testing.T) {
+	store := newStore(t)
+	d := sampleDef("custom.firmware")
+	d.CheckOnly = true
+	// ApplyPlaybook stays populated from sampleDef — invalid combo.
+	if _, err := store.CreateCustom(d); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("err = %v, want ErrInvalid wrapping the check-only conflict", err)
+	}
+}
+
 func TestDeleteCustomSoftDelete(t *testing.T) {
 	store := newStore(t)
 	if _, err := store.CreateCustom(sampleDef("custom.beta")); err != nil {

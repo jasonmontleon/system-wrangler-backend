@@ -93,6 +93,7 @@ type systemUpdaterDTO struct {
 	DisplayName     string           `json:"displayName"`
 	Installed       bool             `json:"installed"`
 	Enabled         bool             `json:"enabled"`
+	CheckOnly       bool             `json:"checkOnly"`
 	LastSeenAt      *time.Time       `json:"lastSeenAt,omitempty"`
 	PendingPackages []PendingPackage `json:"pendingPackages"`
 }
@@ -212,6 +213,10 @@ func (h *Handler) runUpdaterEndpoint(w http.ResponseWriter, r *http.Request, kin
 		writeConflict(w, h.Store, sys.ID, "another run is in progress for this system")
 		return
 	}
+	if errors.Is(err, ErrCheckOnly) {
+		writeError(w, http.StatusConflict, "updater is check-only and cannot be applied")
+		return
+	}
 	if errors.Is(err, ErrNotFound) {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
@@ -304,6 +309,7 @@ func (h *Handler) listSystemUpdaters(w http.ResponseWriter, r *http.Request) {
 			UpdaterID:       d.ID,
 			Source:          d.Source,
 			DisplayName:     d.DisplayName,
+			CheckOnly:       d.CheckOnly,
 			PendingPackages: []PendingPackage{},
 		}
 		if a, found := byID[d.ID]; found {

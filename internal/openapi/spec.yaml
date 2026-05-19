@@ -2084,7 +2084,7 @@ components:
 
     UpdaterDefinition:
       type: object
-      required: [id, source, displayName, detectBinary, checkPlaybook, applyPlaybook]
+      required: [id, source, displayName, detectBinary, checkPlaybook, applyPlaybook, checkOnly]
       properties:
         id:
           type: string
@@ -2102,7 +2102,10 @@ components:
           description: YAML body of the check playbook (read-only "what's pending").
         applyPlaybook:
           type: string
-          description: YAML body of the apply playbook (mutates the host).
+          description: YAML body of the apply playbook (mutates the host). Empty when checkOnly is true.
+        checkOnly:
+          type: boolean
+          description: When true the updater surfaces pending changes but is never auto-applied; Apply requests return 409. applyPlaybook must be empty.
         createdBy: { type: string }
         createdAt: { type: string, format: date-time }
         updatedAt: { type: string, format: date-time }
@@ -2122,6 +2125,10 @@ components:
           description: '64 KB cap; must pass `ansible-playbook --syntax-check` and the inline-credential heuristic.'
         applyPlaybook:
           type: string
+          description: Empty when checkOnly is true; otherwise required (same caps and gates as checkPlaybook).
+        checkOnly:
+          type: boolean
+          description: Set true to declare a check-only updater. applyPlaybook must then be empty.
 
     UpdaterDefinitionPatch:
       type: object
@@ -2132,10 +2139,11 @@ components:
         detectBinary: { type: string }
         checkPlaybook: { type: string }
         applyPlaybook: { type: string }
+        checkOnly: { type: boolean }
 
     SystemUpdater:
       type: object
-      required: [updaterId, source, displayName, installed, enabled, pendingPackages]
+      required: [updaterId, source, displayName, installed, enabled, checkOnly, pendingPackages]
       properties:
         updaterId: { type: string }
         source:
@@ -2148,6 +2156,9 @@ components:
         enabled:
           type: boolean
           description: Operator's per-system toggle. Fan-out check/apply only fires updaters that are both installed and enabled.
+        checkOnly:
+          type: boolean
+          description: True when the updater is registered check-only; Apply is rejected with 409.
         lastSeenAt:
           type: string
           format: date-time

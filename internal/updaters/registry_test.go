@@ -74,6 +74,7 @@ func TestBuiltinsShipExpectedSet(t *testing.T) {
 		"builtin.brew":           "brew",
 		"builtin.mas":            "mas",
 		"builtin.softwareupdate": "softwareupdate",
+		"builtin.fwupdmgr":       "fwupdmgr",
 	}
 	got := map[string]Definition{}
 	for _, d := range Builtins() {
@@ -97,7 +98,11 @@ func TestBuiltinsShipExpectedSet(t *testing.T) {
 		if len(d.CheckPlaybook) == 0 {
 			t.Errorf("%s.CheckPlaybook is empty (embed failed?)", id)
 		}
-		if len(d.ApplyPlaybook) == 0 {
+		if d.CheckOnly {
+			if len(d.ApplyPlaybook) != 0 {
+				t.Errorf("%s declares CheckOnly but ships an ApplyPlaybook", id)
+			}
+		} else if len(d.ApplyPlaybook) == 0 {
 			t.Errorf("%s.ApplyPlaybook is empty (embed failed?)", id)
 		}
 	}
@@ -172,6 +177,10 @@ func TestDefinitionValidate(t *testing.T) {
 		{"no apply", func(d *Definition) { d.ApplyPlaybook = nil }},
 		{"check too big", func(d *Definition) { d.CheckPlaybook = make([]byte, MaxPlaybookBytes+1) }},
 		{"apply too big", func(d *Definition) { d.ApplyPlaybook = make([]byte, MaxPlaybookBytes+1) }},
+		{"check-only with apply body", func(d *Definition) {
+			d.CheckOnly = true
+			// ApplyPlaybook stays populated by sampleDef — that's the failure shape.
+		}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -182,4 +191,13 @@ func TestDefinitionValidate(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("check-only with empty apply is accepted", func(t *testing.T) {
+		d := sampleDef("custom.x")
+		d.CheckOnly = true
+		d.ApplyPlaybook = nil
+		if err := d.Validate(); err != nil {
+			t.Errorf("check-only Validate: %v", err)
+		}
+	})
 }

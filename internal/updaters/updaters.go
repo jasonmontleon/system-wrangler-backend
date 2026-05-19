@@ -53,6 +53,11 @@ const MaxPlaybookBytes = 64 * 1024
 // temp file at run time. DetectBinary is the executable name the
 // inspection playbook checks for (`command -v <this>` on Unix
 // hosts, `where.exe <this>` on Windows hosts).
+//
+// CheckOnly marks an updater that surfaces pending changes but
+// must never auto-apply — firmware updates being the driving case.
+// When set, ApplyPlaybook must be empty; the runner refuses Apply
+// with ErrCheckOnly and the SPA hides the per-row Update action.
 type Definition struct {
 	ID            string
 	Source        Source
@@ -61,6 +66,7 @@ type Definition struct {
 	DetectBinary  string
 	CheckPlaybook []byte
 	ApplyPlaybook []byte
+	CheckOnly     bool
 	CreatedBy     string    // empty for builtins
 	CreatedAt     time.Time // zero for builtins
 	UpdatedAt     time.Time // zero for builtins
@@ -99,8 +105,14 @@ func (d Definition) Validate() error {
 	if len(d.CheckPlaybook) == 0 {
 		return errors.New("updaters: check_playbook required")
 	}
-	if len(d.ApplyPlaybook) == 0 {
-		return errors.New("updaters: apply_playbook required")
+	if d.CheckOnly {
+		if len(d.ApplyPlaybook) != 0 {
+			return errors.New("updaters: check_only updaters must not declare an apply_playbook")
+		}
+	} else {
+		if len(d.ApplyPlaybook) == 0 {
+			return errors.New("updaters: apply_playbook required")
+		}
 	}
 	if len(d.CheckPlaybook) > MaxPlaybookBytes {
 		return errors.New("updaters: check_playbook exceeds 64 KB cap")
@@ -231,6 +243,7 @@ var (
 	ErrBuiltinWrite = errors.New("updaters: builtins cannot be modified at runtime")
 	ErrReservedID   = errors.New("updaters: id namespace reserved")
 	ErrDuplicate    = errors.New("updaters: definition with this id already exists")
+	ErrCheckOnly    = errors.New("updaters: updater is check-only and cannot be applied")
 )
 
 // IsBuiltinID reports whether id falls in the reserved builtin

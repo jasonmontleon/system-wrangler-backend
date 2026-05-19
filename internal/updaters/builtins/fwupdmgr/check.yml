@@ -1,0 +1,37 @@
+- name: List pending firmware updates via fwupd
+  hosts: all
+  gather_facts: false
+  become: true
+  tasks:
+    - name: Refresh fwupd metadata  # noqa: command-instead-of-module
+      ansible.builtin.command:
+        cmd: fwupdmgr refresh --force
+      register: fwupd_refresh
+      changed_when: false
+      failed_when: fwupd_refresh.rc not in [0, 1, 2]
+    - name: Query fwupd for pending firmware updates  # noqa: command-instead-of-module
+      ansible.builtin.command:
+        cmd: fwupdmgr get-updates --json
+      register: fwupd_pending
+      changed_when: false
+      failed_when: fwupd_pending.rc not in [0, 2]
+    - name: Decode the JSON document (empty when rc=2 / no updates)
+      ansible.builtin.set_fact:
+        fwupd_doc: "{{ (fwupd_pending.stdout | trim) | default('{}', true) | from_json }}"
+    - name: Build name|old|new tuples for each upgradable device
+      ansible.builtin.set_fact:
+        sw_pending_packages: >-
+          {{ (sw_pending_packages | default([]))
+             + [(item.Name | default('')) ~ '|'
+                ~ (item.Version | default('')) ~ '|'
+                ~ (item.Releases[0].Version | default(''))] }}
+      loop: "{{ fwupd_doc.Devices | default([]) | selectattr('Releases', 'defined') | list }}"
+      loop_control:
+        label: "{{ item.Name | default('(unnamed)') }}"
+    - name: Surface count to the run log
+      ansible.builtin.debug:
+        msg: "SW_AFFECTED_COUNT: {{ sw_pending_packages | default([]) | length }}"
+    - name: Surface each pending firmware update
+      ansible.builtin.debug:
+        msg: "SW_PENDING_PACKAGE: {{ item }}"
+      loop: "{{ sw_pending_packages | default([]) }}"

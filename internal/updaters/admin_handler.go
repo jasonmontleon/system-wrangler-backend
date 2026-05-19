@@ -58,6 +58,7 @@ type definitionDTO struct {
 	DetectBinary  string `json:"detectBinary"`
 	CheckPlaybook string `json:"checkPlaybook"`
 	ApplyPlaybook string `json:"applyPlaybook"`
+	CheckOnly     bool   `json:"checkOnly"`
 	CreatedBy     string `json:"createdBy,omitempty"`
 	CreatedAt     string `json:"createdAt,omitempty"`
 	UpdatedAt     string `json:"updatedAt,omitempty"`
@@ -79,6 +80,7 @@ type createInputDTO struct {
 	DetectBinary  string `json:"detectBinary"`
 	CheckPlaybook string `json:"checkPlaybook"`
 	ApplyPlaybook string `json:"applyPlaybook"`
+	CheckOnly     bool   `json:"checkOnly"`
 }
 
 // updateInputDTO matches the PATCH body. ID comes from the path, so
@@ -91,6 +93,7 @@ type updateInputDTO struct {
 	DetectBinary  string `json:"detectBinary"`
 	CheckPlaybook string `json:"checkPlaybook"`
 	ApplyPlaybook string `json:"applyPlaybook"`
+	CheckOnly     bool   `json:"checkOnly"`
 }
 
 func (h *AdminHandler) list(w http.ResponseWriter, _ *http.Request) {
@@ -130,6 +133,7 @@ func (h *AdminHandler) create(w http.ResponseWriter, r *http.Request) {
 		DetectBinary:  strings.TrimSpace(in.DetectBinary),
 		CheckPlaybook: []byte(in.CheckPlaybook),
 		ApplyPlaybook: []byte(in.ApplyPlaybook),
+		CheckOnly:     in.CheckOnly,
 		CreatedBy:     audit.ActorFromContext(r.Context()).ID,
 	}
 	if err := h.guard(r.Context(), d); err != nil {
@@ -168,6 +172,7 @@ func (h *AdminHandler) update(w http.ResponseWriter, r *http.Request) {
 		DetectBinary:  strings.TrimSpace(in.DetectBinary),
 		CheckPlaybook: []byte(in.CheckPlaybook),
 		ApplyPlaybook: []byte(in.ApplyPlaybook),
+		CheckOnly:     in.CheckOnly,
 	}
 	if err := h.guard(r.Context(), d); err != nil {
 		writeGuardError(w, err)
@@ -233,15 +238,19 @@ func (h *AdminHandler) guard(ctx context.Context, d Definition) error {
 	if err := scanInlineCredentials(d.CheckPlaybook); err != nil {
 		return err
 	}
-	if err := scanInlineCredentials(d.ApplyPlaybook); err != nil {
-		return err
+	if !d.CheckOnly {
+		if err := scanInlineCredentials(d.ApplyPlaybook); err != nil {
+			return err
+		}
 	}
 	if h.Syntax != nil {
 		if err := h.Syntax.Check(ctx, d.CheckPlaybook); err != nil {
 			return err
 		}
-		if err := h.Syntax.Check(ctx, d.ApplyPlaybook); err != nil {
-			return err
+		if !d.CheckOnly {
+			if err := h.Syntax.Check(ctx, d.ApplyPlaybook); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -297,6 +306,7 @@ func definitionToDTO(d Definition) definitionDTO {
 		DetectBinary:  d.DetectBinary,
 		CheckPlaybook: string(d.CheckPlaybook),
 		ApplyPlaybook: string(d.ApplyPlaybook),
+		CheckOnly:     d.CheckOnly,
 		CreatedBy:     d.CreatedBy,
 	}
 	if !d.CreatedAt.IsZero() {

@@ -482,6 +482,30 @@ func TestCheckRejectsDeletedCustom(t *testing.T) {
 	}
 }
 
+func TestApplyRejectsCheckOnlyUpdater(t *testing.T) {
+	f := newRunnerFixture(t)
+	d := sampleDef("custom.firmware")
+	d.CheckOnly = true
+	d.ApplyPlaybook = nil
+	if _, err := f.registry.CreateCustom(d); err != nil {
+		t.Fatalf("CreateCustom check-only: %v", err)
+	}
+	if _, err := f.runner.Apply(context.Background(), f.systemID, "custom.firmware"); !errors.Is(err, ErrCheckOnly) {
+		t.Fatalf("Apply on check-only: err = %v, want ErrCheckOnly", err)
+	}
+	// The ansible runner must not have been invoked — we refused
+	// before reaching the playbook write path.
+	if len(f.ansible.calls) != 0 {
+		t.Errorf("ansible was invoked for check-only apply: %+v", f.ansible.calls)
+	}
+	// Check on the same updater succeeds (proves the refusal is
+	// scoped to Apply, not the whole updater).
+	f.queue(ansible.Run{Status: ansible.RunSuccess}, nil)
+	if _, err := f.runner.Check(context.Background(), f.systemID, "custom.firmware"); err != nil {
+		t.Errorf("Check on check-only updater: %v", err)
+	}
+}
+
 func TestApplyConflictWhenLockHeld(t *testing.T) {
 	f := newRunnerFixture(t)
 	// Take the lock with a foreign run id; the runner's apply must

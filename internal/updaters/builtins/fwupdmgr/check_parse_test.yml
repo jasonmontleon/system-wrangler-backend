@@ -1,0 +1,60 @@
+- name: Test fwupdmgr check parsing
+  hosts: localhost
+  gather_facts: false
+  vars:
+    fwupd_pending_typical:
+      stdout: |
+        {"Devices": [
+          {"Name": "ThinkPad X1 Carbon System Firmware", "Version": "0.1.31",
+           "Releases": [{"Version": "0.1.39", "RemoteId": "lvfs"}]},
+          {"Name": "Samsung 980 PRO 1TB", "Version": "5B2QGXA7",
+           "Releases": [{"Version": "5B2QGXA8"}]},
+          {"Name": "Intel TPM", "Version": "1.0.0"}
+        ]}
+    fwupd_pending_empty:
+      stdout: '{"Devices": []}'
+    fwupd_pending_blank:
+      stdout: ''
+  tasks:
+    - name: Parse typical fwupdmgr get-updates --json output
+      ansible.builtin.set_fact:
+        typical_doc: "{{ (fwupd_pending_typical.stdout | trim) | default('{}', true) | from_json }}"
+    - name: Build typical name|old|new tuples
+      ansible.builtin.set_fact:
+        typical_pkgs: >-
+          {{ (typical_pkgs | default([]))
+             + [(item.Name | default('')) ~ '|'
+                ~ (item.Version | default('')) ~ '|'
+                ~ (item.Releases[0].Version | default(''))] }}
+      loop: "{{ typical_doc.Devices | default([]) | selectattr('Releases', 'defined') | list }}"
+      loop_control:
+        label: "{{ item.Name | default('(unnamed)') }}"
+    - name: Assert typical extracts upgradable devices only (skips Intel TPM with no Releases)
+      ansible.builtin.assert:
+        that:
+          - typical_pkgs == ['ThinkPad X1 Carbon System Firmware|0.1.31|0.1.39', 'Samsung 980 PRO 1TB|5B2QGXA7|5B2QGXA8']
+        fail_msg: "typical_pkgs={{ typical_pkgs }}"
+    - name: Parse empty fwupdmgr get-updates --json output
+      ansible.builtin.set_fact:
+        empty_doc: "{{ (fwupd_pending_empty.stdout | trim) | default('{}', true) | from_json }}"
+    - name: Build empty list
+      ansible.builtin.set_fact:
+        empty_pkgs: >-
+          {{ (empty_pkgs | default([]))
+             + [(item.Name | default('')) ~ '|'
+                ~ (item.Version | default('')) ~ '|'
+                ~ (item.Releases[0].Version | default(''))] }}
+      loop: "{{ empty_doc.Devices | default([]) | selectattr('Releases', 'defined') | list }}"
+    - name: Assert empty produces empty list
+      ansible.builtin.assert:
+        that:
+          - (empty_pkgs | default([])) == []
+        fail_msg: "empty_pkgs={{ empty_pkgs | default([]) }}, want []"
+    - name: Parse blank fwupdmgr stdout (rc=2 / no updates)
+      ansible.builtin.set_fact:
+        blank_doc: "{{ (fwupd_pending_blank.stdout | trim) | default('{}', true) | from_json }}"
+    - name: Assert blank decodes to an empty mapping with no Devices
+      ansible.builtin.assert:
+        that:
+          - (blank_doc.Devices | default([])) == []
+        fail_msg: "blank_doc={{ blank_doc }}, want empty Devices"

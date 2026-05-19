@@ -102,6 +102,9 @@ var builtinSoftwareUpdateCheck []byte
 //go:embed builtins/softwareupdate/apply.yml
 var builtinSoftwareUpdateApply []byte
 
+//go:embed builtins/fwupdmgr/check.yml
+var builtinFwupdmgrCheck []byte
+
 // Builtins returns every code-registered updater. Order is stable so
 // callers that don't sort still produce deterministic output. The
 // registry calls this once at startup and merges the result into
@@ -251,6 +254,15 @@ func Builtins() []Definition {
 			DetectBinary:  "softwareupdate",
 			CheckPlaybook: builtinSoftwareUpdateCheck,
 			ApplyPlaybook: builtinSoftwareUpdateApply,
+		},
+		{
+			ID:            "builtin.fwupdmgr",
+			Source:        SourceBuiltin,
+			DisplayName:   "fwupdmgr",
+			Description:   "Firmware updates via fwupd / LVFS (check-only — never auto-applied)",
+			DetectBinary:  "fwupdmgr",
+			CheckPlaybook: builtinFwupdmgrCheck,
+			CheckOnly:     true,
 		},
 	}
 }

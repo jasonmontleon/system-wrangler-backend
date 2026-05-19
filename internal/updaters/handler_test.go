@@ -128,6 +128,26 @@ func TestHandlerCheckUnknownUpdater(t *testing.T) {
 	}
 }
 
+func TestHandlerApplyRejectsCheckOnlyWith409(t *testing.T) {
+	_, srv, rf := newHandlerFixture(t)
+	d := sampleDef("custom.firmware")
+	d.CheckOnly = true
+	d.ApplyPlaybook = nil
+	if _, err := rf.registry.CreateCustom(d); err != nil {
+		t.Fatalf("CreateCustom check-only: %v", err)
+	}
+	resp := postJSON(t, srv.URL+"/api/systems/"+rf.systemID+"/updaters/custom.firmware/apply")
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("status = %d, want 409", resp.StatusCode)
+	}
+	var body map[string]string
+	_ = json.NewDecoder(resp.Body).Decode(&body)
+	if got := body["error"]; got == "" || got == "another run is in progress for this system" {
+		t.Errorf("error message did not surface check-only: %q", got)
+	}
+}
+
 func TestHandlerConflictReturns409WithHolder(t *testing.T) {
 	_, srv, rf := newHandlerFixture(t)
 	// Seed the lock so the next call collides.

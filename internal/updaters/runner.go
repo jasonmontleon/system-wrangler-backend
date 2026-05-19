@@ -245,6 +245,9 @@ func (r *Runner) runUpdater(ctx context.Context, systemID, updaterID string, kin
 	if def.IsDeleted() {
 		return RunResult{}, fmt.Errorf("%w: updater %q is deleted", ErrNotFound, updaterID)
 	}
+	if kind == RunKindApply && def.CheckOnly {
+		return RunResult{}, fmt.Errorf("%w: %s", ErrCheckOnly, updaterID)
+	}
 	body := def.CheckPlaybook
 	if kind == RunKindApply {
 		body = def.ApplyPlaybook

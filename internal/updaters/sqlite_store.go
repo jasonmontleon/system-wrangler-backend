@@ -119,7 +119,28 @@ func NewSQLiteStore(db *sql.DB) (*SQLiteStore, error) {
 	if err := addPendingPackagesColumn(db); err != nil {
 		return nil, fmt.Errorf("updaters: migrate pending_packages: %w", err)
 	}
+	if err := addCheckOnlyColumn(db); err != nil {
+		return nil, fmt.Errorf("updaters: migrate check_only: %w", err)
+	}
 	return &SQLiteStore{db: db, NewID: newUUID, Now: time.Now}, nil
+}
+
+// addCheckOnlyColumn brings databases predating the check_only flag
+// up to schema. Pragma-probe pattern; defaults to 0 (i.e. apply
+// permitted) so existing custom updaters retain their behaviour
+// without an operator intervention.
+func addCheckOnlyColumn(db *sql.DB) error {
+	row := db.QueryRow(`SELECT 1 FROM pragma_table_info('updater_definitions') WHERE name = 'check_only'`)
+	var found int
+	switch err := row.Scan(&found); {
+	case err == nil:
+		return nil
+	case errors.Is(err, sql.ErrNoRows):
+		_, err := db.Exec(`ALTER TABLE updater_definitions ADD COLUMN check_only INTEGER NOT NULL DEFAULT 0`)
+		return err
+	default:
+		return err
+	}
 }
 
 // addPendingPackagesColumn brings databases predating per-package
@@ -189,6 +210,7 @@ CREATE TABLE IF NOT EXISTS updater_definitions (
     detect_binary   TEXT NOT NULL,
     check_playbook  TEXT NOT NULL,
     apply_playbook  TEXT NOT NULL,
+    check_only      INTEGER NOT NULL DEFAULT 0,
     created_by      TEXT NOT NULL,
     created_at      INTEGER NOT NULL,
     updated_at      INTEGER NOT NULL,
@@ -250,7 +272,7 @@ CREATE TRIGGER IF NOT EXISTS updater_locks_cleanup_host
 func (s *SQLiteStore) ListCustom() ([]Definition, error) {
 	rows, err := s.db.Query(
 		`SELECT id, display_name, description, detect_binary,
-		        check_playbook, apply_playbook,
+		        check_playbook, apply_playbook, check_only,
 		        created_by, created_at, updated_at, deleted_at
 		 FROM updater_definitions
 		 WHERE deleted_at IS NULL
@@ -275,7 +297,7 @@ func (s *SQLiteStore) ListCustom() ([]Definition, error) {
 func (s *SQLiteStore) GetCustom(id string) (Definition, error) {
 	row := s.db.QueryRow(
 		`SELECT id, display_name, description, detect_binary,
-		        check_playbook, apply_playbook,
+		        check_playbook, apply_playbook, check_only,
 		        created_by, created_at, updated_at, deleted_at
 		 FROM updater_definitions
 		 WHERE id = ?`,
@@ -303,11 +325,11 @@ func (s *SQLiteStore) CreateCustom(d Definition) (Definition, error) {
 	_, err := s.db.Exec(
 		`INSERT INTO updater_definitions
 			(id, display_name, description, detect_binary,
-			 check_playbook, apply_playbook,
+			 check_playbook, apply_playbook, check_only,
 			 created_by, created_at, updated_at, deleted_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
 		d.ID, d.DisplayName, d.Description, d.DetectBinary,
-		string(d.CheckPlaybook), string(d.ApplyPlaybook),
+		string(d.CheckPlaybook), string(d.ApplyPlaybook), boolToInt(d.CheckOnly),
 		d.CreatedBy, now.UnixNano(), now.UnixNano(),
 	)
 	if err != nil {
@@ -348,10 +370,11 @@ func (s *SQLiteStore) UpdateCustom(d Definition) (Definition, error) {
 			detect_binary = ?,
 			check_playbook = ?,
 			apply_playbook = ?,
+			check_only = ?,
 			updated_at = ?
 		 WHERE id = ? AND deleted_at IS NULL`,
 		d.DisplayName, d.Description, d.DetectBinary,
-		string(d.CheckPlaybook), string(d.ApplyPlaybook),
+		string(d.CheckPlaybook), string(d.ApplyPlaybook), boolToInt(d.CheckOnly),
 		now.UnixNano(), d.ID,
 	); err != nil {
 		return Definition{}, fmt.Errorf("updaters: update custom: %w", err)
@@ -818,13 +841,14 @@ func scanDef(s scanner) (Definition, error) {
 		d         Definition
 		checkBody string
 		applyBody string
+		checkOnly int
 		createdAt int64
 		updatedAt int64
 		deletedAt sql.NullInt64
 	)
 	if err := s.Scan(
 		&d.ID, &d.DisplayName, &d.Description, &d.DetectBinary,
-		&checkBody, &applyBody,
+		&checkBody, &applyBody, &checkOnly,
 		&d.CreatedBy, &createdAt, &updatedAt, &deletedAt,
 	); err != nil {
 		return Definition{}, err
@@ -832,6 +856,7 @@ func scanDef(s scanner) (Definition, error) {
 	d.Source = SourceCustom
 	d.CheckPlaybook = []byte(checkBody)
 	d.ApplyPlaybook = []byte(applyBody)
+	d.CheckOnly = checkOnly != 0
 	d.CreatedAt = time.Unix(0, createdAt).UTC()
 	d.UpdatedAt = time.Unix(0, updatedAt).UTC()
 	if deletedAt.Valid {
@@ -839,6 +864,13 @@ func scanDef(s scanner) (Definition, error) {
 		d.DeletedAt = &t
 	}
 	return d, nil
+}
+
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 func scanRun(s scanner) (Run, error) {
