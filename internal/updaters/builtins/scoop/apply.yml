@@ -1,0 +1,23 @@
+- name: Apply pending scoop upgrades
+  hosts: all
+  gather_facts: false
+  become: false
+  tasks:
+    - name: Run scoop update *
+      ansible.windows.win_shell: |
+        [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+        scoop update * *>&1 | Out-String -Stream -Width 200
+        exit $LASTEXITCODE
+      register: scoop_result
+      changed_when: scoop_result.stdout is search("was installed successfully!", multiline=True)
+    - name: Compute upgraded count from per-package success lines
+      ansible.builtin.set_fact:
+        sw_upgraded_count: >-
+          {{ scoop_result.stdout_lines
+             | default([])
+             | select('search', "was installed successfully!")
+             | list
+             | length }}
+    - name: Surface upgrade count to the run log
+      ansible.builtin.debug:
+        msg: "SW_AFFECTED_COUNT: {{ sw_upgraded_count }}"

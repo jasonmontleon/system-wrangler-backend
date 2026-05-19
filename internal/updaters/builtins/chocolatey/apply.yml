@@ -1,0 +1,23 @@
+- name: Apply pending chocolatey upgrades
+  hosts: all
+  gather_facts: false
+  become: false
+  tasks:
+    - name: Run choco upgrade all -y
+      ansible.windows.win_shell: |
+        [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+        choco upgrade all -y --no-progress *>&1 | Out-String -Stream -Width 200
+        exit $LASTEXITCODE
+      register: choco_result
+      changed_when: choco_result.stdout is search('^The upgrade of \S+ was successful', multiline=True)
+    - name: Compute upgraded count from per-package success lines
+      ansible.builtin.set_fact:
+        sw_upgraded_count: >-
+          {{ choco_result.stdout_lines
+             | default([])
+             | select('match', '^The upgrade of \S+ was successful')
+             | list
+             | length }}
+    - name: Surface upgrade count to the run log
+      ansible.builtin.debug:
+        msg: "SW_AFFECTED_COUNT: {{ sw_upgraded_count }}"

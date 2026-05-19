@@ -111,6 +111,24 @@ var builtinSyspatchCheck []byte
 //go:embed builtins/syspatch/apply.yml
 var builtinSyspatchApply []byte
 
+//go:embed builtins/chocolatey/check.yml
+var builtinChocolateyCheck []byte
+
+//go:embed builtins/chocolatey/apply.yml
+var builtinChocolateyApply []byte
+
+//go:embed builtins/scoop/check.yml
+var builtinScoopCheck []byte
+
+//go:embed builtins/scoop/apply.yml
+var builtinScoopApply []byte
+
+//go:embed builtins/windowsupdate/check.yml
+var builtinWindowsUpdateCheck []byte
+
+//go:embed builtins/windowsupdate/apply.yml
+var builtinWindowsUpdateApply []byte
+
 // Builtins returns every code-registered updater. Order is stable so
 // callers that don't sort still produce deterministic output. The
 // registry calls this once at startup and merges the result into
@@ -278,6 +296,33 @@ func Builtins() []Definition {
 			DetectBinary:  "syspatch",
 			CheckPlaybook: builtinSyspatchCheck,
 			ApplyPlaybook: builtinSyspatchApply,
+		},
+		{
+			ID:            "builtin.chocolatey",
+			Source:        SourceBuiltin,
+			DisplayName:   "chocolatey",
+			Description:   "Windows Chocolatey package manager",
+			DetectBinary:  "choco",
+			CheckPlaybook: builtinChocolateyCheck,
+			ApplyPlaybook: builtinChocolateyApply,
+		},
+		{
+			ID:            "builtin.scoop",
+			Source:        SourceBuiltin,
+			DisplayName:   "scoop",
+			Description:   "Windows Scoop package manager (user-scoped; PATH must include scoop's shims directory)",
+			DetectBinary:  "scoop",
+			CheckPlaybook: builtinScoopCheck,
+			ApplyPlaybook: builtinScoopApply,
+		},
+		{
+			ID:            "builtin.windowsupdate",
+			Source:        SourceBuiltin,
+			DisplayName:   "windowsupdate",
+			Description:   "Windows Update via ansible.windows.win_updates (major OS patches; reboots are operator-triggered)",
+			DetectBinary:  "UsoClient",
+			CheckPlaybook: builtinWindowsUpdateCheck,
+			ApplyPlaybook: builtinWindowsUpdateApply,
 		},
 	}
 }

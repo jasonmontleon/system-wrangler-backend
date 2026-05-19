@@ -1,0 +1,39 @@
+- name: List pending scoop upgrades
+  hosts: all
+  gather_facts: false
+  become: false
+  tasks:
+    - name: Refresh scoop buckets
+      ansible.windows.win_shell: |
+        [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+        scoop update
+        exit $LASTEXITCODE
+      register: scoop_sync
+      changed_when: false
+      failed_when: scoop_sync.rc not in [0]
+    - name: Query scoop status
+      ansible.windows.win_shell: |
+        [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+        scoop status *>&1 | Out-String -Stream -Width 200
+        exit $LASTEXITCODE
+      register: scoop_pending
+      changed_when: false
+      failed_when: scoop_pending.rc not in [0]
+    - name: Extract name|old|new tuples from the scoop status table
+      ansible.builtin.set_fact:
+        sw_pending_packages: >-
+          {{ scoop_pending.stdout_lines
+             | reject('match', '^Name\s')
+             | reject('match', '^---')
+             | reject('match', '^Scoop is')
+             | reject('equalto', '')
+             | select('match', '^\S+\s+[0-9]\S*\s+[0-9]\S*')
+             | map('regex_replace', '^(\S+)\s+(\S+)\s+(\S+).*$', '\1|\2|\3')
+             | list }}
+    - name: Surface count to the run log
+      ansible.builtin.debug:
+        msg: "SW_AFFECTED_COUNT: {{ sw_pending_packages | length }}"
+    - name: Surface each pending package
+      ansible.builtin.debug:
+        msg: "SW_PENDING_PACKAGE: {{ item }}"
+      loop: "{{ sw_pending_packages }}"

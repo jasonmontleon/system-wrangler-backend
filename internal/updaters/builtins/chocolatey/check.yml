@@ -1,0 +1,28 @@
+- name: List pending chocolatey upgrades
+  hosts: all
+  gather_facts: false
+  become: false
+  tasks:
+    - name: Query choco outdated (-r = machine-readable, pipe-delimited)
+      ansible.windows.win_shell: |
+        [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+        choco outdated -r --no-progress
+        exit $LASTEXITCODE
+      register: choco_pending
+      changed_when: false
+      failed_when: choco_pending.rc not in [0, 2]
+    - name: Extract name|old|new tuples (-r prints "name|installed|available|pinned")
+      ansible.builtin.set_fact:
+        sw_pending_packages: >-
+          {{ choco_pending.stdout_lines
+             | reject('equalto', '')
+             | select('match', '^[^|]+\|[^|]+\|[^|]+\|')
+             | map('regex_replace', '^([^|]+)\|([^|]+)\|([^|]+)\|.*$', '\1|\2|\3')
+             | list }}
+    - name: Surface count to the run log
+      ansible.builtin.debug:
+        msg: "SW_AFFECTED_COUNT: {{ sw_pending_packages | length }}"
+    - name: Surface each pending package
+      ansible.builtin.debug:
+        msg: "SW_PENDING_PACKAGE: {{ item }}"
+      loop: "{{ sw_pending_packages }}"

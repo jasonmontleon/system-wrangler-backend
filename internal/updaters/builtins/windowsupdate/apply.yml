@@ -1,0 +1,13 @@
+- name: Apply pending Windows Update items
+  hosts: all
+  gather_facts: false
+  become: false
+  tasks:
+    - name: Install pending updates via the win_updates scheduled-task wrapper
+      ansible.windows.win_updates:
+        state: installed
+        reboot: false
+      register: wu_result
+    - name: Surface install count to the run log
+      ansible.builtin.debug:
+        msg: "SW_AFFECTED_COUNT: {{ wu_result.installed_update_count | default(0) }}"

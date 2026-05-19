@@ -578,6 +578,16 @@ func TestPlaybookComposerWalksRegistry(t *testing.T) {
 	if !strings.Contains(string(body), "/opt/homebrew/bin") {
 		t.Errorf("inspection playbook must augment PATH with Homebrew locations so brew/mas resolve on macOS SSH sessions:\n%s", body)
 	}
+	// Regression: a play-level `environment:` block clobbers Windows PATH
+	// when applied to ansible.windows.win_command probes — `where.exe`
+	// then can't find winget / choco / UsoClient / scoop because the
+	// Homebrew PATH replaces %PATH%. The composer must scope the
+	// augmentation per-task to the unix probes only.
+	bodyStr := string(body)
+	playPrefix := "- name: System Wrangler inspect\n  hosts: all\n  gather_facts: false\n  become: false\n  tasks:\n"
+	if !strings.HasPrefix(bodyStr, playPrefix) {
+		t.Errorf("inspection play must declare tasks directly after `become: false`, without a play-level environment that would override Windows PATH:\n%s", bodyStr[:min(len(bodyStr), 400)])
+	}
 	for _, d := range defs {
 		if !strings.Contains(string(body), "detect "+d.ID+" (unix)") {
 			t.Errorf("inspection playbook missing unix detect task for %q:\n%s", d.ID, body)

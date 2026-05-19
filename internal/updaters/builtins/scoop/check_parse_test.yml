@@ -1,0 +1,50 @@
+- name: Test scoop check parsing
+  hosts: localhost
+  gather_facts: false
+  vars:
+    scoop_pending_typical:
+      stdout_lines:
+        - "Scoop is up to date."
+        - ""
+        - "Name      Installed Version Latest Version Missing Dependencies Info"
+        - "----      ----------------- -------------- -------------------- ----"
+        - "git       2.40.0            2.41.0"
+        - "nodejs    18.10.0           18.10.1"
+        - "python    3.11.4            3.11.5"
+    scoop_pending_empty:
+      stdout_lines:
+        - "Scoop is up to date."
+        - "Everything is ok!"
+  tasks:
+    - name: Parse typical scoop status output
+      ansible.builtin.set_fact:
+        typical_pkgs: >-
+          {{ scoop_pending_typical.stdout_lines
+             | reject('match', '^Name\s')
+             | reject('match', '^---')
+             | reject('match', '^Scoop is')
+             | reject('equalto', '')
+             | select('match', '^\S+\s+[0-9]\S*\s+[0-9]\S*')
+             | map('regex_replace', '^(\S+)\s+(\S+)\s+(\S+).*$', '\1|\2|\3')
+             | list }}
+    - name: Assert typical extracts name|old|new tuples
+      ansible.builtin.assert:
+        that:
+          - typical_pkgs == ['git|2.40.0|2.41.0', 'nodejs|18.10.0|18.10.1', 'python|3.11.4|3.11.5']
+        fail_msg: "typical_pkgs={{ typical_pkgs }}"
+    - name: Parse "up to date" scoop status output
+      ansible.builtin.set_fact:
+        empty_pkgs: >-
+          {{ scoop_pending_empty.stdout_lines
+             | reject('match', '^Name\s')
+             | reject('match', '^---')
+             | reject('match', '^Scoop is')
+             | reject('equalto', '')
+             | select('match', '^\S+\s+[0-9]\S*\s+[0-9]\S*')
+             | map('regex_replace', '^(\S+)\s+(\S+)\s+(\S+).*$', '\1|\2|\3')
+             | list }}
+    - name: Assert empty produces empty list
+      ansible.builtin.assert:
+        that:
+          - empty_pkgs == []
+        fail_msg: "empty_pkgs={{ empty_pkgs }}, want []"

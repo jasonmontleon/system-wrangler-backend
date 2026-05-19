@@ -76,6 +76,9 @@ func TestBuiltinsShipExpectedSet(t *testing.T) {
 		"builtin.softwareupdate": "softwareupdate",
 		"builtin.fwupdmgr":       "fwupdmgr",
 		"builtin.syspatch":       "syspatch",
+		"builtin.chocolatey":     "choco",
+		"builtin.scoop":          "scoop",
+		"builtin.windowsupdate":  "UsoClient",
 	}
 	got := map[string]Definition{}
 	for _, d := range Builtins() {

@@ -1,0 +1,40 @@
+- name: List pending Windows Update items
+  hosts: all
+  gather_facts: false
+  become: false
+  tasks:
+    - name: Search for pending updates via the win_updates scheduled-task wrapper
+      ansible.windows.win_updates:
+        state: searched
+      register: wu_search
+    - name: Identify staged-pending-reboot updates (RebootRequired runtime property on each pending update)
+      ansible.windows.win_shell: |
+        [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+        $session = New-Object -ComObject Microsoft.Update.Session
+        $searcher = $session.CreateUpdateSearcher()
+        $pending = $searcher.Search("IsInstalled=0 and Type='Software' and IsHidden=0")
+        foreach ($u in $pending.Updates) {
+            if (-not $u.Title) { continue }
+            if ($u.RebootRequired) { Write-Output $u.Title }
+        }
+        exit 0
+      register: wu_staged
+      changed_when: false
+    - name: Build pending-update title list and the staged-pending-reboot subset
+      ansible.builtin.set_fact:
+        sw_pending_titles: >-
+          {{ (wu_search.updates | default({}) | dict2items)
+             | map(attribute='value.title')
+             | reject('equalto', '')
+             | list }}
+        sw_reboot_pending_titles: "{{ wu_staged.stdout_lines | default([]) | reject('equalto', '') | list }}"
+    - name: Surface count to the run log
+      ansible.builtin.debug:
+        msg: "SW_AFFECTED_COUNT: {{ sw_pending_titles | length }}"
+    - name: Surface each pending update (prefixed when staged-pending-reboot)
+      ansible.builtin.debug:
+        msg: >-
+          {{ 'SW_PENDING_PACKAGE: (Installed, Pending Reboot): ' ~ item
+             if item in sw_reboot_pending_titles
+             else 'SW_PENDING_PACKAGE: ' ~ item }}
+      loop: "{{ sw_pending_titles }}"

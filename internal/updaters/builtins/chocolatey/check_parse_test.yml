@@ -1,0 +1,38 @@
+- name: Test chocolatey check parsing
+  hosts: localhost
+  gather_facts: false
+  vars:
+    choco_pending_typical:
+      stdout_lines:
+        - "7zip|19.0.0.0|20.0.0.0|false"
+        - "firefox|114.0|115.0|false"
+        - "git|2.40.0|2.41.0|true"
+    choco_pending_empty:
+      stdout_lines: []
+  tasks:
+    - name: Parse typical choco outdated -r output
+      ansible.builtin.set_fact:
+        typical_pkgs: >-
+          {{ choco_pending_typical.stdout_lines
+             | reject('equalto', '')
+             | select('match', '^[^|]+\|[^|]+\|[^|]+\|')
+             | map('regex_replace', '^([^|]+)\|([^|]+)\|([^|]+)\|.*$', '\1|\2|\3')
+             | list }}
+    - name: Assert typical extracts name|old|new tuples (drops trailing pinned column)
+      ansible.builtin.assert:
+        that:
+          - typical_pkgs == ['7zip|19.0.0.0|20.0.0.0', 'firefox|114.0|115.0', 'git|2.40.0|2.41.0']
+        fail_msg: "typical_pkgs={{ typical_pkgs }}"
+    - name: Parse empty choco outdated -r output
+      ansible.builtin.set_fact:
+        empty_pkgs: >-
+          {{ choco_pending_empty.stdout_lines
+             | reject('equalto', '')
+             | select('match', '^[^|]+\|[^|]+\|[^|]+\|')
+             | map('regex_replace', '^([^|]+)\|([^|]+)\|([^|]+)\|.*$', '\1|\2|\3')
+             | list }}
+    - name: Assert empty produces empty list
+      ansible.builtin.assert:
+        that:
+          - empty_pkgs == []
+        fail_msg: "empty_pkgs={{ empty_pkgs }}, want []"
