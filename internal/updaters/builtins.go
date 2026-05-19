@@ -105,6 +105,12 @@ var builtinSoftwareUpdateApply []byte
 //go:embed builtins/fwupdmgr/check.yml
 var builtinFwupdmgrCheck []byte
 
+//go:embed builtins/syspatch/check.yml
+var builtinSyspatchCheck []byte
+
+//go:embed builtins/syspatch/apply.yml
+var builtinSyspatchApply []byte
+
 // Builtins returns every code-registered updater. Order is stable so
 // callers that don't sort still produce deterministic output. The
 // registry calls this once at startup and merges the result into
@@ -263,6 +269,15 @@ func Builtins() []Definition {
 			DetectBinary:  "fwupdmgr",
 			CheckPlaybook: builtinFwupdmgrCheck,
 			CheckOnly:     true,
+		},
+		{
+			ID:            "builtin.syspatch",
+			Source:        SourceBuiltin,
+			DisplayName:   "syspatch",
+			Description:   "OpenBSD base / kernel security patches (reboot required for kernel-tier patches)",
+			DetectBinary:  "syspatch",
+			CheckPlaybook: builtinSyspatchCheck,
+			ApplyPlaybook: builtinSyspatchApply,
 		},
 	}
 }

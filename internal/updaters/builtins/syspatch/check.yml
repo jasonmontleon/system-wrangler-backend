@@ -1,0 +1,23 @@
+- name: List pending OpenBSD syspatch updates
+  hosts: all
+  gather_facts: false
+  become: true
+  tasks:
+    - name: Query syspatch for missing patches  # noqa: command-instead-of-module
+      ansible.builtin.command:
+        cmd: syspatch -c
+      register: syspatch_pending
+      changed_when: false
+    - name: Extract pending patch names (syspatch -c prints one NNN_name per line)
+      ansible.builtin.set_fact:
+        sw_pending_packages: >-
+          {{ syspatch_pending.stdout_lines
+             | select('match', '^[0-9]+_\S+')
+             | list }}
+    - name: Surface count to the run log
+      ansible.builtin.debug:
+        msg: "SW_AFFECTED_COUNT: {{ sw_pending_packages | length }}"
+    - name: Surface each pending patch
+      ansible.builtin.debug:
+        msg: "SW_PENDING_PACKAGE: {{ item }}"
+      loop: "{{ sw_pending_packages }}"

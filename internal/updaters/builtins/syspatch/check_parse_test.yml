@@ -1,0 +1,35 @@
+- name: Test syspatch check parsing
+  hosts: localhost
+  gather_facts: false
+  vars:
+    syspatch_pending_typical:
+      stdout_lines:
+        - "001_libssl"
+        - "002_dhcpd"
+        - "003_smtpd"
+        - "004_kernel"
+    syspatch_pending_empty:
+      stdout_lines: []
+  tasks:
+    - name: Parse typical syspatch -c output
+      ansible.builtin.set_fact:
+        typical_pkgs: >-
+          {{ syspatch_pending_typical.stdout_lines
+             | select('match', '^[0-9]+_\S+')
+             | list }}
+    - name: Assert typical extracts bare patch names
+      ansible.builtin.assert:
+        that:
+          - typical_pkgs == ['001_libssl', '002_dhcpd', '003_smtpd', '004_kernel']
+        fail_msg: "typical_pkgs={{ typical_pkgs }}"
+    - name: Parse empty syspatch -c output
+      ansible.builtin.set_fact:
+        empty_pkgs: >-
+          {{ syspatch_pending_empty.stdout_lines
+             | select('match', '^[0-9]+_\S+')
+             | list }}
+    - name: Assert empty produces empty list
+      ansible.builtin.assert:
+        that:
+          - empty_pkgs == []
+        fail_msg: "empty_pkgs={{ empty_pkgs }}, want []"

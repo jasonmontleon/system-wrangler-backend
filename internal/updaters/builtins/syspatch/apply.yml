@@ -1,0 +1,21 @@
+- name: Apply pending OpenBSD syspatch updates
+  hosts: all
+  gather_facts: false
+  become: true
+  tasks:
+    - name: Run syspatch  # noqa: command-instead-of-module
+      ansible.builtin.command:
+        cmd: syspatch
+      register: syspatch_result
+      changed_when: syspatch_result.stdout is search('^Installing patch ', multiline=True)
+    - name: Compute applied patch count from progress markers
+      ansible.builtin.set_fact:
+        sw_upgraded_count: >-
+          {{ syspatch_result.stdout_lines
+             | default([])
+             | select('match', '^Installing patch ')
+             | list
+             | length }}
+    - name: Surface applied count to the run log
+      ansible.builtin.debug:
+        msg: "SW_AFFECTED_COUNT: {{ sw_upgraded_count }}"
