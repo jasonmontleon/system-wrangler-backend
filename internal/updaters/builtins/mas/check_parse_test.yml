@@ -1,0 +1,36 @@
+- name: Test mas check parsing
+  hosts: localhost
+  gather_facts: false
+  vars:
+    mas_pending_typical:
+      stdout_lines:
+        - "497799835 Xcode (10.2.1) -> (10.3)"
+        - "682658836 GarageBand (10.4.4) -> (10.4.5)"
+        - "1616831348 Affinity Photo 2 (2.0.4) -> (2.0.5)"
+    mas_pending_empty:
+      stdout_lines: []
+  tasks:
+    - name: Parse typical mas outdated output
+      ansible.builtin.set_fact:
+        typical_pkgs: >-
+          {{ mas_pending_typical.stdout_lines
+             | select('match', '^[0-9]+\s+.+\s+\([^)]+\)\s+->\s+\([^)]+\)')
+             | map('regex_replace', '^[0-9]+\s+(.+?)\s+\(([^)]+)\)\s+->\s+\(([^)]+)\).*$', '\1|\2|\3')
+             | list }}
+    - name: Assert typical extracts name|old|new tuples (display name may contain spaces)
+      ansible.builtin.assert:
+        that:
+          - typical_pkgs == ['Xcode|10.2.1|10.3', 'GarageBand|10.4.4|10.4.5', 'Affinity Photo 2|2.0.4|2.0.5']
+        fail_msg: "typical_pkgs={{ typical_pkgs }}"
+    - name: Parse empty mas outdated output
+      ansible.builtin.set_fact:
+        empty_pkgs: >-
+          {{ mas_pending_empty.stdout_lines
+             | select('match', '^[0-9]+\s+.+\s+\([^)]+\)\s+->\s+\([^)]+\)')
+             | map('regex_replace', '^[0-9]+\s+(.+?)\s+\(([^)]+)\)\s+->\s+\(([^)]+)\).*$', '\1|\2|\3')
+             | list }}
+    - name: Assert empty produces empty list
+      ansible.builtin.assert:
+        that:
+          - empty_pkgs == []
+        fail_msg: "empty_pkgs={{ empty_pkgs }}, want []"

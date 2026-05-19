@@ -1,0 +1,26 @@
+- name: List pending Mac App Store updates
+  hosts: all
+  gather_facts: false
+  become: false
+  environment:
+    PATH: '/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin'
+  tasks:
+    - name: Query mas-cli for outdated App Store apps  # noqa: command-instead-of-module
+      ansible.builtin.command:
+        cmd: mas outdated
+      register: mas_pending
+      changed_when: false
+    - name: Extract name|old|new tuples (mas prints "id Name (cur) -> (new)")
+      ansible.builtin.set_fact:
+        sw_pending_packages: >-
+          {{ mas_pending.stdout_lines
+             | select('match', '^[0-9]+\s+.+\s+\([^)]+\)\s+->\s+\([^)]+\)')
+             | map('regex_replace', '^[0-9]+\s+(.+?)\s+\(([^)]+)\)\s+->\s+\(([^)]+)\).*$', '\1|\2|\3')
+             | list }}
+    - name: Surface count to the run log
+      ansible.builtin.debug:
+        msg: "SW_AFFECTED_COUNT: {{ sw_pending_packages | length }}"
+    - name: Surface each pending package
+      ansible.builtin.debug:
+        msg: "SW_PENDING_PACKAGE: {{ item }}"
+      loop: "{{ sw_pending_packages }}"

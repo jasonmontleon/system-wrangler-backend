@@ -60,6 +60,8 @@ func inspectionPlaybook(defs []Definition) []byte {
 	b.WriteString("  hosts: all\n")
 	b.WriteString("  gather_facts: false\n")
 	b.WriteString("  become: false\n")
+	b.WriteString("  environment:\n")
+	b.WriteString("    PATH: '/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin'\n")
 	b.WriteString("  tasks:\n")
 	for _, d := range defs {
 		v := varName(d.ID)

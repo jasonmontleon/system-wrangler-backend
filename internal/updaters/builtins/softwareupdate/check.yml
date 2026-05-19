@@ -1,0 +1,24 @@
+- name: List pending macOS Software Update items
+  hosts: all
+  gather_facts: false
+  become: true
+  tasks:
+    - name: Query softwareupdate for available updates  # noqa: command-instead-of-module
+      ansible.builtin.command:
+        cmd: softwareupdate -l
+      register: softwareupdate_pending
+      changed_when: false
+    - name: Extract name||new tuples from Title/Version detail lines
+      ansible.builtin.set_fact:
+        sw_pending_packages: >-
+          {{ softwareupdate_pending.stdout_lines
+             | select('match', '^\s+Title:\s+.+,\s+Version:\s+\S+,')
+             | map('regex_replace', '^\s+Title:\s+(.+?),\s+Version:\s+([^,]+),.*$', '\1||\2')
+             | list }}
+    - name: Surface count to the run log
+      ansible.builtin.debug:
+        msg: "SW_AFFECTED_COUNT: {{ sw_pending_packages | length }}"
+    - name: Surface each pending update
+      ansible.builtin.debug:
+        msg: "SW_PENDING_PACKAGE: {{ item }}"
+      loop: "{{ sw_pending_packages }}"

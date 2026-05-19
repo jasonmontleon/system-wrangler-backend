@@ -1,0 +1,23 @@
+- name: Apply pending Homebrew updates
+  hosts: all
+  gather_facts: false
+  become: false
+  environment:
+    PATH: '/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin'
+  tasks:
+    - name: Run brew upgrade  # noqa: command-instead-of-module
+      ansible.builtin.command:
+        cmd: brew upgrade
+      register: brew_result
+      changed_when: brew_result.stdout is search('^==> Upgrading ', multiline=True)
+    - name: Compute upgraded package count from progress markers
+      ansible.builtin.set_fact:
+        sw_upgraded_count: >-
+          {{ brew_result.stdout_lines
+             | default([])
+             | select('match', '^==> Upgrading ')
+             | list
+             | length }}
+    - name: Surface upgrade count to the run log
+      ansible.builtin.debug:
+        msg: "SW_AFFECTED_COUNT: {{ sw_upgraded_count }}"

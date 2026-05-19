@@ -1,0 +1,31 @@
+- name: List pending Homebrew updates
+  hosts: all
+  gather_facts: false
+  become: false
+  environment:
+    PATH: '/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin'
+  tasks:
+    - name: Refresh Homebrew taps  # noqa: command-instead-of-module
+      ansible.builtin.command:
+        cmd: brew update
+      register: brew_update
+      changed_when: false
+    - name: Query Homebrew for outdated packages  # noqa: command-instead-of-module
+      ansible.builtin.command:
+        cmd: brew outdated --verbose
+      register: brew_pending
+      changed_when: false
+    - name: Extract name|old|new tuples (brew outdated --verbose prints "name (cur) < new")
+      ansible.builtin.set_fact:
+        sw_pending_packages: >-
+          {{ brew_pending.stdout_lines
+             | select('match', '^\S+\s+\([^)]+\)\s+<\s+\S+')
+             | map('regex_replace', '^(\S+)\s+\(([^)]+)\)\s+<\s+(\S+).*$', '\1|\2|\3')
+             | list }}
+    - name: Surface count to the run log
+      ansible.builtin.debug:
+        msg: "SW_AFFECTED_COUNT: {{ sw_pending_packages | length }}"
+    - name: Surface each pending package
+      ansible.builtin.debug:
+        msg: "SW_PENDING_PACKAGE: {{ item }}"
+      loop: "{{ sw_pending_packages }}"

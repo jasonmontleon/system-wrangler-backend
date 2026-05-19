@@ -58,19 +58,22 @@ func TestRegistryGetBuiltin(t *testing.T) {
 
 func TestBuiltinsShipExpectedSet(t *testing.T) {
 	want := map[string]string{
-		"builtin.dnf":     "dnf",
-		"builtin.apt":     "apt",
-		"builtin.snap":    "snap",
-		"builtin.flatpak": "flatpak",
-		"builtin.pacman":  "pacman",
-		"builtin.zypper":  "zypper",
-		"builtin.apk":     "apk",
-		"builtin.pkg":     "pkg",
-		"builtin.pkg_add": "pkg_add",
-		"builtin.pkgin":   "pkgin",
-		"builtin.winget":  "winget",
-		"builtin.xbps":    "xbps-install",
-		"builtin.eopkg":   "eopkg",
+		"builtin.dnf":            "dnf",
+		"builtin.apt":            "apt",
+		"builtin.snap":           "snap",
+		"builtin.flatpak":        "flatpak",
+		"builtin.pacman":         "pacman",
+		"builtin.zypper":         "zypper",
+		"builtin.apk":            "apk",
+		"builtin.pkg":            "pkg",
+		"builtin.pkg_add":        "pkg_add",
+		"builtin.pkgin":          "pkgin",
+		"builtin.winget":         "winget",
+		"builtin.xbps":           "xbps-install",
+		"builtin.eopkg":          "eopkg",
+		"builtin.brew":           "brew",
+		"builtin.mas":            "mas",
+		"builtin.softwareupdate": "softwareupdate",
 	}
 	got := map[string]Definition{}
 	for _, d := range Builtins() {

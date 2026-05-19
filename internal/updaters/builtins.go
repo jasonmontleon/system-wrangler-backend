@@ -84,6 +84,24 @@ var builtinEopkgCheck []byte
 //go:embed builtins/eopkg/apply.yml
 var builtinEopkgApply []byte
 
+//go:embed builtins/brew/check.yml
+var builtinBrewCheck []byte
+
+//go:embed builtins/brew/apply.yml
+var builtinBrewApply []byte
+
+//go:embed builtins/mas/check.yml
+var builtinMasCheck []byte
+
+//go:embed builtins/mas/apply.yml
+var builtinMasApply []byte
+
+//go:embed builtins/softwareupdate/check.yml
+var builtinSoftwareUpdateCheck []byte
+
+//go:embed builtins/softwareupdate/apply.yml
+var builtinSoftwareUpdateApply []byte
+
 // Builtins returns every code-registered updater. Order is stable so
 // callers that don't sort still produce deterministic output. The
 // registry calls this once at startup and merges the result into
@@ -206,6 +224,33 @@ func Builtins() []Definition {
 			DetectBinary:  "eopkg",
 			CheckPlaybook: builtinEopkgCheck,
 			ApplyPlaybook: builtinEopkgApply,
+		},
+		{
+			ID:            "builtin.brew",
+			Source:        SourceBuiltin,
+			DisplayName:   "brew",
+			Description:   "macOS Homebrew package manager (runs unprivileged)",
+			DetectBinary:  "brew",
+			CheckPlaybook: builtinBrewCheck,
+			ApplyPlaybook: builtinBrewApply,
+		},
+		{
+			ID:            "builtin.mas",
+			Source:        SourceBuiltin,
+			DisplayName:   "mas",
+			Description:   "macOS Mac App Store via mas-cli (requires signed-in App Store session)",
+			DetectBinary:  "mas",
+			CheckPlaybook: builtinMasCheck,
+			ApplyPlaybook: builtinMasApply,
+		},
+		{
+			ID:            "builtin.softwareupdate",
+			Source:        SourceBuiltin,
+			DisplayName:   "softwareupdate",
+			Description:   "macOS system software updates (major OS patches require reboot)",
+			DetectBinary:  "softwareupdate",
+			CheckPlaybook: builtinSoftwareUpdateCheck,
+			ApplyPlaybook: builtinSoftwareUpdateApply,
 		},
 	}
 }

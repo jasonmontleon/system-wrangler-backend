@@ -1,0 +1,46 @@
+- name: Test softwareupdate check parsing
+  hosts: localhost
+  gather_facts: false
+  vars:
+    softwareupdate_pending_typical:
+      stdout_lines:
+        - "Software Update Tool"
+        - ""
+        - "Finding available software"
+        - ""
+        - "Software Update found the following new or updated software:"
+        - "* Label: Safari17.0-17.0"
+        - "	Title: Safari, Version: 17.0, Size: 100000K, Recommended: YES, Action: restart, "
+        - "* Label: macOSBigSur1165-11.6.5"
+        - "	Title: macOS Big Sur 11.6.5, Version: 11.6.5, Size: 12345678K, Recommended: YES, Action: restart,"
+    softwareupdate_pending_empty:
+      stdout_lines:
+        - "Software Update Tool"
+        - ""
+        - "Finding available software"
+        - "No new software available."
+  tasks:
+    - name: Parse typical softwareupdate -l output
+      ansible.builtin.set_fact:
+        typical_pkgs: >-
+          {{ softwareupdate_pending_typical.stdout_lines
+             | select('match', '^\s+Title:\s+.+,\s+Version:\s+\S+,')
+             | map('regex_replace', '^\s+Title:\s+(.+?),\s+Version:\s+([^,]+),.*$', '\1||\2')
+             | list }}
+    - name: Assert typical extracts title||version tuples
+      ansible.builtin.assert:
+        that:
+          - typical_pkgs == ['Safari||17.0', 'macOS Big Sur 11.6.5||11.6.5']
+        fail_msg: "typical_pkgs={{ typical_pkgs }}"
+    - name: Parse empty softwareupdate -l output
+      ansible.builtin.set_fact:
+        empty_pkgs: >-
+          {{ softwareupdate_pending_empty.stdout_lines
+             | select('match', '^\s+Title:\s+.+,\s+Version:\s+\S+,')
+             | map('regex_replace', '^\s+Title:\s+(.+?),\s+Version:\s+([^,]+),.*$', '\1||\2')
+             | list }}
+    - name: Assert empty produces empty list
+      ansible.builtin.assert:
+        that:
+          - empty_pkgs == []
+        fail_msg: "empty_pkgs={{ empty_pkgs }}, want []"

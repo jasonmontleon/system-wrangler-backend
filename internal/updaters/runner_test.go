@@ -551,6 +551,9 @@ func TestPlaybookComposerWalksRegistry(t *testing.T) {
 	if !strings.Contains(string(body), "sw_is_windows | default(false) | bool") {
 		t.Errorf("inspection playbook must gate windows probes on the sw_is_windows inventory var:\n%s", body)
 	}
+	if !strings.Contains(string(body), "/opt/homebrew/bin") {
+		t.Errorf("inspection playbook must augment PATH with Homebrew locations so brew/mas resolve on macOS SSH sessions:\n%s", body)
+	}
 	for _, d := range defs {
 		if !strings.Contains(string(body), "detect "+d.ID+" (unix)") {
 			t.Errorf("inspection playbook missing unix detect task for %q:\n%s", d.ID, body)
