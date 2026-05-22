@@ -72,6 +72,11 @@ type System struct {
 	// the PowerShell-on-OpenSSH path (`ansible_shell_type=powershell` in
 	// inventory, `where.exe` probes, `-m ansible.windows.win_ping`).
 	IsWindows bool `json:"isWindows,omitempty"`
+	// Running is true when an updater (inspect / check / apply) is
+	// currently in flight against this system. Seeded by the
+	// systems-stats hook from updater_run_locks so the SPA can keep
+	// a row's spinner lit across page navigation.
+	Running bool `json:"running,omitempty"`
 }
 
 // PendingPackage is the systems-package mirror of the updaters
@@ -94,6 +99,7 @@ type Stats struct {
 	PendingPackages []PendingPackage
 	LastRunFailed   bool
 	LastRunReason   string
+	Running         bool
 }
 
 // SystemInput is the user-supplied subset of a System accepted on create.

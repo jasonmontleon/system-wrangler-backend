@@ -227,6 +227,11 @@ type SystemStats struct {
 	// Attention" line on the detail page — short and stable, like
 	// "apply exit 2".
 	LastRunReason string
+	// Running is true when an updater run currently holds the
+	// per-system advisory lock. Lets the SPA paint a spinner on
+	// rows whose work was kicked off from another tab/page, and
+	// keep it lit across navigation.
+	Running bool
 }
 
 // MaxLogTailBytes is the cap on Run.LogTail at write time. ~12 KB

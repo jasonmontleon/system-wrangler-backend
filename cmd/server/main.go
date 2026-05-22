@@ -293,6 +293,7 @@ func populateMux(mux router.Mux, db *sql.DB, store systems.Store, groupStore gro
 				PendingPackages: pkgs,
 				LastRunFailed:   s.LastRunFailed,
 				LastRunReason:   s.LastRunReason,
+				Running:         s.Running,
 			}
 		}
 		return out, nil
@@ -445,6 +446,9 @@ func populateMux(mux router.Mux, db *sql.DB, store systems.Store, groupStore gro
 				Limit: func() int {
 					return settings.UpdateConcurrencyLimit(settingsStore)
 				},
+			},
+			Notify: func(t string) {
+				hub.Broadcast(events.Event{Type: t})
 			},
 		}
 		updaterHandler := &updaters.Handler{

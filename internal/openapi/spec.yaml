@@ -1891,6 +1891,9 @@ components:
         isWindows:
           type: boolean
           description: Operator-declared platform flag. True flips the Ansible inventory to `ansible_shell_type=powershell` and the Ping module to `ansible.windows.win_ping`. Absent / false means the host is treated as Unix-like.
+        running:
+          type: boolean
+          description: True when an updater (inspect / check / apply) is currently in flight against this system. Derived from `updater_run_locks`; lets the SPA keep a row's spinner lit even when the work was started from another tab and persists the indicator across page navigation.
 
     SystemInput:
       type: object

@@ -103,6 +103,16 @@ func (f *runnerFixture) queue(resp ansible.Run, err error) {
 	f.ansible.responses = append(f.ansible.responses, fakeAnsibleResp{run: resp, err: err})
 }
 
+// captureNotify swaps in a recording Notify callback and returns a
+// snapshot of the events emitted during the surrounding action. Used
+// by SSE-emission tests so each case can assert against an ordered
+// slice instead of reading back through the audit store.
+func (f *runnerFixture) captureNotify() *[]string {
+	var got []string
+	f.runner.Notify = func(t string) { got = append(got, t) }
+	return &got
+}
+
 func TestInspectRecordsDetectedAndEmitsAudit(t *testing.T) {
 	f := newRunnerFixture(t)
 	f.queue(ansible.Run{
@@ -459,6 +469,81 @@ func TestApplyEmitsAffectedAndLogSha(t *testing.T) {
 	}
 	if _, ok := d["parent_id"].(string); !ok {
 		t.Errorf("parent_id missing: %v", d)
+	}
+}
+
+// TestRunnerNotifiesOnSuccessfulCheck pins the Phase-1 SSE contract:
+// a successful Check emits updater.run.started + systems.changed at
+// the lock-acquired boundary and updater.run.completed +
+// systems.changed at the lock-released boundary, in that order. The
+// SPA's existing systems.changed listener already triggers a
+// debounced refetch, so this single emit set drives both the
+// running-flag flip and the post-completion icon update.
+func TestRunnerNotifiesOnSuccessfulCheck(t *testing.T) {
+	f := newRunnerFixture(t)
+	got := f.captureNotify()
+	f.queue(ansible.Run{Status: ansible.RunSuccess, ExitCode: 0}, nil)
+	if _, err := f.runner.Check(context.Background(), f.systemID, "builtin.dnf"); err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+	want := []string{"updater.run.started", "systems.changed", "updater.run.completed", "systems.changed"}
+	if len(*got) != len(want) {
+		t.Fatalf("notify events = %v, want %v", *got, want)
+	}
+	for i, w := range want {
+		if (*got)[i] != w {
+			t.Errorf("notify[%d] = %q, want %q", i, (*got)[i], w)
+		}
+	}
+}
+
+// TestRunnerNotifiesOnApplyFailure verifies the completed/closing
+// pair still fires even when ansible reports a structural failure —
+// the SPA must drop the spinner regardless of run outcome.
+func TestRunnerNotifiesOnApplyFailure(t *testing.T) {
+	f := newRunnerFixture(t)
+	got := f.captureNotify()
+	f.queue(ansible.Run{Status: ansible.RunFailure, ExitCode: 2}, errors.New("exec died"))
+	_, err := f.runner.Apply(context.Background(), f.systemID, "builtin.dnf")
+	if err == nil {
+		t.Fatalf("Apply: expected error, got nil")
+	}
+	want := []string{"updater.run.started", "systems.changed", "updater.run.completed", "systems.changed"}
+	if len(*got) != len(want) {
+		t.Fatalf("notify events = %v, want %v", *got, want)
+	}
+}
+
+// TestRunnerNotifiesOnInspect mirrors the Check assertion for the
+// Inspect path so both lock-holding entrypoints stay covered.
+func TestRunnerNotifiesOnInspect(t *testing.T) {
+	f := newRunnerFixture(t)
+	got := f.captureNotify()
+	f.queue(ansible.Run{Status: ansible.RunSuccess, ExitCode: 0}, nil)
+	if _, err := f.runner.Inspect(context.Background(), f.systemID); err != nil {
+		t.Fatalf("Inspect: %v", err)
+	}
+	want := []string{"updater.run.started", "systems.changed", "updater.run.completed", "systems.changed"}
+	if len(*got) != len(want) {
+		t.Fatalf("notify events = %v, want %v", *got, want)
+	}
+}
+
+// TestRunnerSilentOnLockConflict guards the no-emit contract for
+// runs that never acquire the lock: emitting started/completed there
+// would race against the live owner's events and flicker the SPA
+// spinner off mid-run.
+func TestRunnerSilentOnLockConflict(t *testing.T) {
+	f := newRunnerFixture(t)
+	if err := f.store.AcquireLock(f.systemID, "outside", time.Now()); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	got := f.captureNotify()
+	if _, err := f.runner.Check(context.Background(), f.systemID, "builtin.dnf"); !errors.Is(err, ErrConflict) {
+		t.Fatalf("err = %v, want ErrConflict", err)
+	}
+	if len(*got) != 0 {
+		t.Errorf("notify events on conflict = %v, want none", *got)
 	}
 }
 

@@ -49,6 +49,21 @@ type Runner struct {
 	// across the fleet. A nil Gate disables the cap entirely; tests
 	// that don't exercise queuing leave it unset.
 	Gate *Gate
+	// Notify, if set, is called with an event type string at the
+	// lifecycle boundaries of every run that successfully acquires
+	// the per-system lock: "updater.run.started" + "systems.changed"
+	// on entry, "updater.run.completed" + "systems.changed" on exit.
+	// Wired in main.go to the events.Hub so SPA subscribers see
+	// in-flight state change without polling. The runner package
+	// stays free of an events import by taking a plain callback.
+	Notify func(eventType string)
+}
+
+func (r *Runner) notify(eventType string) {
+	if r.Notify == nil {
+		return
+	}
+	r.Notify(eventType)
 }
 
 // InspectResult is the outcome of one inspect call. Detected lists
@@ -121,7 +136,13 @@ func (r *Runner) Inspect(ctx context.Context, systemID string) (InspectResult, e
 		r.finishRun(run, now, -1, 0, "acquire lock failed: "+err.Error())
 		return InspectResult{Run: run, Status: ansible.RunFailure}, err
 	}
-	defer func() { _ = r.Store.ReleaseLock(systemID, runID) }()
+	r.notify("updater.run.started")
+	r.notify("systems.changed")
+	defer func() {
+		_ = r.Store.ReleaseLock(systemID, runID)
+		r.notify("updater.run.completed")
+		r.notify("systems.changed")
+	}()
 
 	r.logStart(ctx, audit.Event{
 		ID:         runID,
@@ -278,7 +299,13 @@ func (r *Runner) runUpdater(ctx context.Context, systemID, updaterID string, kin
 		}
 		return RunResult{Run: run, UpdaterID: updaterID, Kind: kind, Status: ansible.RunFailure, Reason: "conflict"}, err
 	}
-	defer func() { _ = r.Store.ReleaseLock(systemID, runID) }()
+	r.notify("updater.run.started")
+	r.notify("systems.changed")
+	defer func() {
+		_ = r.Store.ReleaseLock(systemID, runID)
+		r.notify("updater.run.completed")
+		r.notify("systems.changed")
+	}()
 
 	startAction, completeAction := auditActions(kind)
 	r.logStart(ctx, audit.Event{

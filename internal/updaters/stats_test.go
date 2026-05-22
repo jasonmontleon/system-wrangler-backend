@@ -318,6 +318,43 @@ func TestAddAffectedCountColumnAddsToLegacyDB(t *testing.T) {
 	}
 }
 
+func TestSystemStatsAllReportsRunningFromLockTable(t *testing.T) {
+	// Phase 1 of SSE: SystemStatsAll surfaces Running=true for any
+	// system whose row exists in updater_run_locks. This is what the
+	// SPA reads to keep a row's spinner lit after page navigation.
+	store := newStore(t)
+	now := time.Now().UTC()
+	if err := store.AcquireLock("sys-running", "run-A", now); err != nil {
+		t.Fatalf("AcquireLock: %v", err)
+	}
+	if err := store.InsertRun(Run{
+		ID: "r-other", SystemID: "sys-idle", UpdaterID: "builtin.dnf",
+		Kind: RunKindCheck, StartedAt: now,
+	}); err != nil {
+		t.Fatalf("insert idle: %v", err)
+	}
+	stats, err := store.SystemStatsAll()
+	if err != nil {
+		t.Fatalf("SystemStatsAll: %v", err)
+	}
+	if !stats["sys-running"].Running {
+		t.Errorf("sys-running: Running = false, want true")
+	}
+	if stats["sys-idle"].Running {
+		t.Errorf("sys-idle: Running = true, want false (no lock held)")
+	}
+	if err := store.ReleaseLock("sys-running", "run-A"); err != nil {
+		t.Fatalf("ReleaseLock: %v", err)
+	}
+	stats, err = store.SystemStatsAll()
+	if err != nil {
+		t.Fatalf("SystemStatsAll after release: %v", err)
+	}
+	if stats["sys-running"].Running {
+		t.Errorf("sys-running: Running = true after release, want false")
+	}
+}
+
 func TestSystemStatsAllAffectedCountFromRunner(t *testing.T) {
 	// End-to-end sanity for the runner→store→stats path: a Check
 	// that returns SW_AFFECTED_COUNT: N must produce stats showing

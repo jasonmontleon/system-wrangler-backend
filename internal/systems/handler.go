@@ -138,6 +138,7 @@ func (h *Handler) enrichStats(rows []System) {
 		rows[i].PendingPackages = s.PendingPackages
 		rows[i].LastRunFailed = s.LastRunFailed
 		rows[i].LastRunReason = s.LastRunReason
+		rows[i].Running = s.Running
 	}
 }
 

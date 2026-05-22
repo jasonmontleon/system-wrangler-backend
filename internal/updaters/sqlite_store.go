@@ -751,7 +751,29 @@ func (s *SQLiteStore) SystemStatsAll() (map[string]SystemStats, error) {
 			out[sysID] = stats
 		}
 	}
-	return out, lastRunRows.Err()
+	if err := lastRunRows.Err(); err != nil {
+		return nil, fmt.Errorf("updaters: stats last-run rows: %w", err)
+	}
+
+	// Any system_id present in updater_run_locks has an in-flight
+	// run. Insert into the map if missing so a brand-new system on
+	// its first Inspect (no prior runs, no row in `out` yet) still
+	// surfaces Running=true.
+	lockRows, err := s.db.Query(`SELECT DISTINCT system_id FROM updater_run_locks`)
+	if err != nil {
+		return nil, fmt.Errorf("updaters: stats running: %w", err)
+	}
+	defer func() { _ = lockRows.Close() }()
+	for lockRows.Next() {
+		var sysID string
+		if err := lockRows.Scan(&sysID); err != nil {
+			return nil, fmt.Errorf("updaters: stats scan running: %w", err)
+		}
+		stats := out[sysID]
+		stats.Running = true
+		out[sysID] = stats
+	}
+	return out, lockRows.Err()
 }
 
 // ListRuns satisfies Store.ListRuns.

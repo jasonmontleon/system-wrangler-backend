@@ -63,6 +63,47 @@ func TestListEnrichesWithSystemStats(t *testing.T) {
 	}
 }
 
+// TestListEnrichesWithRunningFlag pins the Phase-1 SSE contract on
+// the systems handler side: a Stats.Running=true producer value must
+// land on the serialized System as `running: true`, which is what
+// the SPA reads to keep a row's spinner lit across navigation.
+func TestListEnrichesWithRunningFlag(t *testing.T) {
+	store := newTestStore()
+	busy, _ := store.Create(SystemInput{Name: "busy", Hostname: "busy.example"})
+	idle, _ := store.Create(SystemInput{Name: "idle", Hostname: "idle.example"})
+	h := NewHandler(store)
+	h.SystemStats = func() (map[string]Stats, error) {
+		return map[string]Stats{
+			busy.ID: {Running: true},
+			idle.ID: {Running: false},
+		}, nil
+	}
+	mux := http.NewServeMux()
+	h.Register(mux, nil)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/api/systems")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	var got []System
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	byID := map[string]System{}
+	for _, s := range got {
+		byID[s.ID] = s
+	}
+	if !byID[busy.ID].Running {
+		t.Errorf("busy.Running = false, want true")
+	}
+	if byID[idle.ID].Running {
+		t.Errorf("idle.Running = true, want false")
+	}
+}
+
 // TestListSystemStatsFailureLogsAndContinues asserts the API does
 // not refuse to serve systems just because the stats producer
 // errored — the rows simply lack the enrichment.
