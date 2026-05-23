@@ -15,6 +15,7 @@ import (
 	"system-wrangler-backend/internal/credentials"
 	"system-wrangler-backend/internal/database"
 	"system-wrangler-backend/internal/events"
+	"system-wrangler-backend/internal/exporters"
 	"system-wrangler-backend/internal/groups"
 	"system-wrangler-backend/internal/hostkeys"
 	"system-wrangler-backend/internal/openapi"
@@ -42,11 +43,14 @@ func TestOpenAPISpecMatchesMux(t *testing.T) {
 	specified := parseSpecRoutes(t, openapi.Spec)
 
 	// Routes that are intentionally not part of the documented API
-	// surface: SPA file server and the /api/* JSON-404 catchall. They
-	// are mounted by populateMux but are not endpoints.
+	// surface: SPA file server, the /api/* JSON-404 catchall, and the
+	// /internal/scrape endpoint Prometheus uses (gated by shared
+	// secret, off the user-facing surface). All are mounted by
+	// populateMux but are not endpoints.
 	notInSpec := map[string]bool{
 		"GET /":     true,
 		"GET /api/": true,
+		"GET /internal/scrape/{system}/{exporter}": true,
 	}
 
 	for got := range registered {
@@ -113,6 +117,10 @@ func recordRoutes(t *testing.T) map[string]bool {
 	if err != nil {
 		t.Fatalf("updaters store: %v", err)
 	}
+	exporterStore, err := exporters.NewSQLiteStore(db)
+	if err != nil {
+		t.Fatalf("exporters store: %v", err)
+	}
 	settingsStore, err := settings.NewSQLiteStore(db)
 	if err != nil {
 		t.Fatalf("settings store: %v", err)
@@ -131,7 +139,7 @@ func recordRoutes(t *testing.T) map[string]bool {
 	}
 
 	rec := &recordingMux{patterns: map[string]bool{}}
-	populateMux(rec, db, invStore, groupStore, authStore, svc, secret, vault, hub, auditStore, rbacStore, credStore, hostKeyStore, updaterStore, settingsStore, nil, nil)
+	populateMux(rec, db, invStore, groupStore, authStore, svc, secret, vault, hub, auditStore, rbacStore, credStore, hostKeyStore, updaterStore, exporterStore, settingsStore, nil, nil)
 	return rec.patterns
 }
 

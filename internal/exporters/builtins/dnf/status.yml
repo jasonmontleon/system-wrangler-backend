@@ -1,0 +1,22 @@
+- name: Probe node_exporter (dnf)
+  hosts: all
+  gather_facts: false
+  become: true
+  tasks:
+    - name: Probe node_exporter service state
+      ansible.builtin.command: systemctl is-active node_exporter
+      register: sw_exporter_active
+      changed_when: false
+      failed_when: false
+
+    - name: Surface exporter port
+      ansible.builtin.debug:
+        msg: "SW_EXPORTER_PORT: 9100"
+
+    - name: Surface exporter service name
+      ansible.builtin.debug:
+        msg: "SW_EXPORTER_SERVICE: node_exporter.service"
+
+    - name: Surface exporter state
+      ansible.builtin.debug:
+        msg: "SW_EXPORTER_STATE: {{ 'running' if sw_exporter_active.stdout | trim == 'active' else 'failed' }}"

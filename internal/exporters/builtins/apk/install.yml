@@ -1,0 +1,132 @@
+- name: Install node_exporter (apk / Alpine + OpenWrt, localhost mode)
+  hosts: all
+  gather_facts: true
+  become: true
+  tasks:
+    - name: Assert supported distribution
+      ansible.builtin.assert:
+        that: ansible_distribution in ['Alpine', 'OpenWrt']
+        fail_msg: "builtin.apk.exporter supports Alpine and OpenWrt only (got {{ ansible_distribution }})"
+
+    - name: Install prometheus-node-exporter (Alpine)
+      when: ansible_distribution == 'Alpine'
+      block:
+        - name: Install prometheus-node-exporter package  # noqa: command-instead-of-module
+          ansible.builtin.command:
+            cmd: apk add --no-cache prometheus-node-exporter
+          register: apk_install_alpine
+          changed_when: apk_install_alpine.stdout is search('Installing prometheus-node-exporter', multiline=True)
+
+        - name: Ensure /etc/conf.d/node-exporter exists  # noqa: command-instead-of-module
+          ansible.builtin.copy:
+            dest: /etc/conf.d/node-exporter
+            owner: root
+            group: root
+            mode: "0644"
+            content: ""
+            force: false
+
+        - name: Set localhost bind in /etc/conf.d/node-exporter
+          ansible.builtin.lineinfile:
+            path: /etc/conf.d/node-exporter
+            regexp: '^\s*#?\s*ARGS\s*='
+            line: 'ARGS="--web.listen-address=127.0.0.1:9100"'
+            owner: root
+            group: root
+            mode: "0644"
+
+    - name: Install prometheus-node-exporter-lua (OpenWrt)
+      when: ansible_distribution == 'OpenWrt'
+      block:
+        - name: Install prometheus-node-exporter-lua + netstat collector  # noqa: command-instead-of-module
+          ansible.builtin.command:
+            cmd: apk add prometheus-node-exporter-lua prometheus-node-exporter-lua-netstat
+          register: apk_install_openwrt
+          changed_when: apk_install_openwrt.stdout is search('Installing prometheus-node-exporter-lua', multiline=True)
+
+        - name: Set listen_interface to loopback  # noqa: command-instead-of-module
+          ansible.builtin.command:
+            cmd: uci set prometheus-node-exporter-lua.main.listen_interface=loopback
+          changed_when: true
+
+        - name: Set listen_port to 9100  # noqa: command-instead-of-module
+          ansible.builtin.command:
+            cmd: uci set prometheus-node-exporter-lua.main.listen_port=9100
+          changed_when: true
+
+        - name: Commit uci changes  # noqa: command-instead-of-module
+          ansible.builtin.command:
+            cmd: uci commit prometheus-node-exporter-lua
+          changed_when: true
+
+    - name: Permit SSH TCP forwarding to the exporter port for the System Wrangler user (Alpine / OpenSSH)
+      when: ansible_distribution == 'Alpine'
+      ansible.builtin.blockinfile:
+        path: /etc/ssh/sshd_config
+        marker: "# {mark} SYSTEM WRANGLER EXPORTER FORWARDING"
+        block: |
+          Match User {{ ansible_user }}
+            AllowTcpForwarding yes
+            PermitOpen 127.0.0.1:9100
+        validate: 'sshd -t -f %s'
+      notify: Reload sshd
+
+    - name: Apply pending handlers before continuing
+      ansible.builtin.meta: flush_handlers
+
+    - name: Enable and (re)start node-exporter (Alpine)
+      when: ansible_distribution == 'Alpine'
+      ansible.builtin.service:
+        name: node-exporter
+        state: restarted
+        enabled: true
+
+    - name: Enable and (re)start prometheus-node-exporter-lua (OpenWrt)
+      when: ansible_distribution == 'OpenWrt'
+      block:
+        - name: Enable on boot  # noqa: command-instead-of-module
+          ansible.builtin.command:
+            cmd: /etc/init.d/prometheus-node-exporter-lua enable
+          register: openwrt_enable
+          changed_when: openwrt_enable.rc == 0
+          failed_when: false
+
+        - name: Restart service  # noqa: command-instead-of-module
+          ansible.builtin.command:
+            cmd: /etc/init.d/prometheus-node-exporter-lua restart
+          changed_when: true
+
+    - name: Probe exporter HTTP endpoint on localhost  # noqa: command-instead-of-module
+      ansible.builtin.command:
+        cmd: wget -q -O /dev/null -T 3 http://127.0.0.1:9100/metrics
+      register: sw_probe
+      changed_when: false
+      failed_when: false
+
+    - name: Show probe result (diagnostic)
+      ansible.builtin.debug:
+        msg: "wget rc={{ sw_probe.rc }} (0 = exporter responding on 127.0.0.1:9100)"
+
+    - name: Surface exporter port
+      ansible.builtin.debug:
+        msg: "SW_EXPORTER_PORT: 9100"
+
+    - name: Surface exporter service name (Alpine)
+      when: ansible_distribution == 'Alpine'
+      ansible.builtin.debug:
+        msg: "SW_EXPORTER_SERVICE: node-exporter"
+
+    - name: Surface exporter service name (OpenWrt)
+      when: ansible_distribution == 'OpenWrt'
+      ansible.builtin.debug:
+        msg: "SW_EXPORTER_SERVICE: prometheus-node-exporter-lua"
+
+    - name: Surface exporter state
+      ansible.builtin.debug:
+        msg: "SW_EXPORTER_STATE: {{ 'running' if sw_probe.rc == 0 else 'failed' }}"
+
+  handlers:
+    - name: Reload sshd
+      ansible.builtin.service:
+        name: sshd
+        state: reloaded

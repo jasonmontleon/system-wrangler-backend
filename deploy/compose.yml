@@ -1,0 +1,40 @@
+services:
+  system-wrangler:
+    image: system-wrangler:latest
+    container_name: system-wrangler
+    restart: unless-stopped
+    environment:
+      SW_INTERNAL_SECRET_FILE: /etc/system-wrangler/internal-secret
+      SW_TARGETS_FILE: /var/lib/sw-targets/targets.json
+      SW_BACKEND_TARGET: system-wrangler:8080
+      SW_PROMETHEUS_URL: http://prometheus:9090
+      SW_MASTER_KEY_FILE: /etc/system-wrangler/master.key
+    ports:
+      - "8080:8080"
+    volumes:
+      - sw-data:/var/lib/system-wrangler
+      - sw-targets:/var/lib/sw-targets
+      - ./master.key:/etc/system-wrangler/master.key:ro
+      - ./internal-secret:/etc/system-wrangler/internal-secret:ro
+
+  prometheus:
+    image: quay.io/prometheus/prometheus:latest
+    container_name: prometheus
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=365d
+      - --web.listen-address=:9090
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./internal-secret:/etc/prometheus/sw-internal-secret:ro
+      - sw-targets:/etc/prometheus/sw-targets:ro
+      - prom-data:/prometheus
+    depends_on:
+      - system-wrangler
+
+volumes:
+  sw-data:
+  sw-targets:
+  prom-data:

@@ -1,0 +1,22 @@
+- name: Probe node_exporter (pacman)
+  hosts: all
+  gather_facts: false
+  become: true
+  tasks:
+    - name: Probe service state  # noqa: command-instead-of-module
+      ansible.builtin.command: systemctl is-active prometheus-node-exporter
+      register: sw_exporter_active
+      changed_when: false
+      failed_when: false
+
+    - name: Surface exporter port
+      ansible.builtin.debug:
+        msg: "SW_EXPORTER_PORT: 9100"
+
+    - name: Surface exporter service name
+      ansible.builtin.debug:
+        msg: "SW_EXPORTER_SERVICE: prometheus-node-exporter.service"
+
+    - name: Surface exporter state
+      ansible.builtin.debug:
+        msg: "SW_EXPORTER_STATE: {{ 'running' if sw_exporter_active.stdout | trim == 'active' else 'failed' }}"

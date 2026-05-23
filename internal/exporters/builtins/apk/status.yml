@@ -1,0 +1,29 @@
+- name: Probe node_exporter (apk — Alpine + OpenWrt)
+  hosts: all
+  gather_facts: true
+  become: true
+  tasks:
+    - name: Probe exporter HTTP endpoint on localhost  # noqa: command-instead-of-module
+      ansible.builtin.command:
+        cmd: wget -q -O /dev/null -T 3 http://127.0.0.1:9100/metrics
+      register: sw_probe
+      changed_when: false
+      failed_when: false
+
+    - name: Surface exporter port
+      ansible.builtin.debug:
+        msg: "SW_EXPORTER_PORT: 9100"
+
+    - name: Surface exporter service name (Alpine)
+      when: ansible_distribution == 'Alpine'
+      ansible.builtin.debug:
+        msg: "SW_EXPORTER_SERVICE: node-exporter"
+
+    - name: Surface exporter service name (OpenWrt)
+      when: ansible_distribution == 'OpenWrt'
+      ansible.builtin.debug:
+        msg: "SW_EXPORTER_SERVICE: prometheus-node-exporter-lua"
+
+    - name: Surface exporter state
+      ansible.builtin.debug:
+        msg: "SW_EXPORTER_STATE: {{ 'running' if sw_probe.rc == 0 else 'failed' }}"

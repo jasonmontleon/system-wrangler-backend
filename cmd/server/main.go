@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -29,14 +30,19 @@ import (
 	"system-wrangler-backend/internal/credentials"
 	"system-wrangler-backend/internal/database"
 	"system-wrangler-backend/internal/events"
+	"system-wrangler-backend/internal/exporters"
 	"system-wrangler-backend/internal/groups"
 	"system-wrangler-backend/internal/hostkeys"
+	"system-wrangler-backend/internal/metrics"
 	"system-wrangler-backend/internal/openapi"
+	"system-wrangler-backend/internal/promtargets"
 	"system-wrangler-backend/internal/rbac"
 	"system-wrangler-backend/internal/router"
+	"system-wrangler-backend/internal/scrape"
 	"system-wrangler-backend/internal/secrets"
 	"system-wrangler-backend/internal/secretscan"
 	"system-wrangler-backend/internal/settings"
+	"system-wrangler-backend/internal/sshproxy"
 	"system-wrangler-backend/internal/systems"
 	"system-wrangler-backend/internal/updaters"
 	"system-wrangler-backend/web"
@@ -129,6 +135,11 @@ func main() {
 		slog.Error("init updaters store", "err", err)
 		os.Exit(1)
 	}
+	exporterStore, err := exporters.NewSQLiteStore(db)
+	if err != nil {
+		slog.Error("init exporters store", "err", err)
+		os.Exit(1)
+	}
 	settingsStore, err := settings.NewSQLiteStore(db)
 	if err != nil {
 		slog.Error("init settings store", "err", err)
@@ -168,7 +179,7 @@ func main() {
 		Handler: withRequestMeta(
 			withLogging(
 				auth.CSRF(auditStore)(
-					newMux(db, store, groupStore, authStore, authSvc, secret, vault, hub, auditStore, rbacStore, credStore, hostKeyStore, updaterStore, settingsStore, onCreate, broadcastSystemsChanged),
+					newMux(db, store, groupStore, authStore, authSvc, secret, vault, hub, auditStore, rbacStore, credStore, hostKeyStore, updaterStore, exporterStore, settingsStore, onCreate, broadcastSystemsChanged),
 				),
 			),
 		),
@@ -183,6 +194,32 @@ func main() {
 		probe.Run(ctx)
 		close(probeDone)
 	}()
+
+	// Prometheus targets writer: only runs when SW_TARGETS_FILE is set
+	// — otherwise the metrics pipeline isn't wired and the file would
+	// be writeable garbage. Subscribes to the hub for inventory
+	// changes; debounces internally.
+	targetsStop := func() {}
+	if targetsFile := os.Getenv("SW_TARGETS_FILE"); targetsFile != "" {
+		tw := &promtargets.Writer{
+			Path:          targetsFile,
+			BackendTarget: envOr("SW_BACKEND_TARGET", "system-wrangler:8080"),
+			Systems:       store,
+			Exporters:     exporterStore,
+		}
+		targetsStop = tw.Run(ctx, func(handler func(string)) func() {
+			sub := hub.Subscribe()
+			ready := make(chan struct{})
+			go func() {
+				close(ready)
+				for ev := range sub.Ch {
+					handler(ev.Type)
+				}
+			}()
+			<-ready
+			return func() { hub.Unsubscribe(sub) }
+		})
+	}
 
 	go func() {
 		var serveErr error
@@ -201,6 +238,10 @@ func main() {
 
 	<-ctx.Done()
 	slog.Info("shutdown signal received")
+	// Stop the targets writer first — once the hub closes its
+	// subscriber channel, the writer's goroutine returns; targetsStop
+	// waits for it before unsubscribing.
+	targetsStop()
 	// Close the SSE hub first so streaming handlers observe their channel
 	// close and return; otherwise srv.Shutdown waits out its deadline on
 	// the long-lived /api/events requests held by open dashboard tabs.
@@ -216,9 +257,9 @@ func main() {
 	<-probeDone
 }
 
-func newMux(db *sql.DB, store systems.Store, groupStore groups.Store, authStore *auth.SQLiteAuthStore, authSvc *auth.Service, secret []byte, vault *secrets.Vault, hub *events.Hub, auditStore *audit.Store, rbacStore rbac.Store, credStore credentials.Store, hostKeyStore hostkeys.Store, updaterStore updaters.Store, settingsStore settings.Store, onSystemCreate, onSystemDelete func()) *http.ServeMux {
+func newMux(db *sql.DB, store systems.Store, groupStore groups.Store, authStore *auth.SQLiteAuthStore, authSvc *auth.Service, secret []byte, vault *secrets.Vault, hub *events.Hub, auditStore *audit.Store, rbacStore rbac.Store, credStore credentials.Store, hostKeyStore hostkeys.Store, updaterStore updaters.Store, exporterStore exporters.Store, settingsStore settings.Store, onSystemCreate, onSystemDelete func()) *http.ServeMux {
 	mux := http.NewServeMux()
-	populateMux(mux, db, store, groupStore, authStore, authSvc, secret, vault, hub, auditStore, rbacStore, credStore, hostKeyStore, updaterStore, settingsStore, onSystemCreate, onSystemDelete)
+	populateMux(mux, db, store, groupStore, authStore, authSvc, secret, vault, hub, auditStore, rbacStore, credStore, hostKeyStore, updaterStore, exporterStore, settingsStore, onSystemCreate, onSystemDelete)
 	return mux
 }
 
@@ -227,7 +268,7 @@ func newMux(db *sql.DB, store systems.Store, groupStore groups.Store, authStore 
 // that captures every (method, path) pattern without spinning up a real
 // *http.ServeMux. main.go and tests reach for newMux; only the drift
 // test needs this entry point.
-func populateMux(mux router.Mux, db *sql.DB, store systems.Store, groupStore groups.Store, authStore *auth.SQLiteAuthStore, authSvc *auth.Service, secret []byte, vault *secrets.Vault, hub *events.Hub, auditStore *audit.Store, rbacStore rbac.Store, credStore credentials.Store, hostKeyStore hostkeys.Store, updaterStore updaters.Store, settingsStore settings.Store, onSystemCreate, onSystemDelete func()) {
+func populateMux(mux router.Mux, db *sql.DB, store systems.Store, groupStore groups.Store, authStore *auth.SQLiteAuthStore, authSvc *auth.Service, secret []byte, vault *secrets.Vault, hub *events.Hub, auditStore *audit.Store, rbacStore rbac.Store, credStore credentials.Store, hostKeyStore hostkeys.Store, updaterStore updaters.Store, exporterStore exporters.Store, settingsStore settings.Store, onSystemCreate, onSystemDelete func()) {
 	mux.Handle("GET /api/health", http.HandlerFunc(handleHealth))
 	authSvc.Register(mux)
 	requireUserOnly := auth.RequireUser(secret, authStore, time.Now)
@@ -487,6 +528,89 @@ func populateMux(mux router.Mux, db *sql.DB, store systems.Store, groupStore gro
 			},
 		}
 		updaterAdmin.Register(mux, requireUser)
+
+		exporterRegistry := exporters.NewRegistry(exporterStore)
+		exporterRunner := &exporters.Runner{
+			Registry: exporterRegistry,
+			Store:    exporterStore,
+			Locker:   updaterStore,
+			Ansible:  ansibleRunner,
+			Audit:    auditStore,
+			RunHistoryLimit: func() int {
+				return settings.RunHistoryLimit(settingsStore)
+			},
+			Notify: func(t string) {
+				hub.Broadcast(events.Event{Type: t})
+			},
+		}
+		exporterHandler := &exporters.Handler{
+			Runner:  exporterRunner,
+			Store:   exporterStore,
+			Systems: store,
+			Probe:   updaterPkgManagerProbe{store: updaterStore},
+			CanOperateSystem: func(ctx context.Context, s systems.System) bool {
+				scope, ok := rbac.ScopeFromContext(ctx)
+				if !ok {
+					return false
+				}
+				if scope.IsGlobalOperator() {
+					return true
+				}
+				if s.GroupID == nil {
+					return false
+				}
+				return scope.CanOperateGroup(*s.GroupID)
+			},
+			CanReadSystem: func(ctx context.Context, s systems.System) bool {
+				scope, ok := rbac.ScopeFromContext(ctx)
+				if !ok {
+					return false
+				}
+				return scope.CanReadSystem(s.GroupID)
+			},
+		}
+		exporterHandler.Register(mux, requireUser)
+		exporterAdmin := &exporters.AdminHandler{
+			Registry: exporterRegistry,
+			Syntax:   &exporters.AnsibleSyntaxChecker{Executor: ansible.ExecExecutor{}},
+			Audit:    auditStore,
+			CanManage: func(ctx context.Context) bool {
+				scope, ok := rbac.ScopeFromContext(ctx)
+				return ok && scope.IsGlobalAdmin()
+			},
+		}
+		exporterAdmin.Register(mux, requireUser)
+
+		// Metrics pipeline phase 1: SSH-tunneled scrape endpoint
+		// Prometheus targets, plus the authenticated query proxy
+		// the SPA hits. The scrape endpoint is gated by the
+		// internal secret — an empty value disables the endpoint
+		// entirely. SW_INTERNAL_SECRET_FILE takes precedence so the
+		// deployment can mount the secret as a file (Prometheus
+		// reads the same file via its authorization.credentials_file
+		// setting).
+		internalSecret := readInternalSecret()
+		sshProxy := &sshproxy.Proxy{
+			Systems:     store,
+			Credentials: credStore,
+			HostKeys:    hostKeyStore,
+			Vault:       vault,
+		}
+		scrapeHandler := &scrape.Handler{
+			Proxy:     sshProxy,
+			Exporters: exporterStore,
+			Secret:    internalSecret,
+		}
+		scrapeHandler.Register(mux)
+
+		metricsHandler := &metrics.Handler{
+			UpstreamURL: envOr("SW_PROMETHEUS_URL", "http://prometheus:9090"),
+			CanRead: func(ctx context.Context) bool {
+				_, ok := rbac.ScopeFromContext(ctx)
+				return ok
+			},
+		}
+		metricsHandler.Register(mux, requireUser)
 	}
 	if vault != nil {
 		secretscanHandler := &secretscan.Handler{
@@ -629,6 +753,47 @@ func envOr(key, def string) string {
 		return v
 	}
 	return def
+}
+
+// readInternalSecret resolves the shared secret Prometheus uses to
+// authenticate to /internal/scrape. SW_INTERNAL_SECRET_FILE wins
+// when set so an operator can mount the secret as a file shared with
+// Prometheus's authorization.credentials_file. Trailing whitespace is
+// trimmed because /dev/urandom-piped-to-a-file tends to add a
+// newline.
+func readInternalSecret() string {
+	if path := os.Getenv("SW_INTERNAL_SECRET_FILE"); path != "" {
+		body, err := os.ReadFile(path) //nolint:gosec // operator-controlled path
+		if err != nil {
+			// The literal env var name in the message isn't a
+			// credential; gosec G101 is a false positive on the
+			// "SECRET"-containing string.
+			slog.Warn("SW_INTERNAL_SECRET_FILE could not be read; scrape endpoint disabled", "err", err, "path", path) //nolint:gosec
+			return ""
+		}
+		return strings.TrimSpace(string(body))
+	}
+	return os.Getenv("SW_INTERNAL_SECRET")
+}
+
+// updaterPkgManagerProbe adapts updaters.Store.AvailabilityFor to the
+// exporters.PkgManagerProbe interface so the exporter handler can ask
+// "what package managers are detected on this system?" without
+// importing the updaters types directly.
+type updaterPkgManagerProbe struct {
+	store updaters.Store
+}
+
+func (p updaterPkgManagerProbe) DetectedPkgManagers(systemID string) ([]string, error) {
+	avail, err := p.store.AvailabilityFor(systemID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(avail))
+	for _, a := range avail {
+		out = append(out, a.UpdaterID)
+	}
+	return out, nil
 }
 
 // tlsConfig reads TLS_CERT_PATH and TLS_KEY_PATH via the supplied lookup

@@ -43,6 +43,10 @@ tags:
     description: Operator-facing ansible affordances — connectivity testing today, ad-hoc actions later.
   - name: updaters
     description: Pluggable per-OS updater substrate. Inspect, check, apply against managed systems; custom playbooks managed by Global Admin.
+  - name: exporters
+    description: Pluggable Prometheus exporter substrate. Install, status, remove the per-OS node_exporter / windows_exporter on managed systems; custom installers managed by Global Admin.
+  - name: metrics
+    description: Authenticated thin proxies to the sibling Prometheus container. Forward PromQL queries to the TSDB; response shape is Prometheus's HTTP API verbatim.
   - name: backup
     description: Database snapshot download.
   - name: secrets
@@ -1647,6 +1651,300 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
 
+  /api/systems/{id}/exporters:
+    get:
+      tags: [exporters]
+      summary: Per-system exporter list — every registered installer × this system's availability and install state.
+      description: |
+        Drives the system detail page's Monitoring tab. Each entry
+        pairs a registered installer (builtin or custom) with the
+        three-state availability ("available" / "unavailable" /
+        "unknown"), the install state, and the most recently observed
+        port + service name + reason. The response also carries the
+        per-system scrape mode and the list of detected package
+        managers (the updater ids the inspection last reported as
+        installed), so the SPA can offer "Add a custom installer"
+        targeted at the right package manager when nothing matches.
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: Per-system exporter rows plus scrape mode and detected pkg managers.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SystemExportersResponse"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "503":
+          description: Runner not configured on this server (no vault).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/systems/{id}/exporters/{exporter}/install:
+    post:
+      tags: [exporters]
+      summary: Run the named installer's install.yml against the system.
+      description: |
+        Installs the exporter (e.g. `node_exporter` via dnf), drops
+        the textfile collector + reboot-required emitter, and
+        enables the service. Emits
+        `system.exporter.install.start` / `.complete`. Returns 409
+        with the conflicting run id when another exporter or
+        updater run is in flight on the same system — both
+        substrates share the same per-host lock.
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+        - { in: path, name: exporter, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: Install completed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExporterRunResult"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404":
+          description: System or installer not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: Another inspect/check/apply/install/status/remove is in progress for this system.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UpdaterConflict"
+        "503":
+          description: Runner not configured on this server (no vault).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/systems/{id}/exporters/{exporter}/status:
+    post:
+      tags: [exporters]
+      summary: Re-probe the exporter and refresh the system_exporters row.
+      description: |
+        Runs the installer's status.yml — the lighter-weight
+        "Inspect now" equivalent. Emits
+        `system.exporter.status.start` / `.complete`.
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+        - { in: path, name: exporter, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: Status probe completed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExporterRunResult"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404":
+          description: System or installer not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: Another run is in progress for this system.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UpdaterConflict"
+        "503":
+          description: Runner not configured on this server (no vault).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/systems/{id}/exporters/{exporter}/remove:
+    post:
+      tags: [exporters]
+      summary: Run the installer's remove.yml and mark the row as removed.
+      description: |
+        Refuses with 400 when the installer does not declare a
+        remove playbook. On success, the system_exporters row is
+        transitioned to `state=removed`. Emits
+        `system.exporter.remove.start` / `.complete`.
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+        - { in: path, name: exporter, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: Remove completed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExporterRunResult"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404":
+          description: System or installer not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: Another run is in progress for this system.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UpdaterConflict"
+        "503":
+          description: Runner not configured on this server (no vault).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/systems/{id}/exporter-settings:
+    put:
+      tags: [exporters]
+      summary: Set the per-system scrape mode.
+      description: |
+        Phase 1 only accepts `localhost`. `mtls-self` and
+        `mtls-byo` are reserved for future phases — the schema
+        accepts them so a later release can land them additively,
+        but the handler refuses them today.
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [scrapeMode]
+              properties:
+                scrapeMode:
+                  $ref: "#/components/schemas/ExporterScrapeMode"
+      responses:
+        "204": { description: Scrape mode updated. }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/systems/{id}/exporter-runs:
+    get:
+      tags: [exporters]
+      summary: Paginated exporter run history for the system, newest first.
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+        - in: query
+          name: limit
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+      responses:
+        "200":
+          description: Recent exporter runs for this system.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [runs]
+                properties:
+                  runs:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ExporterRun"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/admin/exporter-definitions:
+    get:
+      tags: [exporters]
+      summary: List every registered exporter installer (builtins + custom), unioned.
+      responses:
+        "200":
+          description: The union of registered installers.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [definitions]
+                properties:
+                  definitions:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ExporterDefinition"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      tags: [exporters]
+      summary: Create a custom installer. Global Admin only.
+      description: |
+        Save-time guards: input validation (display_name +
+        applies_to_pkg_manager + exporter_kind + bind_port +
+        install + status playbook bodies non-empty, 64 KB cap
+        each), inline-credential heuristic, `ansible-playbook
+        --syntax-check`. Emits `exporter.create`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ExporterDefinitionInput"
+      responses:
+        "201":
+          description: Custom installer created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExporterDefinition"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409":
+          description: An installer with this id already exists.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/admin/exporter-definitions/{id}:
+    patch:
+      tags: [exporters]
+      summary: Replace a custom installer's editable fields. Global Admin only.
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ExporterDefinitionPatch"
+      responses:
+        "200":
+          description: Updated custom installer.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExporterDefinition"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [exporters]
+      summary: Soft-delete a custom installer. Global Admin only.
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+      responses:
+        "204": { description: Custom installer soft-deleted. }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
   /api/admin/backup:
     post:
       tags: [backup]
@@ -1751,6 +2049,183 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+
+  /api/metrics/query:
+    get:
+      tags: [metrics]
+      summary: Forward an instant PromQL query to the sibling Prometheus.
+      description: |
+        Thin authenticated proxy. Query parameters are forwarded
+        verbatim — `query` is required; `time` (Unix epoch seconds)
+        is optional. The response body is Prometheus's HTTP API
+        JSON unchanged, so clients can deserialize against the
+        Prometheus contract directly.
+      parameters:
+        - in: query
+          name: query
+          required: true
+          schema: { type: string }
+          description: PromQL expression.
+        - in: query
+          name: time
+          required: false
+          schema: { type: number }
+          description: Evaluation timestamp (Unix epoch seconds). Defaults to "now" on the server.
+      responses:
+        "200":
+          description: Prometheus HTTP API response.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "502":
+          description: Upstream Prometheus error.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        "503":
+          description: Metrics pipeline not configured.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        "504":
+          description: Upstream Prometheus timed out.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+    post:
+      tags: [metrics]
+      summary: Forward an instant PromQL query (form-encoded body) to Prometheus.
+      requestBody:
+        required: false
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              additionalProperties: { type: string }
+      responses:
+        "200":
+          description: Prometheus HTTP API response.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "502":
+          description: Upstream Prometheus error.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        "503":
+          description: Metrics pipeline not configured.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+
+  /api/metrics/query_range:
+    get:
+      tags: [metrics]
+      summary: Forward a range PromQL query to the sibling Prometheus.
+      parameters:
+        - in: query
+          name: query
+          required: true
+          schema: { type: string }
+        - in: query
+          name: start
+          required: true
+          schema: { type: number }
+          description: Start of the range, Unix epoch seconds.
+        - in: query
+          name: end
+          required: true
+          schema: { type: number }
+          description: End of the range, Unix epoch seconds.
+        - in: query
+          name: step
+          required: true
+          schema: { type: number }
+          description: Resolution in seconds.
+      responses:
+        "200":
+          description: Prometheus HTTP API range response.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "502":
+          description: Upstream Prometheus error.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        "503":
+          description: Metrics pipeline not configured.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        "504":
+          description: Upstream Prometheus timed out.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+    post:
+      tags: [metrics]
+      summary: Forward a range PromQL query (form-encoded body) to Prometheus.
+      requestBody:
+        required: false
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              additionalProperties: { type: string }
+      responses:
+        "200":
+          description: Prometheus HTTP API range response.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "502":
+          description: Upstream Prometheus error.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        "503":
+          description: Metrics pipeline not configured.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
 
   /api/events:
     get:
@@ -2209,3 +2684,157 @@ components:
           additionalProperties: true
         requestIp: { type: string }
         requestId: { type: string }
+
+    ExporterSource:
+      type: string
+      enum: [builtin, custom]
+
+    ExporterKind:
+      type: string
+      enum: [node_exporter, windows_exporter]
+
+    ExporterScrapeMode:
+      type: string
+      enum: [localhost, mtls-self, mtls-byo]
+      description: Per-system transport selection. Phase 1 only accepts localhost; mTLS modes are reserved.
+
+    ExporterState:
+      type: string
+      enum: [installed, running, failed, removed]
+
+    ExporterAvailability:
+      type: string
+      enum: [available, unavailable, unknown]
+
+    ExporterRunKind:
+      type: string
+      enum: [install, status, remove]
+
+    ExporterDefinition:
+      type: object
+      required: [id, source, displayName, appliesToPkgManager, exporterKind, bindPort, installPlaybook, statusPlaybook, removePlaybook]
+      properties:
+        id:
+          type: string
+          description: '`builtin.<name>.exporter` or `custom.<slug>`. Prefixes are reserved.'
+        source: { $ref: "#/components/schemas/ExporterSource" }
+        displayName: { type: string }
+        description: { type: string }
+        appliesToPkgManager:
+          type: string
+          description: The updater id this installer targets (e.g. "builtin.dnf"). Cross-referenced against per-system detected updaters to compute availability.
+        exporterKind: { $ref: "#/components/schemas/ExporterKind" }
+        bindPort:
+          type: integer
+          description: Default listen port the installer hands to the exporter binary; the playbook may override and surface a different port via the SW_EXPORTER_PORT marker.
+        installPlaybook:
+          type: string
+          description: YAML body of the install playbook.
+        statusPlaybook:
+          type: string
+          description: YAML body of the status playbook.
+        removePlaybook:
+          type: string
+          description: YAML body of the optional remove playbook. Empty when the installer does not declare one.
+        createdBy: { type: string }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    ExporterDefinitionInput:
+      type: object
+      required: [id, displayName, appliesToPkgManager, exporterKind, bindPort, installPlaybook, statusPlaybook]
+      properties:
+        id:
+          type: string
+          description: Bare slug or full `custom.<slug>` id. The server prepends `custom.` if absent.
+        displayName: { type: string }
+        description: { type: string }
+        appliesToPkgManager: { type: string }
+        exporterKind: { $ref: "#/components/schemas/ExporterKind" }
+        bindPort: { type: integer }
+        installPlaybook:
+          type: string
+          description: 64 KB cap; must pass `ansible-playbook --syntax-check` and the inline-credential heuristic.
+        statusPlaybook: { type: string }
+        removePlaybook: { type: string }
+
+    ExporterDefinitionPatch:
+      type: object
+      required: [displayName, appliesToPkgManager, exporterKind, bindPort, installPlaybook, statusPlaybook]
+      properties:
+        displayName: { type: string }
+        description: { type: string }
+        appliesToPkgManager: { type: string }
+        exporterKind: { $ref: "#/components/schemas/ExporterKind" }
+        bindPort: { type: integer }
+        installPlaybook: { type: string }
+        statusPlaybook: { type: string }
+        removePlaybook: { type: string }
+
+    SystemExporter:
+      type: object
+      required: [exporterId, source, displayName, description, appliesToPkgManager, exporterKind, bindPort, hasRemove, availability, installed]
+      properties:
+        exporterId: { type: string }
+        source: { $ref: "#/components/schemas/ExporterSource" }
+        displayName: { type: string }
+        description: { type: string }
+        appliesToPkgManager: { type: string }
+        exporterKind: { $ref: "#/components/schemas/ExporterKind" }
+        bindPort: { type: integer }
+        hasRemove:
+          type: boolean
+          description: True when the installer declares a remove playbook (gates the Remove button in the UI).
+        availability: { $ref: "#/components/schemas/ExporterAvailability" }
+        installed:
+          type: boolean
+          description: True when system_exporters has a non-removed row for this (system, exporter).
+        state: { $ref: "#/components/schemas/ExporterState" }
+        port: { type: integer }
+        serviceName: { type: string }
+        lastStatusAt: { type: string, format: date-time }
+        lastInstallAt: { type: string, format: date-time }
+        lastReason: { type: string }
+
+    SystemExportersResponse:
+      type: object
+      required: [scrapeMode, detectedPkgManagers, exporters]
+      properties:
+        scrapeMode: { $ref: "#/components/schemas/ExporterScrapeMode" }
+        detectedPkgManagers:
+          type: array
+          items: { type: string }
+          description: Updater ids the most recent inspection found on the system. Empty when no inspection has run yet.
+        exporters:
+          type: array
+          items: { $ref: "#/components/schemas/SystemExporter" }
+
+    ExporterRunResult:
+      type: object
+      required: [runId, exporterId, kind, status, exitCode, state, durationMs]
+      properties:
+        runId: { type: string }
+        exporterId: { type: string }
+        kind: { $ref: "#/components/schemas/ExporterRunKind" }
+        status: { $ref: "#/components/schemas/UpdaterRunStatus" }
+        exitCode: { type: integer }
+        state: { $ref: "#/components/schemas/ExporterState" }
+        port: { type: integer }
+        service: { type: string }
+        reason: { type: string }
+        durationMs: { type: integer }
+
+    ExporterRun:
+      type: object
+      required: [id, systemId, exporterId, kind, startedAt]
+      properties:
+        id: { type: string }
+        systemId: { type: string }
+        exporterId: { type: string }
+        kind: { $ref: "#/components/schemas/ExporterRunKind" }
+        startedAt: { type: string, format: date-time }
+        finishedAt: { type: string, format: date-time }
+        exitCode: { type: integer }
+        actorId: { type: string }
+        playbookSha: { type: string }
+        logTail: { type: string }
