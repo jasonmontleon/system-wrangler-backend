@@ -42,6 +42,36 @@ var builtinPkgAddInstall []byte
 //go:embed builtins/pkg_add/status.yml
 var builtinPkgAddStatus []byte
 
+//go:embed builtins/apt/install.yml
+var builtinAptInstall []byte
+
+//go:embed builtins/apt/status.yml
+var builtinAptStatus []byte
+
+//go:embed builtins/xbps/install.yml
+var builtinXbpsInstall []byte
+
+//go:embed builtins/xbps/status.yml
+var builtinXbpsStatus []byte
+
+//go:embed builtins/zypper/install.yml
+var builtinZypperInstall []byte
+
+//go:embed builtins/zypper/status.yml
+var builtinZypperStatus []byte
+
+//go:embed builtins/brew/install.yml
+var builtinBrewInstall []byte
+
+//go:embed builtins/brew/status.yml
+var builtinBrewStatus []byte
+
+//go:embed builtins/winget/install.yml
+var builtinWingetInstall []byte
+
+//go:embed builtins/winget/status.yml
+var builtinWingetStatus []byte
+
 // Builtins returns every code-registered exporter installer. Order
 // is stable so callers that don't sort still produce deterministic
 // output. The registry calls this once at startup and merges the
@@ -117,6 +147,61 @@ func Builtins() []Definition {
 			BindPort:            9100,
 			InstallPlaybook:     builtinPkgAddInstall,
 			StatusPlaybook:      builtinPkgAddStatus,
+		},
+		{
+			ID:                  "builtin.apt.exporter",
+			Source:              SourceBuiltin,
+			DisplayName:         "apt — node_exporter (Debian + Ubuntu)",
+			Description:         "Debian / Ubuntu node_exporter via the prometheus-node-exporter package. Binds 127.0.0.1:9100 in localhost mode via a systemd drop-in override on the prometheus-node-exporter service.",
+			AppliesToPkgManager: "builtin.apt",
+			ExporterKind:        KindNodeExporter,
+			BindPort:            9100,
+			InstallPlaybook:     builtinAptInstall,
+			StatusPlaybook:      builtinAptStatus,
+		},
+		{
+			ID:                  "builtin.xbps.exporter",
+			Source:              SourceBuiltin,
+			DisplayName:         "xbps — node_exporter (Void Linux)",
+			Description:         "Void Linux node_exporter via the node_exporter package. Service supervision uses runit (sv): the package ships /etc/sv/node_exporter and the play writes /etc/sv/node_exporter/conf with OPTS forcing 127.0.0.1:9100, symlinks the service into /var/service, then sends sv term so runsv respawns with the new options.",
+			AppliesToPkgManager: "builtin.xbps",
+			ExporterKind:        KindNodeExporter,
+			BindPort:            9100,
+			InstallPlaybook:     builtinXbpsInstall,
+			StatusPlaybook:      builtinXbpsStatus,
+		},
+		{
+			ID:                  "builtin.zypper.exporter",
+			Source:              SourceBuiltin,
+			DisplayName:         "zypper — node_exporter (openSUSE + SLES)",
+			Description:         "openSUSE / SLES node_exporter via the golang-github-prometheus-node_exporter package. Binds 127.0.0.1:9100 in localhost mode via a systemd drop-in override on the prometheus-node_exporter service (note the underscore — matches the SUSE package's unit name).",
+			AppliesToPkgManager: "builtin.zypper",
+			ExporterKind:        KindNodeExporter,
+			BindPort:            9100,
+			InstallPlaybook:     builtinZypperInstall,
+			StatusPlaybook:      builtinZypperStatus,
+		},
+		{
+			ID:                  "builtin.brew.exporter",
+			Source:              SourceBuiltin,
+			DisplayName:         "brew — node_exporter (macOS)",
+			Description:         "macOS node_exporter via the Homebrew node_exporter formula. Runs as a per-user LaunchAgent (com.systemwrangler.node_exporter) bound to 127.0.0.1:9100. Homebrew refuses to run as root, so the play uses become: false; the LaunchAgent is loaded into the SSH user's bootstrap context. Headless monitoring requires the SSH user to stay signed in so launchd keeps the agent alive.",
+			AppliesToPkgManager: "builtin.brew",
+			ExporterKind:        KindNodeExporter,
+			BindPort:            9100,
+			InstallPlaybook:     builtinBrewInstall,
+			StatusPlaybook:      builtinBrewStatus,
+		},
+		{
+			ID:                  "builtin.winget.exporter",
+			Source:              SourceBuiltin,
+			DisplayName:         "winget — windows_exporter",
+			Description:         "Windows windows_exporter via the Prometheus.WindowsExporter winget package. After install the play rewrites the windows_exporter service binPath via Win32_Service.Change to force --web.listen-address=127.0.0.1:9182 and enable a wider collector set (cpu,cs,logical_disk,memory,net,os,service,system,tcp) so Memory and TCP panels populate alongside the defaults. Uses the standard windows_exporter port 9182.",
+			AppliesToPkgManager: "builtin.winget",
+			ExporterKind:        KindWindowsExporter,
+			BindPort:            9182,
+			InstallPlaybook:     builtinWingetInstall,
+			StatusPlaybook:      builtinWingetStatus,
 		},
 	}
 }

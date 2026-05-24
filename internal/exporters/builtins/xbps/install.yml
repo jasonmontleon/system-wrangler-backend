@@ -1,0 +1,59 @@
+- name: Install node_exporter (xbps / Void Linux, localhost mode)
+  hosts: all
+  gather_facts: false
+  become: true
+  tasks:
+    - name: Install node_exporter via xbps  # noqa: command-instead-of-module
+      ansible.builtin.command:
+        cmd: xbps-install -Sy node_exporter
+      register: xbps_install
+      changed_when: xbps_install.stdout is search('^node_exporter', multiline=True)
+
+    - name: Set node_exporter options for runit
+      ansible.builtin.lineinfile:
+        path: /etc/sv/node_exporter/conf
+        regexp: '^\s*#?\s*OPTS\s*='
+        line: 'OPTS="--web.listen-address=127.0.0.1:9100"'
+        create: true
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Enable node_exporter under runit
+      ansible.builtin.file:
+        src: /etc/sv/node_exporter
+        dest: /var/service/node_exporter
+        state: link
+        force: true
+
+    - name: Terminate node_exporter so runsv respawns with new options  # noqa: command-instead-of-module
+      ansible.builtin.command:
+        cmd: sv term node_exporter
+      changed_when: true
+      failed_when: false
+
+    - name: Wait briefly for runit to (re)start node_exporter
+      ansible.builtin.pause:
+        seconds: 5
+
+    - name: Probe exporter HTTP endpoint on localhost
+      ansible.builtin.uri:
+        url: http://127.0.0.1:9100/metrics
+        timeout: 3
+        status_code: 200
+        return_content: false
+      register: sw_probe
+      changed_when: false
+      failed_when: false
+
+    - name: Surface exporter port
+      ansible.builtin.debug:
+        msg: "SW_EXPORTER_PORT: 9100"
+
+    - name: Surface exporter service name
+      ansible.builtin.debug:
+        msg: "SW_EXPORTER_SERVICE: node_exporter"
+
+    - name: Surface exporter state
+      ansible.builtin.debug:
+        msg: "SW_EXPORTER_STATE: {{ 'running' if sw_probe.status == 200 else 'failed' }}"

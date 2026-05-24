@@ -1,0 +1,59 @@
+- name: Install node_exporter (zypper / openSUSE + SLES, localhost mode)
+  hosts: all
+  gather_facts: false
+  become: true
+  vars:
+    sw_node_exporter_options: --web.listen-address=127.0.0.1:9100
+  tasks:
+    - name: Install golang-github-prometheus-node_exporter package  # noqa: command-instead-of-module
+      ansible.builtin.command:
+        cmd: zypper --non-interactive install --no-recommends golang-github-prometheus-node_exporter
+      register: zypper_install
+      changed_when: "zypper_install.stdout is search('Installing: golang-github-prometheus-node_exporter', multiline=True)"
+
+    - name: Ensure node_exporter systemd drop-in directory exists
+      ansible.builtin.file:
+        path: /etc/systemd/system/prometheus-node_exporter.service.d
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Drop systemd override forcing 127.0.0.1 bind
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/prometheus-node_exporter.service.d/override.conf
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          [Service]
+          ExecStart=
+          ExecStart=/usr/bin/node_exporter {{ sw_node_exporter_options }}
+
+    - name: Reload systemd to pick up new overrides
+      ansible.builtin.systemd:
+        daemon_reload: true
+
+    - name: Enable and start prometheus-node_exporter
+      ansible.builtin.systemd:
+        name: prometheus-node_exporter
+        state: restarted
+        enabled: true
+
+    - name: Probe service state  # noqa: command-instead-of-module
+      ansible.builtin.command: systemctl is-active prometheus-node_exporter
+      register: sw_exporter_active
+      changed_when: false
+      failed_when: false
+
+    - name: Surface exporter port
+      ansible.builtin.debug:
+        msg: "SW_EXPORTER_PORT: 9100"
+
+    - name: Surface exporter service name
+      ansible.builtin.debug:
+        msg: "SW_EXPORTER_SERVICE: prometheus-node_exporter.service"
+
+    - name: Surface exporter state
+      ansible.builtin.debug:
+        msg: "SW_EXPORTER_STATE: {{ 'running' if sw_exporter_active.stdout | trim == 'active' else 'failed' }}"

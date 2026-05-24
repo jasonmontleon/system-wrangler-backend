@@ -1,0 +1,24 @@
+- name: Probe windows_exporter (winget / Windows)
+  hosts: all
+  gather_facts: false
+  become: false
+  tasks:
+    - name: Probe exporter HTTP endpoint on localhost
+      ansible.windows.win_uri:
+        url: http://127.0.0.1:9182/metrics
+        status_code: 200
+        return_content: false
+      register: sw_probe
+      failed_when: false
+
+    - name: Surface exporter port
+      ansible.builtin.debug:
+        msg: "SW_EXPORTER_PORT: 9182"
+
+    - name: Surface exporter service name
+      ansible.builtin.debug:
+        msg: "SW_EXPORTER_SERVICE: windows_exporter"
+
+    - name: Surface exporter state
+      ansible.builtin.debug:
+        msg: "SW_EXPORTER_STATE: {{ 'running' if sw_probe.status_code | default(0) == 200 else 'failed' }}"

@@ -1,0 +1,103 @@
+- name: Install windows_exporter (winget / Windows, localhost mode)
+  hosts: all
+  gather_facts: false
+  become: false
+  tasks:
+    - name: Detect existing windows_exporter service
+      ansible.windows.win_service:
+        name: windows_exporter
+      register: we_svc
+      failed_when: false
+
+    - name: Install Prometheus.WindowsExporter via winget
+      when: not (we_svc.exists | default(false))
+      ansible.windows.win_shell: |
+        [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+        winget install --id Prometheus.WindowsExporter --exact --silent `
+          --accept-source-agreements --accept-package-agreements
+        exit $LASTEXITCODE
+      register: winget_install
+      changed_when: winget_install.stdout is search('Successfully installed', multiline=True)
+      failed_when: winget_install.rc not in [0]
+
+    - name: Stop windows_exporter before reconfiguring binPath
+      ansible.windows.win_service:
+        name: windows_exporter
+        state: stopped
+      failed_when: false
+
+    - name: Override windows_exporter binPath to bind 127.0.0.1:9182 and enable extra collectors (via WMI)
+      ansible.windows.win_shell: |
+        $svc = Get-CimInstance -ClassName Win32_Service -Filter "Name='windows_exporter'"
+        if (-not $svc) { Write-Error 'windows_exporter service not found'; exit 1 }
+        $exe = ($svc.PathName -replace '^"([^"]+)".*$', '$1')
+        if (-not $exe -or -not (Test-Path $exe)) {
+          Write-Error "windows_exporter binary path not resolved (PathName=$($svc.PathName))"
+          exit 1
+        }
+        $newPath = '"' + $exe + '" --web.listen-address=127.0.0.1:9182 --collectors.enabled=[defaults],memory,tcp'
+        $result = Invoke-CimMethod -InputObject $svc -MethodName Change -Arguments @{ PathName = $newPath }
+        if ($result.ReturnValue -ne 0) {
+          Write-Error "Win32_Service.Change failed: ReturnValue=$($result.ReturnValue)"
+          exit $result.ReturnValue
+        }
+        Write-Output "binPath set to: $newPath"
+      changed_when: true
+
+    - name: Start windows_exporter (sc.exe so the SCM exit code surfaces)
+      ansible.windows.win_shell: |
+        & sc.exe start windows_exporter | Out-Null
+        $rc = $LASTEXITCODE
+        Start-Sleep -Seconds 3
+        $status = (Get-Service -Name windows_exporter).Status
+        Write-Output ("SC_RC=" + $rc)
+        Write-Output ("STATUS=" + $status)
+      register: sw_start
+      changed_when: true
+      failed_when: false
+
+    - name: Dump windows_exporter Event Log entries (Application provider)
+      when: sw_start.stdout is not search('STATUS=Running')
+      ansible.windows.win_shell: |
+        $appEvents = Get-WinEvent -FilterHashtable @{ LogName='Application'; ProviderName='windows_exporter' } -MaxEvents 5 -ErrorAction SilentlyContinue
+        if ($appEvents) {
+          $appEvents | Format-List TimeCreated,LevelDisplayName,Id,Message | Out-String
+        }
+        $scmEvents = Get-WinEvent -FilterHashtable @{ LogName='System'; ProviderName='Service Control Manager' } -MaxEvents 10 -ErrorAction SilentlyContinue | Where-Object { $_.Message -like '*windows_exporter*' }
+        if ($scmEvents) {
+          "--- SCM events ---" | Out-String
+          $scmEvents | Format-List TimeCreated,LevelDisplayName,Id,Message | Out-String
+        }
+      register: sw_eventlog
+      changed_when: false
+      failed_when: false
+
+    - name: Surface Event Log diagnostics
+      when: sw_start.stdout is not search('STATUS=Running')
+      ansible.builtin.debug:
+        msg: "{{ (sw_eventlog.stdout | default('(no events captured)')).split('\n') }}"
+
+    - name: Fail loudly if windows_exporter did not enter Running state
+      when: sw_start.stdout is not search('STATUS=Running')
+      ansible.builtin.fail:
+        msg: "windows_exporter failed to start; SCM exit + Event Log output above. Most likely cause: invalid value for --collectors.enabled."
+
+    - name: Probe exporter HTTP endpoint on localhost
+      ansible.windows.win_uri:
+        url: http://127.0.0.1:9182/metrics
+        status_code: 200
+        return_content: false
+      register: sw_probe
+      failed_when: false
+
+    - name: Surface exporter port
+      ansible.builtin.debug:
+        msg: "SW_EXPORTER_PORT: 9182"
+
+    - name: Surface exporter service name
+      ansible.builtin.debug:
+        msg: "SW_EXPORTER_SERVICE: windows_exporter"
+
+    - name: Surface exporter state
+      ansible.builtin.debug:
+        msg: "SW_EXPORTER_STATE: {{ 'running' if sw_probe.status_code | default(0) == 200 else 'failed' }}"

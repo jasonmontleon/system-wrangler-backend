@@ -110,6 +110,11 @@ func TestBuiltinsShipExpectedSet(t *testing.T) {
 		"builtin.pkg.exporter":     true,
 		"builtin.pkgin.exporter":   true,
 		"builtin.pkg_add.exporter": true,
+		"builtin.apt.exporter":     true,
+		"builtin.xbps.exporter":    true,
+		"builtin.zypper.exporter":  true,
+		"builtin.brew.exporter":    true,
+		"builtin.winget.exporter":  true,
 	}
 	seen := map[string]bool{}
 	for _, b := range got {

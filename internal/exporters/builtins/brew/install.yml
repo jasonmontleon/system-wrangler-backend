@@ -1,0 +1,96 @@
+- name: Install node_exporter (brew / macOS, localhost mode)
+  hosts: all
+  gather_facts: true
+  become: false
+  environment:
+    PATH: '/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin'
+  vars:
+    sw_launch_agent_label: com.systemwrangler.node_exporter
+    sw_launch_agent_dir: "{{ ansible_env.HOME }}/Library/LaunchAgents"
+    sw_launch_agent_plist: "{{ ansible_env.HOME }}/Library/LaunchAgents/com.systemwrangler.node_exporter.plist"
+  tasks:
+    - name: Install node_exporter via Homebrew  # noqa: command-instead-of-module
+      ansible.builtin.command:
+        cmd: brew install node_exporter
+      register: brew_install
+      changed_when: brew_install.stdout is search('^==> (Pouring|Installing) ', multiline=True)
+
+    - name: Resolve Homebrew prefix  # noqa: command-instead-of-module
+      ansible.builtin.command:
+        cmd: brew --prefix
+      register: brew_prefix
+      changed_when: false
+
+    - name: Record resolved node_exporter binary path
+      ansible.builtin.set_fact:
+        sw_node_exporter_path: "{{ brew_prefix.stdout | trim }}/bin/node_exporter"
+
+    - name: Ensure LaunchAgents directory exists
+      ansible.builtin.file:
+        path: "{{ sw_launch_agent_dir }}"
+        state: directory
+        mode: "0755"
+
+    - name: Drop System Wrangler LaunchAgent plist
+      ansible.builtin.copy:
+        dest: "{{ sw_launch_agent_plist }}"
+        mode: "0644"
+        content: |
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>Label</key>
+            <string>{{ sw_launch_agent_label }}</string>
+            <key>ProgramArguments</key>
+            <array>
+              <string>{{ sw_node_exporter_path }}</string>
+              <string>--web.listen-address=127.0.0.1:9100</string>
+            </array>
+            <key>RunAtLoad</key>
+            <true/>
+            <key>KeepAlive</key>
+            <true/>
+            <key>StandardOutPath</key>
+            <string>/tmp/sw-node_exporter.log</string>
+            <key>StandardErrorPath</key>
+            <string>/tmp/sw-node_exporter.log</string>
+          </dict>
+          </plist>
+
+    - name: Unload any existing LaunchAgent so the new plist takes effect  # noqa: command-instead-of-module
+      ansible.builtin.command:
+        cmd: launchctl unload "{{ sw_launch_agent_plist }}"
+      changed_when: true
+      failed_when: false
+
+    - name: Load LaunchAgent  # noqa: command-instead-of-module
+      ansible.builtin.command:
+        cmd: launchctl load -w "{{ sw_launch_agent_plist }}"
+      changed_when: true
+
+    - name: Wait briefly for launchd to start node_exporter
+      ansible.builtin.pause:
+        seconds: 3
+
+    - name: Probe exporter HTTP endpoint on localhost
+      ansible.builtin.uri:
+        url: http://127.0.0.1:9100/metrics
+        timeout: 3
+        status_code: 200
+        return_content: false
+      register: sw_probe
+      changed_when: false
+      failed_when: false
+
+    - name: Surface exporter port
+      ansible.builtin.debug:
+        msg: "SW_EXPORTER_PORT: 9100"
+
+    - name: Surface exporter service name
+      ansible.builtin.debug:
+        msg: "SW_EXPORTER_SERVICE: {{ sw_launch_agent_label }}"
+
+    - name: Surface exporter state
+      ansible.builtin.debug:
+        msg: "SW_EXPORTER_STATE: {{ 'running' if sw_probe.status == 200 else 'failed' }}"
