@@ -21,6 +21,12 @@ import (
 	"system-wrangler-backend/internal/router"
 )
 
+// DefaultUpstreamURL is the Prometheus base URL the proxy uses when
+// SW_PROMETHEUS_URL isn't set. Loopback assumes Prometheus shares
+// the backend's network namespace; operators on the legacy
+// two-container layout override with SW_PROMETHEUS_URL=http://prometheus:9090.
+const DefaultUpstreamURL = "http://127.0.0.1:9090"
+
 // Handler exposes /api/metrics/query and /api/metrics/query_range as
 // session-authenticated forwarders. The body shape returned is
 // Prometheus's JSON HTTP API verbatim — clients deserialize it

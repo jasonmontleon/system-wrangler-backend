@@ -36,6 +36,13 @@ var (
 	ErrNotConfigured = errors.New("promtargets: writer is not fully wired")
 )
 
+// DefaultBackendTarget is the address baked into each entry's
+// targets list when the operator hasn't overridden SW_BACKEND_TARGET.
+// Loopback assumes Prometheus shares the backend's network namespace
+// (podman pod or network_mode: service:); operators on the legacy
+// two-container layout override with SW_BACKEND_TARGET=system-wrangler:8080.
+const DefaultBackendTarget = "127.0.0.1:8080"
+
 // Entry is one element of the file_sd_configs JSON array. Prometheus
 // reads this every few seconds via inotify; we re-emit on every
 // inventory change.

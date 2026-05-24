@@ -22,6 +22,12 @@ func fakeProm(t *testing.T, handler http.HandlerFunc) *httptest.Server {
 	return srv
 }
 
+func TestDefaultUpstreamURLIsLoopback(t *testing.T) {
+	if DefaultUpstreamURL != "http://127.0.0.1:9090" {
+		t.Errorf("DefaultUpstreamURL = %q, want http://127.0.0.1:9090", DefaultUpstreamURL)
+	}
+}
+
 func TestQueryForwardsToUpstream(t *testing.T) {
 	prom := fakeProm(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/v1/query" {

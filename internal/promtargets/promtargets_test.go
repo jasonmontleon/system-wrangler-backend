@@ -44,6 +44,12 @@ func newWriter(t *testing.T) (*Writer, *systems.SQLiteStore, *exporters.SQLiteSt
 	return w, sysStore, expStore, path
 }
 
+func TestDefaultBackendTargetIsLoopback(t *testing.T) {
+	if DefaultBackendTarget != "127.0.0.1:8080" {
+		t.Errorf("DefaultBackendTarget = %q, want 127.0.0.1:8080", DefaultBackendTarget)
+	}
+}
+
 func TestRegenerateReturnsErrWhenNotConfigured(t *testing.T) {
 	w := &Writer{}
 	if err := w.Regenerate(context.Background()); !errors.Is(err, ErrNotConfigured) {

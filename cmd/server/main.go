@@ -203,7 +203,7 @@ func main() {
 	if targetsFile := os.Getenv("SW_TARGETS_FILE"); targetsFile != "" {
 		tw := &promtargets.Writer{
 			Path:          targetsFile,
-			BackendTarget: envOr("SW_BACKEND_TARGET", "system-wrangler:8080"),
+			BackendTarget: envOr("SW_BACKEND_TARGET", promtargets.DefaultBackendTarget),
 			Systems:       store,
 			Exporters:     exporterStore,
 		}
@@ -604,7 +604,7 @@ func populateMux(mux router.Mux, db *sql.DB, store systems.Store, groupStore gro
 		scrapeHandler.Register(mux)
 
 		metricsHandler := &metrics.Handler{
-			UpstreamURL: envOr("SW_PROMETHEUS_URL", "http://prometheus:9090"),
+			UpstreamURL: envOr("SW_PROMETHEUS_URL", metrics.DefaultUpstreamURL),
 			CanRead: func(ctx context.Context) bool {
 				_, ok := rbac.ScopeFromContext(ctx)
 				return ok

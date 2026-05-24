@@ -1,3 +1,8 @@
+networks:
+  default:
+    name: podman
+    external: true
+
 services:
   system-wrangler:
     image: system-wrangler:latest
@@ -6,8 +11,6 @@ services:
     environment:
       SW_INTERNAL_SECRET_FILE: /etc/system-wrangler/internal-secret
       SW_TARGETS_FILE: /var/lib/sw-targets/targets.json
-      SW_BACKEND_TARGET: system-wrangler:8080
-      SW_PROMETHEUS_URL: http://prometheus:9090
       SW_MASTER_KEY_FILE: /etc/system-wrangler/master.key
     ports:
       - "8080:8080"
@@ -21,6 +24,7 @@ services:
     image: quay.io/prometheus/prometheus:latest
     container_name: prometheus
     restart: unless-stopped
+    network_mode: "service:system-wrangler"
     command:
       - --config.file=/etc/prometheus/prometheus.yml
       - --storage.tsdb.path=/prometheus
