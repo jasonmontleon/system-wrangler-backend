@@ -57,6 +57,7 @@ var (
 	ErrSetupComplete    = errors.New("auth: setup already complete")
 	ErrUserDisabled     = errors.New("auth: user disabled")
 	ErrLastEnabled      = errors.New("auth: cannot disable the last enabled user")
+	ErrLastGlobalAdmin  = errors.New("auth: would leave zero global admins")
 	ErrAccountLocked    = errors.New("auth: account locked")
 	ErrPasswordRequired = errors.New("auth: password change required")
 )

@@ -66,10 +66,11 @@ type Assignment struct {
 
 // Sentinel errors returned by the rbac store and helpers.
 var (
-	ErrInvalid   = errors.New("rbac: invalid input")
-	ErrNotFound  = errors.New("rbac: assignment not found")
-	ErrDuplicate = errors.New("rbac: assignment already exists")
-	ErrNoScope   = errors.New("rbac: no scope on request context")
+	ErrInvalid         = errors.New("rbac: invalid input")
+	ErrNotFound        = errors.New("rbac: assignment not found")
+	ErrDuplicate       = errors.New("rbac: assignment already exists")
+	ErrNoScope         = errors.New("rbac: no scope on request context")
+	ErrLastGlobalAdmin = errors.New("rbac: would leave zero global admins")
 )
 
 // Scope is the resolved permission set for an authenticated request.

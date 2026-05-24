@@ -77,6 +77,9 @@ func TestBackfillExistingUsersGetGlobalAdmin(t *testing.T) {
 func TestBackfillRunsOnceEvenAfterRevoke(t *testing.T) {
 	f := newFixture(t)
 	uid := mustUser(t, f.auth, "alice")
+	// A second admin keeps the last-global-admin guard happy when alice's
+	// row is revoked; the test only cares about the meta-marker gate.
+	keepUID := mustUser(t, f.auth, "keep")
 	store, err := NewSQLiteStore(f.db)
 	if err != nil {
 		t.Fatalf("NewSQLiteStore: %v", err)
@@ -93,6 +96,10 @@ func TestBackfillRunsOnceEvenAfterRevoke(t *testing.T) {
 	}
 	if len(rows) != 0 {
 		t.Errorf("after Revoke + restart, Resolve = %+v, want empty (no re-backfill)", rows)
+	}
+	keepRows, _ := store.Resolve(keepUID)
+	if len(keepRows) != 1 || keepRows[0].Role != RoleAdmin {
+		t.Errorf("keep user lost backfilled admin: %+v", keepRows)
 	}
 }
 
@@ -217,6 +224,13 @@ func TestRevokeGlobalVsGroupRowsAreDistinct(t *testing.T) {
 	}
 	if err := store.Grant(Assignment{UserID: uid, GroupID: &g.ID, Role: RoleAdmin}); err != nil {
 		t.Fatalf("Grant group: %v", err)
+	}
+	// Second global admin so the last-admin guard doesn't block the
+	// revoke under test — the assertion is about scope distinctness,
+	// not the count guard.
+	keepUID := mustUser(t, f.auth, "keep")
+	if err := store.Grant(Assignment{UserID: keepUID, Role: RoleAdmin}); err != nil {
+		t.Fatalf("Grant keep global: %v", err)
 	}
 	if err := store.Revoke(Assignment{UserID: uid, Role: RoleAdmin}); err != nil {
 		t.Fatalf("Revoke global: %v", err)
@@ -378,5 +392,107 @@ func TestCascadeOnGroupDelete(t *testing.T) {
 		if r.GroupID != nil && *r.GroupID == g.ID {
 			t.Errorf("after group delete, found surviving group row %+v", r)
 		}
+	}
+}
+
+// Last-global-admin guard matrix per project_roadmap.md. Four cases
+// across the revoke path: refuse when one remains, succeed when two,
+// untouched for non-admin role, untouched for group-scoped admin.
+
+func TestRevokeRefusesLastGlobalAdmin(t *testing.T) {
+	f := newFixture(t)
+	uid := mustUser(t, f.auth, "alice")
+	store, err := NewSQLiteStore(f.db)
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	err = store.Revoke(Assignment{UserID: uid, Role: RoleAdmin})
+	if !errors.Is(err, ErrLastGlobalAdmin) {
+		t.Errorf("Revoke last global admin err = %v, want ErrLastGlobalAdmin", err)
+	}
+	rows, _ := store.Resolve(uid)
+	if len(rows) != 1 || rows[0].Role != RoleAdmin || rows[0].GroupID != nil {
+		t.Errorf("guard must roll back: Resolve = %+v", rows)
+	}
+}
+
+func TestRevokeSucceedsWhenTwoGlobalAdmins(t *testing.T) {
+	f := newFixture(t)
+	aliceID := mustUser(t, f.auth, "alice")
+	bobID := mustUser(t, f.auth, "bob")
+	store, err := NewSQLiteStore(f.db)
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	if err := store.Revoke(Assignment{UserID: aliceID, Role: RoleAdmin}); err != nil {
+		t.Errorf("Revoke alice (one of two admins) err = %v, want nil", err)
+	}
+	rows, _ := store.Resolve(bobID)
+	if len(rows) != 1 || rows[0].Role != RoleAdmin {
+		t.Errorf("bob should retain global admin: %+v", rows)
+	}
+}
+
+func TestRevokeNonAdminRoleSkipsGuard(t *testing.T) {
+	f := newFixture(t)
+	aliceID := mustUser(t, f.auth, "alice")
+	store, err := NewSQLiteStore(f.db)
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	if err := store.Grant(Assignment{UserID: aliceID, Role: RoleOperator}); err != nil {
+		t.Fatalf("Grant operator: %v", err)
+	}
+	// Now alice holds {admin via backfill, operator via grant}, both global.
+	// Revoking the operator role does not count against the admin guard.
+	if err := store.Revoke(Assignment{UserID: aliceID, Role: RoleOperator}); err != nil {
+		t.Errorf("Revoke global operator err = %v, want nil", err)
+	}
+}
+
+func TestRevokeGroupAdminSkipsGuard(t *testing.T) {
+	f := newFixture(t)
+	aliceID := mustUser(t, f.auth, "alice")
+	g, _ := f.groups.Create(groups.GroupInput{Name: "prod"})
+	store, err := NewSQLiteStore(f.db)
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	// alice has backfilled global admin + a new per-group admin.
+	if err := store.Grant(Assignment{UserID: aliceID, GroupID: &g.ID, Role: RoleAdmin}); err != nil {
+		t.Fatalf("Grant group admin: %v", err)
+	}
+	// Revoking the group-scoped admin must succeed — the count of
+	// (role=admin AND group_id IS NULL) rows is untouched.
+	if err := store.Revoke(Assignment{UserID: aliceID, GroupID: &g.ID, Role: RoleAdmin}); err != nil {
+		t.Errorf("Revoke group admin err = %v, want nil", err)
+	}
+	rows, _ := store.Resolve(aliceID)
+	if len(rows) != 1 || rows[0].GroupID != nil {
+		t.Errorf("global admin should remain, group admin gone: %+v", rows)
+	}
+}
+
+func TestEnsureGlobalAdminRemainsInsideTx(t *testing.T) {
+	f := newFixture(t)
+	mustUser(t, f.auth, "alice")
+	if _, err := NewSQLiteStore(f.db); err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	tx, err := f.db.Begin()
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	// With one global admin in place, the check passes.
+	if err := EnsureGlobalAdminRemains(tx); err != nil {
+		t.Errorf("with one admin, err = %v, want nil", err)
+	}
+	// Wipe the row inside the same tx and re-run — must fail.
+	if _, err := tx.Exec(`DELETE FROM user_roles WHERE role = ? AND group_id IS NULL`, string(RoleAdmin)); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if err := EnsureGlobalAdminRemains(tx); !errors.Is(err, ErrLastGlobalAdmin) {
+		t.Errorf("after delete, err = %v, want ErrLastGlobalAdmin", err)
 	}
 }

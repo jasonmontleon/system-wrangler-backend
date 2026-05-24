@@ -120,6 +120,15 @@ func main() {
 		slog.Error("init rbac store", "err", err)
 		os.Exit(1)
 	}
+	authStore.PostDelete = func(tx *sql.Tx, _ string) error {
+		if err := rbac.EnsureGlobalAdminRemains(tx); err != nil {
+			if errors.Is(err, rbac.ErrLastGlobalAdmin) {
+				return auth.ErrLastGlobalAdmin
+			}
+			return err
+		}
+		return nil
+	}
 	credStore, err := credentials.NewSQLiteStore(db)
 	if err != nil {
 		slog.Error("init credentials store", "err", err)

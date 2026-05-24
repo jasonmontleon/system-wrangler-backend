@@ -208,12 +208,15 @@ func (s *Service) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err := s.Store.Delete(id); err != nil {
-		if errors.Is(err, ErrUserNotFound) {
+		switch {
+		case errors.Is(err, ErrUserNotFound):
 			writeError(w, http.StatusNotFound, "user not found")
-			return
+		case errors.Is(err, ErrLastGlobalAdmin):
+			writeError(w, http.StatusConflict, "cannot remove the last global admin; promote another user first")
+		default:
+			writeError(w, http.StatusInternalServerError, "delete failed")
+			slog.Error("admin delete user", "err", err)
 		}
-		writeError(w, http.StatusInternalServerError, "delete failed")
-		slog.Error("admin delete user", "err", err)
 		return
 	}
 	s.logAudit(r.Context(), audit.Event{

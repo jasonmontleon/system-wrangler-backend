@@ -101,6 +101,13 @@ type SQLiteAuthStore struct {
 	db    *sql.DB
 	NewID func() string
 	Now   func() time.Time
+
+	// PostDelete, if set, runs inside the user-delete transaction
+	// after the users-row DELETE (and therefore after the FK cascade
+	// on dependent tables like user_roles). Returning a non-nil error
+	// rolls the tx back. Wired in main.go to enforce the
+	// last-global-admin guard via rbac.EnsureGlobalAdminRemains.
+	PostDelete func(tx *sql.Tx, userID string) error
 }
 
 const schema = `
@@ -1063,6 +1070,11 @@ func (s *SQLiteAuthStore) Delete(id string) error {
 	}
 	if _, err := tx.Exec(`DELETE FROM recovery_codes WHERE user_id = ?`, id); err != nil {
 		return fmt.Errorf("auth: delete user recovery: %w", err)
+	}
+	if s.PostDelete != nil {
+		if err := s.PostDelete(tx, id); err != nil {
+			return err
+		}
 	}
 	return tx.Commit()
 }

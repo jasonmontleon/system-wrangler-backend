@@ -211,25 +211,57 @@ func (s *SQLiteStore) Grant(a Assignment) error {
 // Revoke deletes a single role assignment. Returns ErrNotFound when
 // no matching row exists. NULL vs non-NULL group_id is matched
 // exactly: nil GroupID only revokes the global row.
+//
+// When the revocation targets the global Admin row, the delete runs
+// inside a transaction with a post-mutation count check; if the
+// instance would be left with zero global Admins, the tx rolls back
+// and ErrLastGlobalAdmin surfaces. The count is taken after the
+// delete on purpose — robust against future cascade behaviour, vs a
+// pre-mutation count that has to enumerate every effect.
 func (s *SQLiteStore) Revoke(a Assignment) error {
 	if !a.Role.IsValid() {
 		return fmt.Errorf("%w: unknown role %q", ErrInvalid, a.Role)
 	}
-	var (
-		res sql.Result
-		err error
-	)
-	if a.GroupID == nil {
-		res, err = s.db.Exec(
-			`DELETE FROM user_roles WHERE user_id = ? AND group_id IS NULL AND role = ?`,
-			a.UserID, string(a.Role),
-		)
-	} else {
-		res, err = s.db.Exec(
+	if a.GroupID != nil {
+		res, err := s.db.Exec(
 			`DELETE FROM user_roles WHERE user_id = ? AND group_id = ? AND role = ?`,
 			a.UserID, *a.GroupID, string(a.Role),
 		)
+		return rowsAffectedToErr(res, err)
 	}
+	if a.Role != RoleAdmin {
+		res, err := s.db.Exec(
+			`DELETE FROM user_roles WHERE user_id = ? AND group_id IS NULL AND role = ?`,
+			a.UserID, string(a.Role),
+		)
+		return rowsAffectedToErr(res, err)
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("rbac: revoke begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	res, err := tx.Exec(
+		`DELETE FROM user_roles WHERE user_id = ? AND group_id IS NULL AND role = ?`,
+		a.UserID, string(RoleAdmin),
+	)
+	if err := rowsAffectedToErr(res, err); err != nil {
+		return err
+	}
+	n, err := countGlobalAdminsTx(tx)
+	if err != nil {
+		return fmt.Errorf("rbac: revoke count: %w", err)
+	}
+	if n == 0 {
+		return ErrLastGlobalAdmin
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("rbac: revoke commit: %w", err)
+	}
+	return nil
+}
+
+func rowsAffectedToErr(res sql.Result, err error) error {
 	if err != nil {
 		return fmt.Errorf("rbac: revoke: %w", err)
 	}
@@ -241,6 +273,32 @@ func (s *SQLiteStore) Revoke(a Assignment) error {
 		return ErrNotFound
 	}
 	return nil
+}
+
+// EnsureGlobalAdminRemains runs the post-mutation count check inside
+// an externally-owned tx. Returns ErrLastGlobalAdmin when no global
+// Admin row remains. Designed for the auth user-delete path: the FK
+// cascade on `user_roles` fires when `users` row deletes, so this is
+// called inside the same tx right after the user DELETE to gate
+// commit on someone still being able to manage roles.
+func EnsureGlobalAdminRemains(tx *sql.Tx) error {
+	n, err := countGlobalAdminsTx(tx)
+	if err != nil {
+		return fmt.Errorf("rbac: count global admins: %w", err)
+	}
+	if n == 0 {
+		return ErrLastGlobalAdmin
+	}
+	return nil
+}
+
+func countGlobalAdminsTx(tx *sql.Tx) (int, error) {
+	var n int
+	err := tx.QueryRow(
+		`SELECT COUNT(*) FROM user_roles WHERE role = ? AND group_id IS NULL`,
+		string(RoleAdmin),
+	).Scan(&n)
+	return n, err
 }
 
 // ListByGroup returns every per-group assignment for the supplied

@@ -420,12 +420,15 @@ func (h *Handler) revokeAdmin(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err := h.Store.Revoke(Assignment(body)); err != nil {
-		if errors.Is(err, ErrNotFound) {
+		switch {
+		case errors.Is(err, ErrNotFound):
 			writeError(w, http.StatusNotFound, "assignment not found")
-			return
+		case errors.Is(err, ErrLastGlobalAdmin):
+			writeError(w, http.StatusConflict, "cannot remove the last global admin; promote another user first")
+		default:
+			writeError(w, http.StatusInternalServerError, "revoke failed")
+			slog.Error("rbac revoke admin", "err", err)
 		}
-		writeError(w, http.StatusInternalServerError, "revoke failed")
-		slog.Error("rbac revoke admin", "err", err)
 		return
 	}
 	if uErr != nil {

@@ -910,3 +910,22 @@ func TestAdminGrantGlobalEmitsAuditWithNullGroup(t *testing.T) {
 		t.Errorf("audit detail group_id = %v (present=%v), want explicit nil", v, present)
 	}
 }
+
+func TestAdminRevokeLastGlobalAdminReturns409(t *testing.T) {
+	f := newHandlerFixture(t)
+	uid := f.mustUser(t, "alice")
+	if err := f.store.Grant(Assignment{UserID: uid, Role: RoleAdmin}); err != nil {
+		t.Fatalf("seed global admin: %v", err)
+	}
+	f.setScope(NewScope(uid, []Assignment{{UserID: uid, Role: RoleAdmin}}))
+	body := strings.NewReader(`{"userId":"` + uid + `","groupId":null,"role":"admin"}`)
+	resp := doReq(t, mustReq(t, http.MethodDelete, f.srv.URL+"/api/admin/role-assignments", body))
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("status = %d, want 409", resp.StatusCode)
+	}
+	rows, _ := f.store.Resolve(uid)
+	if len(rows) != 1 || rows[0].Role != RoleAdmin {
+		t.Errorf("alice lost her global admin row despite 409: %+v", rows)
+	}
+}

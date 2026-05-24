@@ -3,6 +3,7 @@
 package auth
 
 import (
+	"database/sql"
 	"errors"
 	"testing"
 	"time"
@@ -109,5 +110,39 @@ func TestStoreTxMethodsNilFallback(t *testing.T) {
 	}
 	if err := s.DisableTOTPTx(nil, u.ID); err != nil {
 		t.Errorf("DisableTOTPTx(nil): %v", err)
+	}
+}
+
+func TestDeletePostDeleteHookCommitsAndRollsBack(t *testing.T) {
+	s := newTestAuthStore(t)
+	alice, _ := s.Create("alice", "h")
+	bob, _ := s.Create("bob", "h")
+
+	// No hook → normal delete succeeds.
+	if err := s.Delete(bob.ID); err != nil {
+		t.Fatalf("Delete (no hook): %v", err)
+	}
+	if _, err := s.GetByID(bob.ID); !errors.Is(err, ErrUserNotFound) {
+		t.Errorf("bob still present after delete: err=%v", err)
+	}
+
+	// Hook returns ErrLastGlobalAdmin → tx rolls back, alice survives.
+	s.PostDelete = func(_ *sql.Tx, _ string) error {
+		return ErrLastGlobalAdmin
+	}
+	if err := s.Delete(alice.ID); !errors.Is(err, ErrLastGlobalAdmin) {
+		t.Fatalf("Delete (hook blocks) = %v, want ErrLastGlobalAdmin", err)
+	}
+	if _, err := s.GetByID(alice.ID); err != nil {
+		t.Errorf("alice missing after rolled-back delete: err=%v", err)
+	}
+
+	// Hook returns nil → tx commits, alice deleted.
+	s.PostDelete = func(_ *sql.Tx, _ string) error { return nil }
+	if err := s.Delete(alice.ID); err != nil {
+		t.Fatalf("Delete (hook allows): %v", err)
+	}
+	if _, err := s.GetByID(alice.ID); !errors.Is(err, ErrUserNotFound) {
+		t.Errorf("alice still present after committed delete: err=%v", err)
 	}
 }
