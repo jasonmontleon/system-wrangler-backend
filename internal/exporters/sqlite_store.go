@@ -38,6 +38,13 @@ type Store interface {
 	GetSystemExporter(systemID, exporterID string) (SystemExporter, error)
 	ListSystemExporters(systemID string) ([]SystemExporter, error)
 	MarkRemoved(systemID, exporterID string, at time.Time, reason string) error
+	// SetScrapeEnabled flips the operator-controlled scrape toggle on
+	// an existing (system, exporter) row. Returns ErrNotFound when the
+	// row doesn't exist (install must have happened first). Returns
+	// the row state in the bool: true if the value actually changed,
+	// false if it was already at the requested value (idempotent
+	// caller).
+	SetScrapeEnabled(systemID, exporterID string, enabled bool) (changed bool, err error)
 
 	// Settings — auto-creates a default row on first read so the
 	// handler can rely on ScrapeLocalhost in the absence of any
@@ -66,7 +73,29 @@ func NewSQLiteStore(db *sql.DB) (*SQLiteStore, error) {
 	if _, err := db.Exec(schema); err != nil {
 		return nil, fmt.Errorf("exporters: schema: %w", err)
 	}
+	if err := addScrapeEnabledColumn(db); err != nil {
+		return nil, fmt.Errorf("exporters: migrate scrape_enabled: %w", err)
+	}
 	return &SQLiteStore{db: db, NewID: newUUID, Now: time.Now}, nil
+}
+
+// addScrapeEnabledColumn brings databases predating the per-row
+// "Prometheus is scraping this entry" toggle up to schema. Pragma-probe
+// pattern shared with the rest of the tree; defaults to 1 so existing
+// rows keep being scraped (the only path to 0 is the operator hitting
+// the pause Switch).
+func addScrapeEnabledColumn(db *sql.DB) error {
+	row := db.QueryRow(`SELECT 1 FROM pragma_table_info('system_exporters') WHERE name = 'scrape_enabled'`)
+	var found int
+	switch err := row.Scan(&found); {
+	case err == nil:
+		return nil
+	case errors.Is(err, sql.ErrNoRows):
+		_, err := db.Exec(`ALTER TABLE system_exporters ADD COLUMN scrape_enabled INTEGER NOT NULL DEFAULT 1`)
+		return err
+	default:
+		return err
+	}
 }
 
 // schema covers the four exporter tables. Cascade triggers on hosts
@@ -99,6 +128,7 @@ CREATE TABLE IF NOT EXISTS system_exporters (
     last_status_at   INTEGER,
     last_install_at  INTEGER,
     last_reason      TEXT NOT NULL DEFAULT '',
+    scrape_enabled   INTEGER NOT NULL DEFAULT 1 CHECK (scrape_enabled IN (0, 1)),
     PRIMARY KEY (system_id, exporter_id)
 ) STRICT;
 
@@ -304,6 +334,9 @@ func (s *SQLiteStore) UpsertSystemExporter(row SystemExporter) error {
 	// Manual two-step upsert keeps last_install_at sticky — a status
 	// row shouldn't blow away the install timestamp. Existing row
 	// fields are reused if the upsert's value is the zero/empty form.
+	// scrape_enabled is operator-controlled and intentionally NOT in
+	// the UPDATE SET — new rows get the schema default (1); existing
+	// rows keep whatever the operator last set via the Scrape toggle.
 	_, err := s.db.Exec(
 		`INSERT INTO system_exporters
 			(system_id, exporter_id, state, port, service_name,
@@ -329,7 +362,7 @@ func (s *SQLiteStore) UpsertSystemExporter(row SystemExporter) error {
 func (s *SQLiteStore) GetSystemExporter(systemID, exporterID string) (SystemExporter, error) {
 	row := s.db.QueryRow(
 		`SELECT system_id, exporter_id, state, port, service_name,
-		        last_status_at, last_install_at, last_reason
+		        last_status_at, last_install_at, last_reason, scrape_enabled
 		 FROM system_exporters
 		 WHERE system_id = ? AND exporter_id = ?`,
 		systemID, exporterID,
@@ -345,7 +378,7 @@ func (s *SQLiteStore) GetSystemExporter(systemID, exporterID string) (SystemExpo
 func (s *SQLiteStore) ListSystemExporters(systemID string) ([]SystemExporter, error) {
 	rows, err := s.db.Query(
 		`SELECT system_id, exporter_id, state, port, service_name,
-		        last_status_at, last_install_at, last_reason
+		        last_status_at, last_install_at, last_reason, scrape_enabled
 		 FROM system_exporters
 		 WHERE system_id = ?
 		 ORDER BY exporter_id`,
@@ -364,6 +397,47 @@ func (s *SQLiteStore) ListSystemExporters(systemID string) ([]SystemExporter, er
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+// SetScrapeEnabled flips the operator-controlled scrape toggle.
+// Returns (true, nil) when the value actually changed, (false, nil)
+// when the value already matched (idempotent caller), or (false,
+// ErrNotFound) when no row exists for (systemID, exporterID). The
+// targets.json writer filters by scrape_enabled = 1 so a flip
+// immediately drops the entry from Prometheus's scrape set.
+func (s *SQLiteStore) SetScrapeEnabled(systemID, exporterID string, enabled bool) (bool, error) {
+	want := 0
+	if enabled {
+		want = 1
+	}
+	res, err := s.db.Exec(
+		`UPDATE system_exporters SET scrape_enabled = ?
+		 WHERE system_id = ? AND exporter_id = ? AND scrape_enabled != ?`,
+		want, systemID, exporterID, want,
+	)
+	if err != nil {
+		return false, fmt.Errorf("exporters: set scrape_enabled: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("exporters: rows affected: %w", err)
+	}
+	if n > 0 {
+		return true, nil
+	}
+	// No row was flipped — either the row doesn't exist or the value
+	// already matched. Distinguish via a probe.
+	var probed int
+	switch err := s.db.QueryRow(
+		`SELECT 1 FROM system_exporters WHERE system_id = ? AND exporter_id = ?`,
+		systemID, exporterID,
+	).Scan(&probed); {
+	case errors.Is(err, sql.ErrNoRows):
+		return false, ErrNotFound
+	case err != nil:
+		return false, fmt.Errorf("exporters: scrape_enabled probe: %w", err)
+	}
+	return false, nil
 }
 
 // MarkRemoved flips an existing row to state=removed without
@@ -574,14 +648,15 @@ func scanDef(s scanner) (Definition, error) {
 
 func scanSystemExporter(s scanner) (SystemExporter, error) {
 	var (
-		r           SystemExporter
-		state       string
-		lastStatus  sql.NullInt64
-		lastInstall sql.NullInt64
+		r             SystemExporter
+		state         string
+		lastStatus    sql.NullInt64
+		lastInstall   sql.NullInt64
+		scrapeEnabled int
 	)
 	if err := s.Scan(
 		&r.SystemID, &r.ExporterID, &state, &r.Port, &r.ServiceName,
-		&lastStatus, &lastInstall, &r.LastReason,
+		&lastStatus, &lastInstall, &r.LastReason, &scrapeEnabled,
 	); err != nil {
 		return SystemExporter{}, err
 	}
@@ -594,6 +669,7 @@ func scanSystemExporter(s scanner) (SystemExporter, error) {
 		t := time.Unix(0, lastInstall.Int64).UTC()
 		r.LastInstallAt = &t
 	}
+	r.ScrapeEnabled = scrapeEnabled != 0
 	return r, nil
 }
 

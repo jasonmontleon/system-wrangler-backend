@@ -380,3 +380,139 @@ func TestCascadeOnSystemDelete(t *testing.T) {
 		t.Errorf("exporter_runs not cascaded: %d", len(runs))
 	}
 }
+
+func TestNewSystemExporterDefaultsScrapeEnabled(t *testing.T) {
+	store, sysStore, _ := newStoreWithSystems(t)
+	sys, _ := sysStore.Create(systems.SystemInput{Name: "a", Hostname: "a.example"})
+	now := time.Now().UTC()
+	if err := store.UpsertSystemExporter(SystemExporter{
+		SystemID: sys.ID, ExporterID: "builtin.dnf.exporter",
+		State: StateRunning, Port: 9100, LastStatusAt: &now,
+	}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	got, err := store.GetSystemExporter(sys.ID, "builtin.dnf.exporter")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if !got.ScrapeEnabled {
+		t.Errorf("new row ScrapeEnabled = false, want true")
+	}
+}
+
+func TestSetScrapeEnabledChangedThenIdempotent(t *testing.T) {
+	store, sysStore, _ := newStoreWithSystems(t)
+	sys, _ := sysStore.Create(systems.SystemInput{Name: "a", Hostname: "a.example"})
+	now := time.Now().UTC()
+	_ = store.UpsertSystemExporter(SystemExporter{
+		SystemID: sys.ID, ExporterID: "builtin.dnf.exporter",
+		State: StateRunning, Port: 9100, LastStatusAt: &now,
+	})
+
+	changed, err := store.SetScrapeEnabled(sys.ID, "builtin.dnf.exporter", false)
+	if err != nil {
+		t.Fatalf("disable: %v", err)
+	}
+	if !changed {
+		t.Errorf("first disable: changed = false, want true")
+	}
+	got, _ := store.GetSystemExporter(sys.ID, "builtin.dnf.exporter")
+	if got.ScrapeEnabled {
+		t.Errorf("after disable, ScrapeEnabled = true")
+	}
+
+	changed, err = store.SetScrapeEnabled(sys.ID, "builtin.dnf.exporter", false)
+	if err != nil {
+		t.Fatalf("re-disable: %v", err)
+	}
+	if changed {
+		t.Errorf("re-disable: changed = true, want false (idempotent)")
+	}
+
+	changed, _ = store.SetScrapeEnabled(sys.ID, "builtin.dnf.exporter", true)
+	if !changed {
+		t.Errorf("re-enable: changed = false, want true")
+	}
+}
+
+func TestSetScrapeEnabledMissingRowReturnsNotFound(t *testing.T) {
+	store := newStore(t)
+	changed, err := store.SetScrapeEnabled("ghost-sys", "builtin.dnf.exporter", false)
+	if !errors.Is(err, ErrNotFound) {
+		t.Errorf("err = %v, want ErrNotFound", err)
+	}
+	if changed {
+		t.Errorf("changed = true on missing row")
+	}
+}
+
+func TestUpsertPreservesScrapeEnabled(t *testing.T) {
+	store, sysStore, _ := newStoreWithSystems(t)
+	sys, _ := sysStore.Create(systems.SystemInput{Name: "a", Hostname: "a.example"})
+	now := time.Now().UTC()
+	_ = store.UpsertSystemExporter(SystemExporter{
+		SystemID: sys.ID, ExporterID: "builtin.dnf.exporter",
+		State: StateRunning, Port: 9100, LastStatusAt: &now,
+	})
+	if _, err := store.SetScrapeEnabled(sys.ID, "builtin.dnf.exporter", false); err != nil {
+		t.Fatalf("disable: %v", err)
+	}
+	// A subsequent status upsert must not flip scrape_enabled back to
+	// true — pause is operator state, not observed state.
+	later := now.Add(time.Minute)
+	_ = store.UpsertSystemExporter(SystemExporter{
+		SystemID: sys.ID, ExporterID: "builtin.dnf.exporter",
+		State: StateRunning, Port: 9100, LastStatusAt: &later,
+	})
+	got, _ := store.GetSystemExporter(sys.ID, "builtin.dnf.exporter")
+	if got.ScrapeEnabled {
+		t.Errorf("status upsert reset ScrapeEnabled; want false")
+	}
+}
+
+// TestScrapeEnabledMigratesLegacyDB exercises the pragma-probe migration
+// against a hand-built legacy schema lacking the scrape_enabled column,
+// the path that runs on an upgrade from a pre-pause release.
+func TestScrapeEnabledMigratesLegacyDB(t *testing.T) {
+	dsn := "file:" + t.TempDir() + "/legacy.db"
+	db, err := database.Open(dsn)
+	if err != nil {
+		t.Fatalf("database.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := db.Exec(`CREATE TABLE system_exporters (
+		system_id        TEXT NOT NULL,
+		exporter_id      TEXT NOT NULL,
+		state            TEXT NOT NULL,
+		port             INTEGER NOT NULL DEFAULT 0,
+		service_name     TEXT NOT NULL DEFAULT '',
+		last_status_at   INTEGER,
+		last_install_at  INTEGER,
+		last_reason      TEXT NOT NULL DEFAULT '',
+		PRIMARY KEY (system_id, exporter_id)
+	) STRICT`); err != nil {
+		t.Fatalf("legacy: %v", err)
+	}
+	if _, err := db.Exec(
+		`INSERT INTO system_exporters (system_id, exporter_id, state) VALUES (?, ?, 'installed')`,
+		"sys-1", "builtin.dnf.exporter",
+	); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if err := addScrapeEnabledColumn(db); err != nil {
+		t.Fatalf("migration: %v", err)
+	}
+	var n int
+	if err := db.QueryRow(
+		`SELECT scrape_enabled FROM system_exporters WHERE system_id = ?`,
+		"sys-1",
+	).Scan(&n); err != nil {
+		t.Fatalf("post-migration probe: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("legacy row scrape_enabled = %d, want 1 (default for upgrade)", n)
+	}
+	if err := addScrapeEnabledColumn(db); err != nil {
+		t.Errorf("second migration call must be a no-op: %v", err)
+	}
+}

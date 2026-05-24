@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"system-wrangler-backend/internal/ansible"
+	"system-wrangler-backend/internal/audit"
 	"system-wrangler-backend/internal/router"
 	"system-wrangler-backend/internal/systems"
 )
@@ -51,6 +52,7 @@ type Handler struct {
 	Store   Store
 	Systems SystemLookup
 	Probe   PkgManagerProbe
+	Audit   *audit.Store
 
 	// CanOperateSystem gates the mutating endpoints. Bound in main.go
 	// to "Global Operator OR Group Operator+ on sys.GroupID".
@@ -60,6 +62,11 @@ type Handler struct {
 	// scope-resolved read check so an auditor can see Monitoring
 	// state.
 	CanReadSystem func(ctx context.Context, s systems.System) bool
+
+	// Notify, if set, is called when the scrape toggle flips so the
+	// promtargets writer can regenerate immediately. Bound to
+	// events.Hub.Broadcast("systems.changed") in main.go.
+	Notify func(eventType string)
 }
 
 // Register attaches the routes behind mw (the authenticated-user
@@ -72,6 +79,7 @@ func (h *Handler) Register(mux router.Mux, mw func(http.Handler) http.Handler) {
 	mux.Handle("POST /api/systems/{id}/exporters/{exporter}/install", mw(http.HandlerFunc(h.install)))
 	mux.Handle("POST /api/systems/{id}/exporters/{exporter}/status", mw(http.HandlerFunc(h.status)))
 	mux.Handle("POST /api/systems/{id}/exporters/{exporter}/remove", mw(http.HandlerFunc(h.remove)))
+	mux.Handle("PUT /api/systems/{id}/exporters/{exporter}/scrape", mw(http.HandlerFunc(h.setScrape)))
 	mux.Handle("PUT /api/systems/{id}/exporter-settings", mw(http.HandlerFunc(h.setSettings)))
 	mux.Handle("GET /api/systems/{id}/exporter-runs", mw(http.HandlerFunc(h.listRuns)))
 }
@@ -91,6 +99,7 @@ type SystemExporterDTO struct {
 	HasRemove           bool         `json:"hasRemove"`
 	Availability        Availability `json:"availability"`
 	Installed           bool         `json:"installed"`
+	ScrapeEnabled       bool         `json:"scrapeEnabled"`
 	State               State        `json:"state,omitempty"`
 	Port                int          `json:"port,omitempty"`
 	ServiceName         string       `json:"serviceName,omitempty"`
@@ -213,6 +222,7 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 			BindPort:            d.BindPort,
 			HasRemove:           d.HasRemove(),
 			Availability:        resolveAvailability(d.AppliesToPkgManager, detected, detectedSet),
+			ScrapeEnabled:       true,
 		}
 		if sx, found := byID[d.ID]; found && sx.State != StateRemoved {
 			dto.Installed = true
@@ -222,11 +232,13 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 			dto.LastStatusAt = sx.LastStatusAt
 			dto.LastInstallAt = sx.LastInstallAt
 			dto.LastReason = sx.LastReason
+			dto.ScrapeEnabled = sx.ScrapeEnabled
 		} else if found && sx.State == StateRemoved {
 			dto.State = StateRemoved
 			dto.LastStatusAt = sx.LastStatusAt
 			dto.LastInstallAt = sx.LastInstallAt
 			dto.LastReason = sx.LastReason
+			dto.ScrapeEnabled = sx.ScrapeEnabled
 		}
 		out = append(out, dto)
 	}
@@ -329,6 +341,79 @@ func (h *Handler) runEndpoint(w http.ResponseWriter, r *http.Request, kind RunKi
 		Reason:     res.Reason,
 		DurationMS: dur,
 	})
+}
+
+// scrapeInputDTO is the PUT body for /exporters/{exporter}/scrape.
+type scrapeInputDTO struct {
+	Enabled bool `json:"enabled"`
+}
+
+func (h *Handler) setScrape(w http.ResponseWriter, r *http.Request) {
+	sys, ok := h.loadSystem(w, r)
+	if !ok {
+		return
+	}
+	if !h.canOperate(r.Context(), sys) {
+		writeError(w, http.StatusForbidden, "forbidden")
+		return
+	}
+	exporterID := r.PathValue("exporter")
+	if exporterID == "" {
+		writeError(w, http.StatusBadRequest, "exporter id required")
+		return
+	}
+	var in scrapeInputDTO
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	changed, err := h.Store.SetScrapeEnabled(sys.ID, exporterID, in.Enabled)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			writeError(w, http.StatusNotFound, "exporter is not installed on this system")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "set scrape failed")
+		slog.Error("exporters set scrape", "err", err, "system_id", sys.ID, "exporter_id", exporterID) //nolint:gosec
+		return
+	}
+	if changed {
+		action := "system.exporter.scrape.enable"
+		if !in.Enabled {
+			action = "system.exporter.scrape.disable"
+		}
+		if h.Audit != nil {
+			if err := h.Audit.Log(r.Context(), audit.Event{
+				Action:     action,
+				Outcome:    audit.Success,
+				TargetKind: "system",
+				TargetID:   sys.ID,
+				Detail: audit.Detail{
+					"exporter_id": exporterID,
+				},
+			}); err != nil {
+				slog.Error("exporters audit scrape", "err", err, "action", action)
+			}
+		}
+		if h.Notify != nil {
+			h.Notify("systems.changed")
+		}
+	}
+	row, err := h.Store.GetSystemExporter(sys.ID, exporterID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "load exporter row failed")
+		slog.Error("exporters load after scrape toggle", "err", err) //nolint:gosec
+		return
+	}
+	writeJSON(w, http.StatusOK, scrapeResponseDTO{
+		ExporterID:    exporterID,
+		ScrapeEnabled: row.ScrapeEnabled,
+	})
+}
+
+type scrapeResponseDTO struct {
+	ExporterID    string `json:"exporterId"`
+	ScrapeEnabled bool   `json:"scrapeEnabled"`
 }
 
 func (h *Handler) setSettings(w http.ResponseWriter, r *http.Request) {

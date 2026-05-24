@@ -106,6 +106,9 @@ func (w *Writer) Regenerate(_ context.Context) error {
 			if row.State != exporters.StateInstalled && row.State != exporters.StateRunning {
 				continue
 			}
+			if !row.ScrapeEnabled {
+				continue
+			}
 			labels := map[string]string{
 				"__metrics_path__": fmt.Sprintf("/internal/scrape/%s/%s", h.ID, row.ExporterID),
 				"system_id":        h.ID,

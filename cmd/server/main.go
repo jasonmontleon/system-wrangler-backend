@@ -557,6 +557,10 @@ func populateMux(mux router.Mux, db *sql.DB, store systems.Store, groupStore gro
 			Store:   exporterStore,
 			Systems: store,
 			Probe:   updaterPkgManagerProbe{store: updaterStore},
+			Audit:   auditStore,
+			Notify: func(t string) {
+				hub.Broadcast(events.Event{Type: t})
+			},
 			CanOperateSystem: func(ctx context.Context, s systems.System) bool {
 				scope, ok := rbac.ScopeFromContext(ctx)
 				if !ok {

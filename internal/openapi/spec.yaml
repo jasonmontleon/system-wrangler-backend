@@ -1806,6 +1806,52 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /api/systems/{id}/exporters/{exporter}/scrape:
+    put:
+      tags: [exporters]
+      summary: Pause or resume Prometheus scraping for an installed exporter.
+      description: |
+        Flips `scrape_enabled` on the (system, exporter) row.
+        Prometheus's targets.json filters by this flag so a paused
+        entry stops being scraped without uninstalling the exporter
+        on the host. Idempotent: setting an already-current value
+        returns 200 without emitting an audit event. On actual
+        change, emits `system.exporter.scrape.enable` or
+        `system.exporter.scrape.disable` and broadcasts
+        `systems.changed`.
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+        - { in: path, name: exporter, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [enabled]
+              properties:
+                enabled: { type: boolean }
+      responses:
+        "200":
+          description: Current scrape state for the row.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [exporterId, scrapeEnabled]
+                properties:
+                  exporterId: { type: string }
+                  scrapeEnabled: { type: boolean }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404":
+          description: System or exporter row not found (exporter is not installed on this system).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /api/systems/{id}/exporter-settings:
     put:
       tags: [exporters]

@@ -117,6 +117,44 @@ func TestRegenerateIncludesInstalledRows(t *testing.T) {
 	}
 }
 
+func TestRegenerateExcludesPausedScrape(t *testing.T) {
+	w, sysStore, expStore, path := newWriter(t)
+	sys, _ := sysStore.Create(systems.SystemInput{Name: "p", Hostname: "p.example"})
+	at := time.Now().UTC()
+	if err := expStore.UpsertSystemExporter(exporters.SystemExporter{
+		SystemID:     sys.ID,
+		ExporterID:   "builtin.dnf.exporter",
+		State:        exporters.StateRunning,
+		Port:         9100,
+		LastStatusAt: &at,
+	}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	if _, err := expStore.SetScrapeEnabled(sys.ID, "builtin.dnf.exporter", false); err != nil {
+		t.Fatalf("set scrape disabled: %v", err)
+	}
+	if err := w.Regenerate(context.Background()); err != nil {
+		t.Fatalf("Regenerate: %v", err)
+	}
+	body, _ := os.ReadFile(path) //nolint:gosec // t.TempDir() path
+	if strings.TrimSpace(string(body)) != "[]" {
+		t.Errorf("body = %q, want [] (paused rows must be excluded)", string(body))
+	}
+	// Re-enable → row reappears.
+	if _, err := expStore.SetScrapeEnabled(sys.ID, "builtin.dnf.exporter", true); err != nil {
+		t.Fatalf("re-enable: %v", err)
+	}
+	if err := w.Regenerate(context.Background()); err != nil {
+		t.Fatalf("re-regen: %v", err)
+	}
+	body, _ = os.ReadFile(path) //nolint:gosec // t.TempDir() path
+	var entries []Entry
+	_ = json.Unmarshal(body, &entries)
+	if len(entries) != 1 {
+		t.Errorf("after re-enable entries = %d, want 1", len(entries))
+	}
+}
+
 func TestRegenerateExcludesRemoved(t *testing.T) {
 	w, sysStore, expStore, path := newWriter(t)
 	sys, _ := sysStore.Create(systems.SystemInput{Name: "rm", Hostname: "rm.example"})

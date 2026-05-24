@@ -192,6 +192,11 @@ func (d Definition) Validate() error {
 // installed." A row with State=StateRemoved means the operator ran
 // remove.yml; the Monitoring tab shows that distinctly so a re-
 // install is one click.
+//
+// ScrapeEnabled is the operator-controlled "Prometheus is scraping
+// this entry" toggle. Distinct from State — State tracks whether
+// the package is on the host, ScrapeEnabled tracks whether
+// targets.json includes the entry. New rows default to true.
 type SystemExporter struct {
 	SystemID      string
 	ExporterID    string
@@ -201,6 +206,7 @@ type SystemExporter struct {
 	LastStatusAt  *time.Time
 	LastInstallAt *time.Time
 	LastReason    string
+	ScrapeEnabled bool
 }
 
 // SystemSettings is the per-system row in system_exporter_settings.

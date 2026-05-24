@@ -245,6 +245,91 @@ func TestHandlerSetScrapeModeRejectsMTLSToday(t *testing.T) {
 	}
 }
 
+func TestHandlerSetScrapeToggle(t *testing.T) {
+	h, srv, rf := newHandlerFixture(t)
+	notified := 0
+	h.Notify = func(string) { notified++ }
+	// Seed an installed row so the toggle has a target.
+	if err := rf.store.UpsertSystemExporter(SystemExporter{
+		SystemID: rf.systemID, ExporterID: "builtin.dnf.exporter",
+		State: StateRunning, Port: 9100,
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	url := srv.URL + "/api/systems/" + rf.systemID + "/exporters/builtin.dnf.exporter/scrape"
+
+	// First flip: enabled=false → 200, ScrapeEnabled=false in response.
+	resp, err := http.DefaultClient.Do(mustPut(t, url, `{"enabled":false}`))
+	if err != nil {
+		t.Fatalf("disable: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want 200", resp.StatusCode)
+	}
+	var out scrapeResponseDTO
+	_ = json.NewDecoder(resp.Body).Decode(&out)
+	if out.ScrapeEnabled {
+		t.Errorf("ScrapeEnabled = true after disable")
+	}
+	if notified != 1 {
+		t.Errorf("notified = %d, want 1 after first flip", notified)
+	}
+
+	// Idempotent: disable again → 200, no second Notify.
+	resp2, _ := http.DefaultClient.Do(mustPut(t, url, `{"enabled":false}`))
+	defer func() { _ = resp2.Body.Close() }()
+	if resp2.StatusCode != http.StatusOK {
+		t.Errorf("idempotent status = %d", resp2.StatusCode)
+	}
+	if notified != 1 {
+		t.Errorf("notified = %d after idempotent call, want 1", notified)
+	}
+
+	// Re-enable: 200, true, second Notify.
+	resp3, _ := http.DefaultClient.Do(mustPut(t, url, `{"enabled":true}`))
+	defer func() { _ = resp3.Body.Close() }()
+	var out3 scrapeResponseDTO
+	_ = json.NewDecoder(resp3.Body).Decode(&out3)
+	if !out3.ScrapeEnabled {
+		t.Errorf("ScrapeEnabled = false after re-enable")
+	}
+	if notified != 2 {
+		t.Errorf("notified = %d, want 2 after re-enable", notified)
+	}
+}
+
+func TestHandlerSetScrapeMissingRow(t *testing.T) {
+	_, srv, rf := newHandlerFixture(t)
+	url := srv.URL + "/api/systems/" + rf.systemID + "/exporters/builtin.dnf.exporter/scrape"
+	resp, _ := http.DefaultClient.Do(mustPut(t, url, `{"enabled":false}`))
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("status = %d, want 404 (no installed row yet)", resp.StatusCode)
+	}
+}
+
+func TestHandlerSetScrapeForbidden(t *testing.T) {
+	h, srv, rf := newHandlerFixture(t)
+	h.CanOperateSystem = func(context.Context, systems.System) bool { return false }
+	url := srv.URL + "/api/systems/" + rf.systemID + "/exporters/builtin.dnf.exporter/scrape"
+	resp, _ := http.DefaultClient.Do(mustPut(t, url, `{"enabled":false}`))
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("status = %d, want 403", resp.StatusCode)
+	}
+}
+
+func mustPut(t *testing.T, url, body string) *http.Request {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPut, url, strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	return req
+}
+
 func TestHandlerSetScrapeModeInvalid(t *testing.T) {
 	_, srv, rf := newHandlerFixture(t)
 	body := bytes.NewBufferString(`{"scrapeMode":"bogus"}`)
