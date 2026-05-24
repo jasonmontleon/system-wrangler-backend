@@ -74,7 +74,7 @@ type System struct {
 	IsWindows bool `json:"isWindows,omitempty"`
 	// Running is true when an updater (inspect / check / apply) is
 	// currently in flight against this system. Seeded by the
-	// systems-stats hook from updater_run_locks so the SPA can keep
+	// systems-stats hook from system_action_locks so the SPA can keep
 	// a row's spinner lit across page navigation.
 	Running bool `json:"running,omitempty"`
 }

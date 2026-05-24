@@ -12,7 +12,7 @@
 // remove.yml) embedded via go:embed. Custom installers are
 // Global-Admin-managed rows in exporter_definitions.
 //
-// Per-system serialisation reuses the existing updater_run_locks
+// Per-system serialisation reuses the existing system_action_locks
 // row via the Locker interface so concurrent updater + exporter
 // activity on the same host cannot collide. Design and discipline:
 // research/exporter-deployment.md.

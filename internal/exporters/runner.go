@@ -24,11 +24,9 @@ type AnsibleRunner interface {
 }
 
 // Locker is the per-system advisory lock contract. Reused from the
-// updater substrate's `updater_run_locks` row so concurrent updater
+// updater substrate's `system_action_locks` row so concurrent updater
 // + exporter activity on the same host serialises through a single
-// row. *updaters.SQLiteStore satisfies it via its existing methods;
-// any future rename of the table (tracked in project_roadmap.md)
-// rebinds the interface without touching this package.
+// row. *updaters.SQLiteStore satisfies it via its existing methods.
 type Locker interface {
 	AcquireLock(systemID, runID string, at time.Time) error
 	ReleaseLock(systemID, runID string) error

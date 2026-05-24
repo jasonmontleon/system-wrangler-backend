@@ -107,6 +107,9 @@ type SQLiteStore struct {
 // NewSQLiteStore migrates the schema and returns a ready store.
 // Idempotent across boots.
 func NewSQLiteStore(db *sql.DB) (*SQLiteStore, error) {
+	if err := renameUpdaterRunLocksTable(db); err != nil {
+		return nil, fmt.Errorf("updaters: migrate lock table: %w", err)
+	}
 	if _, err := db.Exec(schema); err != nil {
 		return nil, fmt.Errorf("updaters: schema: %w", err)
 	}
@@ -123,6 +126,34 @@ func NewSQLiteStore(db *sql.DB) (*SQLiteStore, error) {
 		return nil, fmt.Errorf("updaters: migrate check_only: %w", err)
 	}
 	return &SQLiteStore{db: db, NewID: newUUID, Now: time.Now}, nil
+}
+
+// renameUpdaterRunLocksTable moves the legacy `updater_run_locks`
+// table to its current name `system_action_locks`. The lock substrate
+// is shared with the exporter runner, so the original name (which
+// pre-dated exporter bootstrap) was misleading. Runs before the
+// schema CREATE so a fresh upgrade path doesn't briefly hold two
+// parallel tables. Idempotent: a fresh DB or an already-renamed DB
+// is a no-op. Also drops the old `updater_locks_cleanup_host`
+// trigger so the schema-defined `system_action_locks_cleanup_host`
+// is the only on-host-delete cleanup running.
+func renameUpdaterRunLocksTable(db *sql.DB) error {
+	var found int
+	switch err := db.QueryRow(
+		`SELECT 1 FROM sqlite_master WHERE type='table' AND name='updater_run_locks'`,
+	).Scan(&found); {
+	case errors.Is(err, sql.ErrNoRows):
+		return nil
+	case err != nil:
+		return err
+	}
+	if _, err := db.Exec(`ALTER TABLE updater_run_locks RENAME TO system_action_locks`); err != nil {
+		return err
+	}
+	if _, err := db.Exec(`DROP TRIGGER IF EXISTS updater_locks_cleanup_host`); err != nil {
+		return err
+	}
+	return nil
 }
 
 // addCheckOnlyColumn brings databases predating the check_only flag
@@ -199,9 +230,12 @@ func addEnabledColumn(db *sql.DB) error {
 }
 
 // schema covers all four updater tables. The cascade trigger on
-// hosts wipes system_updaters / updater_runs / updater_run_locks
+// hosts wipes system_updaters / updater_runs / system_action_locks
 // rows when a host is deleted; updater_definitions are soft-deleted
 // so audit/run-history rows still resolve the name.
+//
+// `system_action_locks` is shared with the exporter runner — both
+// substrates serialise per-host ansible runs through the same row.
 const schema = `
 CREATE TABLE IF NOT EXISTS updater_definitions (
     id              TEXT PRIMARY KEY,
@@ -242,7 +276,7 @@ CREATE TABLE IF NOT EXISTS updater_runs (
 CREATE INDEX IF NOT EXISTS updater_runs_system  ON updater_runs(system_id, started_at DESC);
 CREATE INDEX IF NOT EXISTS updater_runs_updater ON updater_runs(updater_id, started_at DESC);
 
-CREATE TABLE IF NOT EXISTS updater_run_locks (
+CREATE TABLE IF NOT EXISTS system_action_locks (
     system_id     TEXT PRIMARY KEY,
     run_id        TEXT NOT NULL,
     acquired_at   INTEGER NOT NULL
@@ -260,11 +294,11 @@ CREATE TRIGGER IF NOT EXISTS updater_avail_cleanup_host
     BEGIN
         DELETE FROM system_updaters WHERE system_id = OLD.id;
     END;
-CREATE TRIGGER IF NOT EXISTS updater_locks_cleanup_host
+CREATE TRIGGER IF NOT EXISTS system_action_locks_cleanup_host
     AFTER DELETE ON hosts
     FOR EACH ROW
     BEGIN
-        DELETE FROM updater_run_locks WHERE system_id = OLD.id;
+        DELETE FROM system_action_locks WHERE system_id = OLD.id;
     END;
 `
 
@@ -755,11 +789,11 @@ func (s *SQLiteStore) SystemStatsAll() (map[string]SystemStats, error) {
 		return nil, fmt.Errorf("updaters: stats last-run rows: %w", err)
 	}
 
-	// Any system_id present in updater_run_locks has an in-flight
+	// Any system_id present in system_action_locks has an in-flight
 	// run. Insert into the map if missing so a brand-new system on
 	// its first Inspect (no prior runs, no row in `out` yet) still
 	// surfaces Running=true.
-	lockRows, err := s.db.Query(`SELECT DISTINCT system_id FROM updater_run_locks`)
+	lockRows, err := s.db.Query(`SELECT DISTINCT system_id FROM system_action_locks`)
 	if err != nil {
 		return nil, fmt.Errorf("updaters: stats running: %w", err)
 	}
@@ -813,7 +847,7 @@ func (s *SQLiteStore) AcquireLock(systemID, runID string, at time.Time) error {
 		return fmt.Errorf("%w: system_id and run_id required", ErrInvalid)
 	}
 	_, err := s.db.Exec(
-		`INSERT INTO updater_run_locks (system_id, run_id, acquired_at)
+		`INSERT INTO system_action_locks (system_id, run_id, acquired_at)
 		 VALUES (?, ?, ?)`,
 		systemID, runID, at.UTC().UnixNano(),
 	)
@@ -830,7 +864,7 @@ func (s *SQLiteStore) AcquireLock(systemID, runID string, at time.Time) error {
 // row is treated as success.
 func (s *SQLiteStore) ReleaseLock(systemID, runID string) error {
 	if _, err := s.db.Exec(
-		`DELETE FROM updater_run_locks WHERE system_id = ? AND run_id = ?`,
+		`DELETE FROM system_action_locks WHERE system_id = ? AND run_id = ?`,
 		systemID, runID,
 	); err != nil {
 		return fmt.Errorf("updaters: release lock: %w", err)
@@ -842,7 +876,7 @@ func (s *SQLiteStore) ReleaseLock(systemID, runID string) error {
 func (s *SQLiteStore) ConflictingRun(systemID string) (string, error) {
 	var id string
 	err := s.db.QueryRow(
-		`SELECT run_id FROM updater_run_locks WHERE system_id = ?`,
+		`SELECT run_id FROM system_action_locks WHERE system_id = ?`,
 		systemID,
 	).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {

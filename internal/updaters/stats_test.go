@@ -320,7 +320,7 @@ func TestAddAffectedCountColumnAddsToLegacyDB(t *testing.T) {
 
 func TestSystemStatsAllReportsRunningFromLockTable(t *testing.T) {
 	// Phase 1 of SSE: SystemStatsAll surfaces Running=true for any
-	// system whose row exists in updater_run_locks. This is what the
+	// system whose row exists in system_action_locks. This is what the
 	// SPA reads to keep a row's spinner lit after page navigation.
 	store := newStore(t)
 	now := time.Now().UTC()
@@ -378,5 +378,115 @@ func TestSystemStatsAllAffectedCountFromRunner(t *testing.T) {
 	}
 	if got.LastCheckedAt == nil {
 		t.Errorf("LastCheckedAt nil after a check run")
+	}
+}
+
+func TestRenameUpdaterRunLocksTableNoOpOnFreshDB(t *testing.T) {
+	dsn := "file:" + t.TempDir() + "/fresh.db"
+	db, err := database.Open(dsn)
+	if err != nil {
+		t.Fatalf("database.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := renameUpdaterRunLocksTable(db); err != nil {
+		t.Fatalf("rename on fresh DB: %v", err)
+	}
+}
+
+func TestRenameUpdaterRunLocksTableMigratesLegacy(t *testing.T) {
+	dsn := "file:" + t.TempDir() + "/legacy.db"
+	db, err := database.Open(dsn)
+	if err != nil {
+		t.Fatalf("database.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	if _, err := db.Exec(`CREATE TABLE hosts (id TEXT PRIMARY KEY) STRICT`); err != nil {
+		t.Fatalf("hosts: %v", err)
+	}
+	if _, err := db.Exec(`CREATE TABLE updater_run_locks (
+		system_id   TEXT PRIMARY KEY,
+		run_id      TEXT NOT NULL,
+		acquired_at INTEGER NOT NULL
+	) STRICT`); err != nil {
+		t.Fatalf("legacy table: %v", err)
+	}
+	if _, err := db.Exec(`CREATE TRIGGER updater_locks_cleanup_host
+		AFTER DELETE ON hosts FOR EACH ROW BEGIN
+			DELETE FROM updater_run_locks WHERE system_id = OLD.id;
+		END`); err != nil {
+		t.Fatalf("legacy trigger: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO updater_run_locks (system_id, run_id, acquired_at) VALUES (?, ?, ?)`,
+		"sys-1", "run-A", time.Now().UnixNano()); err != nil {
+		t.Fatalf("seed row: %v", err)
+	}
+
+	if err := renameUpdaterRunLocksTable(db); err != nil {
+		t.Fatalf("rename: %v", err)
+	}
+
+	var n int
+	if err := db.QueryRow(
+		`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='updater_run_locks'`,
+	).Scan(&n); err != nil || n != 0 {
+		t.Errorf("legacy table still present: n=%d err=%v", n, err)
+	}
+	if err := db.QueryRow(
+		`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='system_action_locks'`,
+	).Scan(&n); err != nil || n != 1 {
+		t.Errorf("new table not present: n=%d err=%v", n, err)
+	}
+	if err := db.QueryRow(
+		`SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name='updater_locks_cleanup_host'`,
+	).Scan(&n); err != nil || n != 0 {
+		t.Errorf("legacy trigger still present: n=%d err=%v", n, err)
+	}
+	var runID string
+	if err := db.QueryRow(`SELECT run_id FROM system_action_locks WHERE system_id = ?`, "sys-1").Scan(&runID); err != nil {
+		t.Fatalf("seeded row missing post-rename: %v", err)
+	}
+	if runID != "run-A" {
+		t.Errorf("run_id = %q, want run-A", runID)
+	}
+
+	if err := renameUpdaterRunLocksTable(db); err != nil {
+		t.Errorf("second call must be a no-op: %v", err)
+	}
+}
+
+func TestRenameUpdaterRunLocksTableEndToEndUpgrade(t *testing.T) {
+	dsn := "file:" + t.TempDir() + "/upgrade.db"
+	db, err := database.Open(dsn)
+	if err != nil {
+		t.Fatalf("database.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	if _, err := db.Exec(`CREATE TABLE hosts (id TEXT PRIMARY KEY) STRICT`); err != nil {
+		t.Fatalf("hosts: %v", err)
+	}
+	if _, err := db.Exec(`CREATE TABLE updater_run_locks (
+		system_id   TEXT PRIMARY KEY,
+		run_id      TEXT NOT NULL,
+		acquired_at INTEGER NOT NULL
+	) STRICT`); err != nil {
+		t.Fatalf("legacy table: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO updater_run_locks (system_id, run_id, acquired_at) VALUES (?, ?, ?)`,
+		"sys-upgrade", "run-keep", time.Now().UnixNano()); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	if _, err := NewSQLiteStore(db); err != nil {
+		t.Fatalf("NewSQLiteStore on legacy DB: %v", err)
+	}
+
+	var runID string
+	if err := db.QueryRow(`SELECT run_id FROM system_action_locks WHERE system_id = ?`, "sys-upgrade").Scan(&runID); err != nil {
+		t.Fatalf("row missing after NewSQLiteStore: %v", err)
+	}
+	if runID != "run-keep" {
+		t.Errorf("run_id = %q, want run-keep", runID)
 	}
 }
