@@ -1,0 +1,74 @@
+- name: Install node_exporter (pkgin / NetBSD, localhost mode)
+  hosts: all
+  gather_facts: true
+  become: true
+  tasks:
+    - name: Assert supported OS family
+      ansible.builtin.assert:
+        that: ansible_os_family == 'NetBSD'
+        fail_msg: "builtin.pkgin.exporter supports NetBSD only (got {{ ansible_os_family }})"
+
+    - name: Install node_exporter via pkgin  # noqa: command-instead-of-module
+      ansible.builtin.command:
+        cmd: pkgin -y install node_exporter
+      register: pkgin_install
+      changed_when: pkgin_install.stdout is search('installing|installed', multiline=True)
+
+    - name: Copy rc.d script from pkgsrc examples if not already in /etc/rc.d
+      ansible.builtin.copy:
+        src: /usr/pkg/share/examples/rc.d/node_exporter
+        dest: /etc/rc.d/node_exporter
+        remote_src: true
+        owner: root
+        group: wheel
+        mode: "0555"
+        force: false
+      register: rc_d_copy
+      failed_when: false
+
+    - name: Enable node_exporter on boot in /etc/rc.conf
+      ansible.builtin.lineinfile:
+        path: /etc/rc.conf
+        regexp: '^\s*node_exporter\s*='
+        line: 'node_exporter=YES'
+        create: true
+        owner: root
+        group: wheel
+        mode: "0644"
+
+    - name: Force localhost bind via node_exporter_flags
+      ansible.builtin.lineinfile:
+        path: /etc/rc.conf
+        regexp: '^\s*node_exporter_flags\s*='
+        line: 'node_exporter_flags="--web.listen-address=127.0.0.1:9100"'
+        create: true
+        owner: root
+        group: wheel
+        mode: "0644"
+
+    - name: Restart node_exporter  # noqa: command-instead-of-module
+      ansible.builtin.command:
+        cmd: /etc/rc.d/node_exporter restart
+      changed_when: true
+
+    - name: Probe exporter HTTP endpoint on localhost
+      ansible.builtin.uri:
+        url: http://127.0.0.1:9100/metrics
+        timeout: 3
+        status_code: 200
+        return_content: false
+      register: sw_probe
+      changed_when: false
+      failed_when: false
+
+    - name: Surface exporter port
+      ansible.builtin.debug:
+        msg: "SW_EXPORTER_PORT: 9100"
+
+    - name: Surface exporter service name
+      ansible.builtin.debug:
+        msg: "SW_EXPORTER_SERVICE: node_exporter"
+
+    - name: Surface exporter state
+      ansible.builtin.debug:
+        msg: "SW_EXPORTER_STATE: {{ 'running' if sw_probe.status == 200 else 'failed' }}"

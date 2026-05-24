@@ -103,7 +103,14 @@ func TestBuiltinsShipExpectedSet(t *testing.T) {
 	if len(got) == 0 {
 		t.Fatal("Builtins returned no entries")
 	}
-	want := map[string]bool{"builtin.dnf.exporter": true}
+	want := map[string]bool{
+		"builtin.dnf.exporter":     true,
+		"builtin.pacman.exporter":  true,
+		"builtin.apk.exporter":     true,
+		"builtin.pkg.exporter":     true,
+		"builtin.pkgin.exporter":   true,
+		"builtin.pkg_add.exporter": true,
+	}
 	seen := map[string]bool{}
 	for _, b := range got {
 		seen[b.ID] = true

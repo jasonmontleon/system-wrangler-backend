@@ -1,0 +1,62 @@
+- name: Install node_exporter (pkg / FreeBSD, localhost mode)
+  hosts: all
+  gather_facts: true
+  become: true
+  tasks:
+    - name: Assert supported OS family
+      ansible.builtin.assert:
+        that: ansible_os_family == 'FreeBSD'
+        fail_msg: "builtin.pkg.exporter supports FreeBSD only (got {{ ansible_os_family }})"
+
+    - name: Install node_exporter via pkg  # noqa: command-instead-of-module
+      ansible.builtin.command:
+        cmd: pkg install -y node_exporter
+      register: pkg_install
+      changed_when: pkg_install.stdout is search('Installing|installed:', multiline=True)
+
+    - name: Enable node_exporter on boot in /etc/rc.conf
+      ansible.builtin.lineinfile:
+        path: /etc/rc.conf
+        regexp: '^\s*node_exporter_enable\s*='
+        line: 'node_exporter_enable="YES"'
+        create: true
+        owner: root
+        group: wheel
+        mode: "0644"
+
+    - name: Force localhost bind via node_exporter_args
+      ansible.builtin.lineinfile:
+        path: /etc/rc.conf
+        regexp: '^\s*node_exporter_args\s*='
+        line: 'node_exporter_args="--web.listen-address=127.0.0.1:9100"'
+        create: true
+        owner: root
+        group: wheel
+        mode: "0644"
+
+    - name: Restart node_exporter  # noqa: command-instead-of-module
+      ansible.builtin.command:
+        cmd: service node_exporter restart
+      changed_when: true
+
+    - name: Probe exporter HTTP endpoint on localhost
+      ansible.builtin.uri:
+        url: http://127.0.0.1:9100/metrics
+        timeout: 3
+        status_code: 200
+        return_content: false
+      register: sw_probe
+      changed_when: false
+      failed_when: false
+
+    - name: Surface exporter port
+      ansible.builtin.debug:
+        msg: "SW_EXPORTER_PORT: 9100"
+
+    - name: Surface exporter service name
+      ansible.builtin.debug:
+        msg: "SW_EXPORTER_SERVICE: node_exporter"
+
+    - name: Surface exporter state
+      ansible.builtin.debug:
+        msg: "SW_EXPORTER_STATE: {{ 'running' if sw_probe.status == 200 else 'failed' }}"

@@ -1,0 +1,53 @@
+- name: Install node_exporter (pkg_add / OpenBSD, localhost mode)
+  hosts: all
+  gather_facts: true
+  become: true
+  tasks:
+    - name: Assert supported OS family
+      ansible.builtin.assert:
+        that: ansible_os_family == 'OpenBSD'
+        fail_msg: "builtin.pkg_add.exporter supports OpenBSD only (got {{ ansible_os_family }})"
+
+    - name: Install node_exporter via pkg_add  # noqa: command-instead-of-module
+      ansible.builtin.command:
+        cmd: pkg_add node_exporter
+      register: pkg_add_install
+      changed_when: pkg_add_install.stdout is search('node_exporter-', multiline=True)
+
+    - name: Enable node_exporter on boot  # noqa: command-instead-of-module
+      ansible.builtin.command:
+        cmd: rcctl enable node_exporter
+      register: rcctl_enable
+      changed_when: rcctl_enable.rc == 0
+
+    - name: Set rcctl flags forcing localhost bind  # noqa: command-instead-of-module
+      ansible.builtin.command:
+        cmd: rcctl set node_exporter flags '--web.listen-address=127.0.0.1:9100'
+      changed_when: true
+
+    - name: Restart node_exporter  # noqa: command-instead-of-module
+      ansible.builtin.command:
+        cmd: rcctl restart node_exporter
+      changed_when: true
+
+    - name: Probe exporter HTTP endpoint on localhost
+      ansible.builtin.uri:
+        url: http://127.0.0.1:9100/metrics
+        timeout: 3
+        status_code: 200
+        return_content: false
+      register: sw_probe
+      changed_when: false
+      failed_when: false
+
+    - name: Surface exporter port
+      ansible.builtin.debug:
+        msg: "SW_EXPORTER_PORT: 9100"
+
+    - name: Surface exporter service name
+      ansible.builtin.debug:
+        msg: "SW_EXPORTER_SERVICE: node_exporter"
+
+    - name: Surface exporter state
+      ansible.builtin.debug:
+        msg: "SW_EXPORTER_STATE: {{ 'running' if sw_probe.status == 200 else 'failed' }}"
