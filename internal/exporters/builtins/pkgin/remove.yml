@@ -1,0 +1,39 @@
+- name: Remove node_exporter (pkgin / NetBSD)
+  hosts: all
+  gather_facts: true
+  become: true
+  tasks:
+    - name: Assert supported OS family
+      ansible.builtin.assert:
+        that: ansible_os_family == 'NetBSD'
+        fail_msg: "builtin.pkgin.exporter supports NetBSD only (got {{ ansible_os_family }})"
+
+    - name: Stop node_exporter  # noqa: command-instead-of-module
+      ansible.builtin.command:
+        cmd: /etc/rc.d/node_exporter stop
+      changed_when: false
+      failed_when: false
+
+    - name: Disable node_exporter on boot
+      ansible.builtin.lineinfile:
+        path: /etc/rc.conf
+        regexp: '^\s*node_exporter\s*='
+        state: absent
+
+    - name: Remove node_exporter_flags
+      ansible.builtin.lineinfile:
+        path: /etc/rc.conf
+        regexp: '^\s*node_exporter_flags\s*='
+        state: absent
+
+    - name: Remove the copied rc.d script
+      ansible.builtin.file:
+        path: /etc/rc.d/node_exporter
+        state: absent
+
+    - name: Uninstall node_exporter via pkgin  # noqa: command-instead-of-module
+      ansible.builtin.command:
+        cmd: pkgin -y remove node_exporter
+      register: pkgin_remove
+      changed_when: pkgin_remove.stdout is search('removing|removed', multiline=True)
+      failed_when: pkgin_remove.rc != 0 and pkgin_remove.stdout is not search('nothing to do|not installed', multiline=True)

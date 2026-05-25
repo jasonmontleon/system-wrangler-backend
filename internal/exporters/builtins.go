@@ -12,11 +12,17 @@ var builtinDNFInstall []byte
 //go:embed builtins/dnf/status.yml
 var builtinDNFStatus []byte
 
+//go:embed builtins/dnf/remove.yml
+var builtinDNFRemove []byte
+
 //go:embed builtins/pacman/install.yml
 var builtinPacmanInstall []byte
 
 //go:embed builtins/pacman/status.yml
 var builtinPacmanStatus []byte
+
+//go:embed builtins/pacman/remove.yml
+var builtinPacmanRemove []byte
 
 //go:embed builtins/apk/install.yml
 var builtinAPKInstall []byte
@@ -24,11 +30,17 @@ var builtinAPKInstall []byte
 //go:embed builtins/apk/status.yml
 var builtinAPKStatus []byte
 
+//go:embed builtins/apk/remove.yml
+var builtinAPKRemove []byte
+
 //go:embed builtins/pkg/install.yml
 var builtinPkgInstall []byte
 
 //go:embed builtins/pkg/status.yml
 var builtinPkgStatus []byte
+
+//go:embed builtins/pkg/remove.yml
+var builtinPkgRemove []byte
 
 //go:embed builtins/pkgin/install.yml
 var builtinPkginInstall []byte
@@ -36,11 +48,17 @@ var builtinPkginInstall []byte
 //go:embed builtins/pkgin/status.yml
 var builtinPkginStatus []byte
 
+//go:embed builtins/pkgin/remove.yml
+var builtinPkginRemove []byte
+
 //go:embed builtins/pkg_add/install.yml
 var builtinPkgAddInstall []byte
 
 //go:embed builtins/pkg_add/status.yml
 var builtinPkgAddStatus []byte
+
+//go:embed builtins/pkg_add/remove.yml
+var builtinPkgAddRemove []byte
 
 //go:embed builtins/apt/install.yml
 var builtinAptInstall []byte
@@ -48,11 +66,17 @@ var builtinAptInstall []byte
 //go:embed builtins/apt/status.yml
 var builtinAptStatus []byte
 
+//go:embed builtins/apt/remove.yml
+var builtinAptRemove []byte
+
 //go:embed builtins/xbps/install.yml
 var builtinXbpsInstall []byte
 
 //go:embed builtins/xbps/status.yml
 var builtinXbpsStatus []byte
+
+//go:embed builtins/xbps/remove.yml
+var builtinXbpsRemove []byte
 
 //go:embed builtins/zypper/install.yml
 var builtinZypperInstall []byte
@@ -60,17 +84,26 @@ var builtinZypperInstall []byte
 //go:embed builtins/zypper/status.yml
 var builtinZypperStatus []byte
 
+//go:embed builtins/zypper/remove.yml
+var builtinZypperRemove []byte
+
 //go:embed builtins/brew/install.yml
 var builtinBrewInstall []byte
 
 //go:embed builtins/brew/status.yml
 var builtinBrewStatus []byte
 
+//go:embed builtins/brew/remove.yml
+var builtinBrewRemove []byte
+
 //go:embed builtins/winget/install.yml
 var builtinWingetInstall []byte
 
 //go:embed builtins/winget/status.yml
 var builtinWingetStatus []byte
+
+//go:embed builtins/winget/remove.yml
+var builtinWingetRemove []byte
 
 // Builtins returns every code-registered exporter installer. Order
 // is stable so callers that don't sort still produce deterministic
@@ -92,6 +125,7 @@ func Builtins() []Definition {
 			BindPort:            9100,
 			InstallPlaybook:     builtinDNFInstall,
 			StatusPlaybook:      builtinDNFStatus,
+			RemovePlaybook:      builtinDNFRemove,
 		},
 		{
 			ID:                  "builtin.pacman.exporter",
@@ -103,6 +137,7 @@ func Builtins() []Definition {
 			BindPort:            9100,
 			InstallPlaybook:     builtinPacmanInstall,
 			StatusPlaybook:      builtinPacmanStatus,
+			RemovePlaybook:      builtinPacmanRemove,
 		},
 		{
 			ID:                  "builtin.apk.exporter",
@@ -114,6 +149,7 @@ func Builtins() []Definition {
 			BindPort:            9100,
 			InstallPlaybook:     builtinAPKInstall,
 			StatusPlaybook:      builtinAPKStatus,
+			RemovePlaybook:      builtinAPKRemove,
 		},
 		{
 			ID:                  "builtin.pkg.exporter",
@@ -125,6 +161,7 @@ func Builtins() []Definition {
 			BindPort:            9100,
 			InstallPlaybook:     builtinPkgInstall,
 			StatusPlaybook:      builtinPkgStatus,
+			RemovePlaybook:      builtinPkgRemove,
 		},
 		{
 			ID:                  "builtin.pkgin.exporter",
@@ -136,6 +173,7 @@ func Builtins() []Definition {
 			BindPort:            9100,
 			InstallPlaybook:     builtinPkginInstall,
 			StatusPlaybook:      builtinPkginStatus,
+			RemovePlaybook:      builtinPkginRemove,
 		},
 		{
 			ID:                  "builtin.pkg_add.exporter",
@@ -147,6 +185,7 @@ func Builtins() []Definition {
 			BindPort:            9100,
 			InstallPlaybook:     builtinPkgAddInstall,
 			StatusPlaybook:      builtinPkgAddStatus,
+			RemovePlaybook:      builtinPkgAddRemove,
 		},
 		{
 			ID:                  "builtin.apt.exporter",
@@ -158,6 +197,7 @@ func Builtins() []Definition {
 			BindPort:            9100,
 			InstallPlaybook:     builtinAptInstall,
 			StatusPlaybook:      builtinAptStatus,
+			RemovePlaybook:      builtinAptRemove,
 		},
 		{
 			ID:                  "builtin.xbps.exporter",
@@ -169,6 +209,7 @@ func Builtins() []Definition {
 			BindPort:            9100,
 			InstallPlaybook:     builtinXbpsInstall,
 			StatusPlaybook:      builtinXbpsStatus,
+			RemovePlaybook:      builtinXbpsRemove,
 		},
 		{
 			ID:                  "builtin.zypper.exporter",
@@ -180,6 +221,7 @@ func Builtins() []Definition {
 			BindPort:            9100,
 			InstallPlaybook:     builtinZypperInstall,
 			StatusPlaybook:      builtinZypperStatus,
+			RemovePlaybook:      builtinZypperRemove,
 		},
 		{
 			ID:                  "builtin.brew.exporter",
@@ -191,6 +233,7 @@ func Builtins() []Definition {
 			BindPort:            9100,
 			InstallPlaybook:     builtinBrewInstall,
 			StatusPlaybook:      builtinBrewStatus,
+			RemovePlaybook:      builtinBrewRemove,
 		},
 		{
 			ID:                  "builtin.winget.exporter",
@@ -202,6 +245,7 @@ func Builtins() []Definition {
 			BindPort:            9182,
 			InstallPlaybook:     builtinWingetInstall,
 			StatusPlaybook:      builtinWingetStatus,
+			RemovePlaybook:      builtinWingetRemove,
 		},
 	}
 }

@@ -1,0 +1,26 @@
+- name: Remove node_exporter (brew / macOS)
+  hosts: all
+  gather_facts: true
+  become: false
+  environment:
+    PATH: '/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin'
+  vars:
+    sw_launch_agent_plist: "{{ ansible_env.HOME }}/Library/LaunchAgents/com.systemwrangler.node_exporter.plist"
+  tasks:
+    - name: Unload the LaunchAgent  # noqa: command-instead-of-module
+      ansible.builtin.command:
+        cmd: launchctl unload "{{ sw_launch_agent_plist }}"
+      changed_when: false
+      failed_when: false
+
+    - name: Remove the LaunchAgent plist
+      ansible.builtin.file:
+        path: "{{ sw_launch_agent_plist }}"
+        state: absent
+
+    - name: Uninstall node_exporter via Homebrew  # noqa: command-instead-of-module
+      ansible.builtin.command:
+        cmd: brew uninstall node_exporter
+      register: brew_uninstall
+      changed_when: brew_uninstall.stdout is search('^Uninstalling ', multiline=True)
+      failed_when: brew_uninstall.rc != 0 and brew_uninstall.stderr is not search('No such keg|is not installed', multiline=True)

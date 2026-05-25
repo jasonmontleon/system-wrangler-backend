@@ -1,0 +1,33 @@
+- name: Remove node_exporter (xbps / Void Linux)
+  hosts: all
+  gather_facts: false
+  become: true
+  tasks:
+    - name: Stop node_exporter under runit  # noqa: command-instead-of-module
+      ansible.builtin.command:
+        cmd: sv down node_exporter
+      changed_when: false
+      failed_when: false
+
+    - name: Disable node_exporter (remove runsv link)
+      ansible.builtin.file:
+        path: /var/service/node_exporter
+        state: absent
+
+    - name: Wait briefly for runsv to tear down
+      ansible.builtin.pause:
+        seconds: 2
+
+    - name: Remove the System Wrangler OPTS line
+      ansible.builtin.lineinfile:
+        path: /etc/sv/node_exporter/conf
+        regexp: '^\s*OPTS\s*='
+        state: absent
+      failed_when: false
+
+    - name: Uninstall node_exporter via xbps  # noqa: command-instead-of-module
+      ansible.builtin.command:
+        cmd: xbps-remove -y node_exporter
+      register: xbps_remove
+      changed_when: xbps_remove.stdout is search('^node_exporter', multiline=True)
+      failed_when: xbps_remove.rc != 0 and xbps_remove.stderr is not search('not installed', multiline=True)

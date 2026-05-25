@@ -1,0 +1,34 @@
+- name: Remove node_exporter (pkg / FreeBSD)
+  hosts: all
+  gather_facts: true
+  become: true
+  tasks:
+    - name: Assert supported OS family
+      ansible.builtin.assert:
+        that: ansible_os_family == 'FreeBSD'
+        fail_msg: "builtin.pkg.exporter supports FreeBSD only (got {{ ansible_os_family }})"
+
+    - name: Stop node_exporter  # noqa: command-instead-of-module
+      ansible.builtin.command:
+        cmd: service node_exporter stop
+      changed_when: false
+      failed_when: false
+
+    - name: Disable node_exporter on boot
+      ansible.builtin.lineinfile:
+        path: /etc/rc.conf
+        regexp: '^\s*node_exporter_enable\s*='
+        state: absent
+
+    - name: Remove node_exporter_args
+      ansible.builtin.lineinfile:
+        path: /etc/rc.conf
+        regexp: '^\s*node_exporter_args\s*='
+        state: absent
+
+    - name: Uninstall node_exporter package  # noqa: command-instead-of-module
+      ansible.builtin.command:
+        cmd: pkg delete -y node_exporter
+      register: pkg_delete
+      changed_when: pkg_delete.stdout is search('Deinstalling|removed:', multiline=True)
+      failed_when: pkg_delete.rc != 0 and pkg_delete.stderr is not search('No packages matching', multiline=True)

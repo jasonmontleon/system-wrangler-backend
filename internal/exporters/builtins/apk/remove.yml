@@ -1,0 +1,71 @@
+- name: Remove node_exporter (apk / Alpine + OpenWrt)
+  hosts: all
+  gather_facts: true
+  become: true
+  tasks:
+    - name: Assert supported distribution
+      ansible.builtin.assert:
+        that: ansible_distribution in ['Alpine', 'OpenWrt']
+        fail_msg: "builtin.apk.exporter supports Alpine and OpenWrt only (got {{ ansible_distribution }})"
+
+    - name: Remove node-exporter (Alpine)
+      when: ansible_distribution == 'Alpine'
+      block:
+        - name: Stop and disable node-exporter
+          ansible.builtin.service:
+            name: node-exporter
+            state: stopped
+            enabled: false
+          failed_when: false
+
+        - name: Remove the System Wrangler SSH forwarding match block
+          ansible.builtin.blockinfile:
+            path: /etc/ssh/sshd_config
+            marker: "# {mark} SYSTEM WRANGLER EXPORTER FORWARDING"
+            state: absent
+            validate: 'sshd -t -f %s'
+          notify: Reload sshd
+
+        - name: Apply pending handlers before continuing
+          ansible.builtin.meta: flush_handlers
+
+        - name: Remove prometheus-node-exporter package  # noqa: command-instead-of-module
+          ansible.builtin.command:
+            cmd: apk del prometheus-node-exporter
+          register: apk_del_alpine
+          changed_when: apk_del_alpine.stdout is search('Purging prometheus-node-exporter', multiline=True)
+          failed_when: apk_del_alpine.rc != 0 and apk_del_alpine.stderr is not search('No such package', multiline=True)
+
+        - name: Remove the operator-managed ARGS configuration
+          ansible.builtin.file:
+            path: /etc/conf.d/node-exporter
+            state: absent
+
+    - name: Remove prometheus-node-exporter-lua (OpenWrt)
+      when: ansible_distribution == 'OpenWrt'
+      block:
+        - name: Stop the service  # noqa: command-instead-of-module
+          ansible.builtin.command:
+            cmd: /etc/init.d/prometheus-node-exporter-lua stop
+          changed_when: false
+          failed_when: false
+
+        - name: Disable on boot  # noqa: command-instead-of-module
+          ansible.builtin.command:
+            cmd: /etc/init.d/prometheus-node-exporter-lua disable
+          register: openwrt_disable
+          changed_when: openwrt_disable.rc == 0
+          failed_when: false
+
+        - name: Remove prometheus-node-exporter-lua packages  # noqa: command-instead-of-module
+          ansible.builtin.command:
+            cmd: apk del prometheus-node-exporter-lua prometheus-node-exporter-lua-netstat
+          register: apk_del_openwrt
+          changed_when: apk_del_openwrt.stdout is search('Purging prometheus-node-exporter-lua', multiline=True)
+          failed_when: apk_del_openwrt.rc != 0 and apk_del_openwrt.stderr is not search('No such package', multiline=True)
+
+  handlers:
+    - name: Reload sshd
+      ansible.builtin.service:
+        name: sshd
+        state: reloaded

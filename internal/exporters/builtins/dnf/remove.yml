@@ -1,0 +1,55 @@
+- name: Remove node_exporter (dnf)
+  hosts: all
+  gather_facts: false
+  become: true
+  tasks:
+    - name: Stop and disable node_exporter
+      ansible.builtin.systemd:
+        name: node_exporter
+        state: stopped
+        enabled: false
+      failed_when: false
+
+    - name: Stop and disable reboot-required timer
+      ansible.builtin.systemd:
+        name: sw-reboot-required.timer
+        state: stopped
+        enabled: false
+      failed_when: false
+
+    - name: Remove systemd drop-in override
+      ansible.builtin.file:
+        path: /etc/systemd/system/node_exporter.service.d/override.conf
+        state: absent
+
+    - name: Remove systemd drop-in directory if empty
+      ansible.builtin.file:
+        path: /etc/systemd/system/node_exporter.service.d
+        state: absent
+
+    - name: Remove reboot-required units
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/systemd/system/sw-reboot-required.service
+        - /etc/systemd/system/sw-reboot-required.timer
+
+    - name: Remove reboot-required collector script
+      ansible.builtin.file:
+        path: /usr/local/libexec/sw-reboot-required.sh
+        state: absent
+
+    - name: Remove the System Wrangler textfile metric
+      ansible.builtin.file:
+        path: /var/lib/node_exporter/textfile_collector/sw_reboot_required.prom
+        state: absent
+
+    - name: Reload systemd to forget removed units
+      ansible.builtin.systemd:
+        daemon_reload: true
+
+    - name: Remove node_exporter package
+      ansible.builtin.dnf:
+        name: node-exporter
+        state: absent

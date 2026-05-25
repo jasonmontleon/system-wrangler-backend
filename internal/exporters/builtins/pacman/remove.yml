@@ -1,0 +1,32 @@
+- name: Remove node_exporter (pacman)
+  hosts: all
+  gather_facts: false
+  become: true
+  tasks:
+    - name: Stop and disable prometheus-node-exporter
+      ansible.builtin.systemd:
+        name: prometheus-node-exporter
+        state: stopped
+        enabled: false
+      failed_when: false
+
+    - name: Remove systemd drop-in override
+      ansible.builtin.file:
+        path: /etc/systemd/system/prometheus-node-exporter.service.d/override.conf
+        state: absent
+
+    - name: Remove systemd drop-in directory if empty
+      ansible.builtin.file:
+        path: /etc/systemd/system/prometheus-node-exporter.service.d
+        state: absent
+
+    - name: Reload systemd to forget removed units
+      ansible.builtin.systemd:
+        daemon_reload: true
+
+    - name: Remove prometheus-node-exporter package  # noqa: command-instead-of-module
+      ansible.builtin.command:
+        cmd: pacman -Rns --noconfirm prometheus-node-exporter
+      register: pacman_remove
+      changed_when: pacman_remove.stdout is search('removing prometheus-node-exporter', multiline=True)
+      failed_when: pacman_remove.rc != 0 and pacman_remove.stderr is not search('target not found', multiline=True)

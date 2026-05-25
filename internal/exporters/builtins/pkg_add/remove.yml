@@ -1,0 +1,29 @@
+- name: Remove node_exporter (pkg_add / OpenBSD)
+  hosts: all
+  gather_facts: true
+  become: true
+  tasks:
+    - name: Assert supported OS family
+      ansible.builtin.assert:
+        that: ansible_os_family == 'OpenBSD'
+        fail_msg: "builtin.pkg_add.exporter supports OpenBSD only (got {{ ansible_os_family }})"
+
+    - name: Stop node_exporter  # noqa: command-instead-of-module
+      ansible.builtin.command:
+        cmd: rcctl stop node_exporter
+      changed_when: false
+      failed_when: false
+
+    - name: Disable node_exporter  # noqa: command-instead-of-module
+      ansible.builtin.command:
+        cmd: rcctl disable node_exporter
+      register: rcctl_disable
+      changed_when: rcctl_disable.rc == 0
+      failed_when: false
+
+    - name: Uninstall node_exporter package  # noqa: command-instead-of-module
+      ansible.builtin.command:
+        cmd: pkg_delete -I node_exporter
+      register: pkg_delete
+      changed_when: pkg_delete.stdout is search('node_exporter-', multiline=True)
+      failed_when: pkg_delete.rc != 0 and pkg_delete.stderr is not search("Can't find|not found", multiline=True)

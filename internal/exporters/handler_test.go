@@ -174,8 +174,14 @@ func TestHandlerStatus(t *testing.T) {
 
 func TestHandlerRemoveBadRequest(t *testing.T) {
 	_, srv, rf := newHandlerFixture(t)
-	// dnf builtin has no remove playbook → expect 400.
-	resp, _ := http.Post(srv.URL+"/api/systems/"+rf.systemID+"/exporters/builtin.dnf.exporter/remove", "application/json", nil)
+	// All builtins now ship remove.yml; seed a custom installer
+	// without one to exercise the 400-on-missing-remove path.
+	d := validDef()
+	d.ID = "custom.no-remove"
+	if _, err := rf.store.CreateCustom(d); err != nil {
+		t.Fatalf("CreateCustom: %v", err)
+	}
+	resp, _ := http.Post(srv.URL+"/api/systems/"+rf.systemID+"/exporters/custom.no-remove/remove", "application/json", nil)
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400", resp.StatusCode)

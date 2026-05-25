@@ -219,7 +219,14 @@ func TestStatusReusesPort(t *testing.T) {
 
 func TestRemoveRequiresRemovePlaybook(t *testing.T) {
 	f := newRunnerFixture(t)
-	_, err := f.runner.Remove(context.Background(), f.systemID, "builtin.dnf.exporter")
+	// All builtins ship a remove.yml; seed a custom installer without
+	// one so we can exercise the ErrNoRemove path.
+	d := validDef()
+	d.ID = "custom.no-remove"
+	if _, err := f.store.CreateCustom(d); err != nil {
+		t.Fatalf("CreateCustom: %v", err)
+	}
+	_, err := f.runner.Remove(context.Background(), f.systemID, "custom.no-remove")
 	if !errors.Is(err, ErrNoRemove) {
 		t.Errorf("err = %v, want ErrNoRemove", err)
 	}

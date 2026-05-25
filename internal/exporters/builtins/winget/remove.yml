@@ -1,0 +1,32 @@
+- name: Remove windows_exporter (winget / Windows)
+  hosts: all
+  gather_facts: false
+  become: false
+  tasks:
+    - name: Stop windows_exporter (tolerate not-running / not-installed)
+      ansible.windows.win_service:
+        name: windows_exporter
+        state: stopped
+      failed_when: false
+
+    - name: Uninstall Prometheus.WindowsExporter via winget
+      ansible.windows.win_shell: |
+        [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+        winget uninstall --id Prometheus.WindowsExporter --exact --silent `
+          --accept-source-agreements
+        exit $LASTEXITCODE
+      register: winget_uninstall
+      changed_when: winget_uninstall.stdout is search('Successfully uninstalled', multiline=True)
+      failed_when: winget_uninstall.rc not in [0, -1978335212]
+
+    - name: Force-delete leftover service entry if it survived
+      ansible.windows.win_shell: |
+        $svc = Get-Service -Name windows_exporter -ErrorAction SilentlyContinue
+        if ($svc) {
+          & sc.exe delete windows_exporter | Out-Null
+          Write-Output "sc.exe delete rc=$LASTEXITCODE"
+        } else {
+          Write-Output "service already absent"
+        }
+      changed_when: false
+      failed_when: false

@@ -1,0 +1,33 @@
+- name: Remove node_exporter (apt / Debian + Ubuntu)
+  hosts: all
+  gather_facts: false
+  become: true
+  tasks:
+    - name: Stop and disable prometheus-node-exporter
+      ansible.builtin.systemd:
+        name: prometheus-node-exporter
+        state: stopped
+        enabled: false
+      failed_when: false
+
+    - name: Remove systemd drop-in override
+      ansible.builtin.file:
+        path: /etc/systemd/system/prometheus-node-exporter.service.d/override.conf
+        state: absent
+
+    - name: Remove systemd drop-in directory if empty
+      ansible.builtin.file:
+        path: /etc/systemd/system/prometheus-node-exporter.service.d
+        state: absent
+
+    - name: Reload systemd to forget removed units
+      ansible.builtin.systemd:
+        daemon_reload: true
+
+    - name: Remove prometheus-node-exporter package
+      ansible.builtin.apt:
+        name: prometheus-node-exporter
+        state: absent
+        purge: true
+      environment:
+        DEBIAN_FRONTEND: noninteractive

@@ -122,6 +122,9 @@ func TestBuiltinsShipExpectedSet(t *testing.T) {
 		if len(b.InstallPlaybook) == 0 || len(b.StatusPlaybook) == 0 {
 			t.Errorf("builtin %q missing install or status body", b.ID)
 		}
+		if !b.HasRemove() {
+			t.Errorf("builtin %q missing remove playbook", b.ID)
+		}
 	}
 	for id := range want {
 		if !seen[id] {

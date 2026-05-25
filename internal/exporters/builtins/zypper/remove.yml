@@ -1,0 +1,32 @@
+- name: Remove node_exporter (zypper / openSUSE + SLES)
+  hosts: all
+  gather_facts: false
+  become: true
+  tasks:
+    - name: Stop and disable prometheus-node_exporter
+      ansible.builtin.systemd:
+        name: prometheus-node_exporter
+        state: stopped
+        enabled: false
+      failed_when: false
+
+    - name: Remove systemd drop-in override
+      ansible.builtin.file:
+        path: /etc/systemd/system/prometheus-node_exporter.service.d/override.conf
+        state: absent
+
+    - name: Remove systemd drop-in directory if empty
+      ansible.builtin.file:
+        path: /etc/systemd/system/prometheus-node_exporter.service.d
+        state: absent
+
+    - name: Reload systemd to forget removed units
+      ansible.builtin.systemd:
+        daemon_reload: true
+
+    - name: Remove golang-github-prometheus-node_exporter package  # noqa: command-instead-of-module
+      ansible.builtin.command:
+        cmd: zypper --non-interactive remove --clean-deps golang-github-prometheus-node_exporter
+      register: zypper_remove
+      changed_when: "zypper_remove.stdout is search('Removing golang-github-prometheus-node_exporter', multiline=True)"
+      failed_when: zypper_remove.rc != 0 and zypper_remove.stdout is not search('No package found|nothing to do', multiline=True)
