@@ -663,6 +663,23 @@ func TestPlaybookComposerWalksRegistry(t *testing.T) {
 	if !strings.Contains(string(body), "/opt/homebrew/bin") {
 		t.Errorf("inspection playbook must augment PATH with Homebrew locations so brew/mas resolve on macOS SSH sessions:\n%s", body)
 	}
+	// NetBSD pkgsrc tools (pkgin) live under /usr/pkg/bin, which an
+	// ansible non-login SSH session doesn't inherit. The composer
+	// must conditionally prepend the pkgsrc paths on NetBSD only —
+	// unscoped, it would shadow system binaries on macOS-with-pkgsrc
+	// and Solaris/illumos hosts that also use /usr/pkg.
+	if !strings.Contains(string(body), "/usr/pkg/bin") {
+		t.Errorf("inspection playbook must add NetBSD pkgsrc paths so pkgin resolves on NetBSD SSH sessions:\n%s", body)
+	}
+	if !strings.Contains(string(body), "ansible_system | default('') == 'NetBSD'") {
+		t.Errorf("inspection playbook must scope the pkgsrc prepend to NetBSD via a Jinja gate:\n%s", body)
+	}
+	// pkg_add's OpenBSD-style enumeration doesn't apply to NetBSD's
+	// low-level pkgsrc pkg_add — the composer must skip detection on
+	// NetBSD so pkgin owns that host.
+	if !strings.Contains(string(body), "(ansible_system | default('')) != 'NetBSD'") {
+		t.Errorf("inspection playbook must skip builtin.pkg_add detection on NetBSD:\n%s", body)
+	}
 	// Regression: a play-level `environment:` block clobbers Windows PATH
 	// when applied to ansible.windows.win_command probes — `where.exe`
 	// then can't find winget / choco / UsoClient / scoop because the

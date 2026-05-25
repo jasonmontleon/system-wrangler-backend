@@ -86,9 +86,25 @@ func inspectionPlaybook(defs []Definition) []byte {
 		b.WriteString("      failed_when: false\n")
 		b.WriteString("      changed_when: false\n")
 		fmt.Fprintf(&b, "      register: %s\n", v)
-		b.WriteString("      when: not (sw_is_windows | default(false) | bool)\n")
+		// pkg_add exists on NetBSD as the low-level pkgsrc helper but
+		// its OpenBSD-style `-unv` enumeration semantics don't apply
+		// there — pkgin is the NetBSD updater. Skip detection so a
+		// NetBSD host doesn't end up with both updaters lit up and the
+		// pkg_add playbook firing useless commands.
+		if d.ID == "builtin.pkg_add" {
+			b.WriteString("      when: (not (sw_is_windows | default(false) | bool)) and ((ansible_system | default('')) != 'NetBSD')\n")
+		} else {
+			b.WriteString("      when: not (sw_is_windows | default(false) | bool)\n")
+		}
 		b.WriteString("      environment:\n")
-		b.WriteString("        PATH: '/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin'\n")
+		// NetBSD ships pkgsrc tools (pkgin, pkg_info) under /usr/pkg
+		// and ansible's non-login SSH session inherits a stripped PATH
+		// that omits them. The Jinja gate scopes the prepend to NetBSD
+		// so macOS-with-pkgsrc and Solaris/illumos hosts (which also
+		// use /usr/pkg) aren't surprised by binary shadowing. The
+		// preceding `gather platform facts (unix)` task populates
+		// ansible_system before any per-updater detect runs.
+		b.WriteString("        PATH: \"{% if ansible_system | default('') == 'NetBSD' %}/usr/pkg/sbin:/usr/pkg/bin:{% endif %}/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin\"\n")
 		fmt.Fprintf(&b, "    - name: detect %s (windows)\n", d.ID)
 		fmt.Fprintf(&b, "      ansible.windows.win_command: 'where.exe %s'\n", d.DetectBinary)
 		b.WriteString("      failed_when: false\n")
