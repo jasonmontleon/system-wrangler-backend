@@ -385,6 +385,10 @@ func populateMux(mux router.Mux, db *sql.DB, store systems.Store, groupStore gro
 			}
 			return &audit.ScopeFilter{GroupIDs: s.VisibleGroupIDs()}
 		}
+		ah.CanClear = func(r *http.Request) bool {
+			s, ok := rbac.ScopeFromContext(r.Context())
+			return ok && s.IsGlobalAdmin()
+		}
 		ah.Register(mux, requireUser)
 	}
 	rbacHandler := rbac.NewHandler(rbacStore, authStore, groupStore)

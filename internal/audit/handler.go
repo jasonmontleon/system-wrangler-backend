@@ -23,6 +23,10 @@ type Handler struct {
 	// (the global-role case). Wiring lives in main.go so the audit
 	// package doesn't import rbac (rbac already imports audit).
 	ScopeFilterFor func(r *http.Request) *ScopeFilter
+	// CanClear, if non-nil, gates the DELETE /api/admin/audit
+	// endpoint. nil means "deny" so a deployment that forgets the
+	// wiring fails closed. Bound in main.go to "Global Admin only."
+	CanClear func(r *http.Request) bool
 }
 
 // NewHandler binds a Handler to s.
@@ -39,6 +43,7 @@ func (h *Handler) Register(mux router.Mux, mw func(http.Handler) http.Handler) {
 	}
 	mux.Handle("GET /api/admin/audit", mw(http.HandlerFunc(h.list)))
 	mux.Handle("GET /api/admin/audit/{id}", mw(http.HandlerFunc(h.get)))
+	mux.Handle("DELETE /api/admin/audit", mw(http.HandlerFunc(h.clear)))
 }
 
 // listResponse is the JSON shape returned by GET /api/admin/audit.
@@ -156,6 +161,52 @@ func (h *Handler) get(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, rec)
+}
+
+// clearResponse is the JSON shape returned by DELETE /api/admin/audit.
+type clearResponse struct {
+	RowsDeleted int `json:"rowsDeleted"`
+}
+
+// maxOlderThanDays caps the older_than_days query parameter to ten
+// years. Anything larger is almost certainly an operator typo and
+// behaves identically to truncate-all on any real instance.
+const maxOlderThanDays = 3650
+
+func (h *Handler) clear(w http.ResponseWriter, r *http.Request) {
+	if h.CanClear == nil || !h.CanClear(r) {
+		writeError(w, http.StatusForbidden, "forbidden")
+		return
+	}
+	older := 0
+	if v := r.URL.Query().Get("older_than_days"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 || n > maxOlderThanDays {
+			writeError(w, http.StatusBadRequest, "older_than_days must be an integer between 1 and 3650")
+			return
+		}
+		older = n
+	}
+	rowsDeleted, err := h.Store.Clear(older)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "clear failed")
+		slog.Error("audit clear", "err", err)
+		return
+	}
+	// Drop the action marker AFTER the delete so it survives in the
+	// surviving log; rowsDeleted does not count the marker itself.
+	detail := Detail{"rows_deleted": rowsDeleted}
+	if older > 0 {
+		detail["older_than_days"] = older
+	}
+	if err := h.Store.Log(r.Context(), Event{
+		Action:  "audit.clear",
+		Outcome: Success,
+		Detail:  detail,
+	}); err != nil {
+		slog.Error("audit clear marker", "err", err)
+	}
+	writeJSON(w, http.StatusOK, clearResponse{RowsDeleted: rowsDeleted})
 }
 
 func writeJSON(w http.ResponseWriter, status int, body any) {

@@ -257,3 +257,82 @@ func TestRegister_NilMiddlewareAllowed(t *testing.T) {
 		t.Errorf("status = %d", w.Code)
 	}
 }
+
+func TestHandlerClear_ForbiddenWhenCanClearNil(t *testing.T) {
+	_, _, mux := newTestHandler(t)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, httptest.NewRequest(http.MethodDelete, "/api/admin/audit", nil))
+	if w.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want 403 (CanClear nil must deny)", w.Code)
+	}
+}
+
+func TestHandlerClear_ForbiddenWhenCanClearFalse(t *testing.T) {
+	h, _, mux := newTestHandler(t)
+	h.CanClear = func(*http.Request) bool { return false }
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, httptest.NewRequest(http.MethodDelete, "/api/admin/audit", nil))
+	if w.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want 403", w.Code)
+	}
+}
+
+func TestHandlerClear_TruncatesAndAppendsMarker(t *testing.T) {
+	h, s, mux := newTestHandler(t)
+	h.CanClear = func(*http.Request) bool { return true }
+	for i := 0; i < 5; i++ {
+		if err := s.Log(context.Background(), Event{Action: "x", Outcome: Success}); err != nil {
+			t.Fatalf("seed %d: %v", i, err)
+		}
+	}
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, httptest.NewRequest(http.MethodDelete, "/api/admin/audit", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", w.Code, w.Body.String())
+	}
+	var resp clearResponse
+	_ = json.NewDecoder(w.Body).Decode(&resp)
+	if resp.RowsDeleted != 5 {
+		t.Errorf("rowsDeleted = %d, want 5", resp.RowsDeleted)
+	}
+	// Surviving log should have exactly the audit.clear marker.
+	got, _, _ := s.ListQuery(Query{})
+	if len(got) != 1 || got[0].Action != "audit.clear" {
+		t.Fatalf("surviving rows = %+v, want one audit.clear", got)
+	}
+	if rd, ok := got[0].Detail["rows_deleted"].(float64); !ok || rd != 5 {
+		t.Errorf("audit.clear detail rows_deleted = %v, want 5", got[0].Detail["rows_deleted"])
+	}
+	if _, present := got[0].Detail["older_than_days"]; present {
+		t.Errorf("older_than_days must be absent on truncate-all: %v", got[0].Detail)
+	}
+}
+
+func TestHandlerClear_OlderThanDaysParam(t *testing.T) {
+	h, s, mux := newTestHandler(t)
+	h.CanClear = func(*http.Request) bool { return true }
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, httptest.NewRequest(http.MethodDelete, "/api/admin/audit?older_than_days=30", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d", w.Code)
+	}
+	got, _, _ := s.ListQuery(Query{})
+	if len(got) != 1 || got[0].Action != "audit.clear" {
+		t.Fatalf("surviving = %+v", got)
+	}
+	if v, _ := got[0].Detail["older_than_days"].(float64); v != 30 {
+		t.Errorf("older_than_days = %v, want 30", got[0].Detail["older_than_days"])
+	}
+}
+
+func TestHandlerClear_RejectsBadOlderThanDays(t *testing.T) {
+	h, _, mux := newTestHandler(t)
+	h.CanClear = func(*http.Request) bool { return true }
+	for _, bad := range []string{"0", "-1", "abc", "3651"} {
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, httptest.NewRequest(http.MethodDelete, "/api/admin/audit?older_than_days="+bad, nil))
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("older_than_days=%q status = %d, want 400", bad, w.Code)
+		}
+	}
+}

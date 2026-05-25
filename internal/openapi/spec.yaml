@@ -592,6 +592,36 @@ paths:
                       afterId: { type: string }
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+    delete:
+      tags: [audit]
+      summary: Delete audit rows.
+      description: |
+        Global Admin only. With no query parameters, truncates the
+        entire audit_log. With `older_than_days=N`, drops rows older
+        than N days from now. After the delete, a single
+        `audit.clear` row is appended carrying `rows_deleted` (and
+        `older_than_days` when set) so the action stays attributable
+        in the surviving log; that marker is not counted in
+        `rowsDeleted`.
+      parameters:
+        - in: query
+          name: older_than_days
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 3650 }
+          description: When set, deletes only rows older than N days.
+      responses:
+        "200":
+          description: Rows deleted.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [rowsDeleted]
+                properties:
+                  rowsDeleted: { type: integer }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
 
   /api/admin/audit/{id}:
     get:

@@ -508,3 +508,73 @@ var (
 	_ execer = (*sql.DB)(nil)
 	_ execer = (*sql.Tx)(nil)
 )
+
+func TestClearAllTruncates(t *testing.T) {
+	s := newTestStore(t)
+	for i := 0; i < 3; i++ {
+		if err := s.Log(context.Background(), Event{Action: "x", Outcome: Success}); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+	}
+	n, err := s.Clear(0)
+	if err != nil {
+		t.Fatalf("Clear(0): %v", err)
+	}
+	if n != 3 {
+		t.Errorf("rows deleted = %d, want 3", n)
+	}
+	got, _, _ := s.ListQuery(Query{})
+	if len(got) != 0 {
+		t.Errorf("post-truncate rows = %d, want 0", len(got))
+	}
+}
+
+func TestClearOlderThanDays(t *testing.T) {
+	s := newTestStore(t)
+	// Pin Now so the cutoff is deterministic across the seed + clear.
+	fixedNow := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	s.Now = func() time.Time { return fixedNow }
+
+	older := fixedNow.AddDate(0, 0, -10).UnixMilli()
+	newer := fixedNow.AddDate(0, 0, -1).UnixMilli()
+	for _, p := range []struct {
+		id string
+		ms int64
+	}{
+		{"keep-new", newer},
+		{"drop-old", older},
+	} {
+		if _, err := s.db.Exec(
+			`INSERT INTO audit_log (id, occurred_at, actor_kind, action, outcome) VALUES (?, ?, ?, ?, ?)`,
+			p.id, p.ms, string(ActorSystem), "x", string(Success),
+		); err != nil {
+			t.Fatalf("seed %s: %v", p.id, err)
+		}
+	}
+
+	n, err := s.Clear(7)
+	if err != nil {
+		t.Fatalf("Clear(7): %v", err)
+	}
+	if n != 1 {
+		t.Errorf("rows deleted = %d, want 1", n)
+	}
+	if _, err := s.Get("keep-new"); err != nil {
+		t.Errorf("keep-new should survive: %v", err)
+	}
+	if _, err := s.Get("drop-old"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("drop-old should be gone: err=%v", err)
+	}
+}
+
+func TestClearEmptyTable(t *testing.T) {
+	s := newTestStore(t)
+	n, err := s.Clear(0)
+	if err != nil || n != 0 {
+		t.Errorf("Clear(0) on empty = (%d, %v), want (0, nil)", n, err)
+	}
+	n, err = s.Clear(30)
+	if err != nil || n != 0 {
+		t.Errorf("Clear(30) on empty = (%d, %v), want (0, nil)", n, err)
+	}
+}

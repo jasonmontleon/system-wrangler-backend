@@ -247,6 +247,35 @@ func (s *Store) IsVisibleTo(rec Record, sf ScopeFilter) (bool, error) {
 	return true, nil
 }
 
+// Clear deletes audit rows. olderThanDays <= 0 truncates the whole
+// table; >0 deletes only rows older than N days from Now(). Returns
+// the number of rows deleted. The caller is expected to log a
+// follow-up `audit.clear` row after this returns so the action stays
+// attributable in the surviving log.
+func (s *Store) Clear(olderThanDays int) (int, error) {
+	if olderThanDays <= 0 {
+		res, err := s.db.Exec(`DELETE FROM audit_log`)
+		if err != nil {
+			return 0, fmt.Errorf("audit: clear all: %w", err)
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return 0, fmt.Errorf("audit: clear all rows affected: %w", err)
+		}
+		return int(n), nil
+	}
+	cutoff := s.Now().UTC().AddDate(0, 0, -olderThanDays).UnixMilli()
+	res, err := s.db.Exec(`DELETE FROM audit_log WHERE occurred_at < ?`, cutoff)
+	if err != nil {
+		return 0, fmt.Errorf("audit: clear older than: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("audit: clear older rows affected: %w", err)
+	}
+	return int(n), nil
+}
+
 // Get returns one record by id, or ErrNotFound.
 func (s *Store) Get(id string) (Record, error) {
 	row := s.db.QueryRow(`
