@@ -400,3 +400,46 @@ func TestSQLiteMigratesLegacySchema(t *testing.T) {
 		t.Errorf("GroupID = %v, want %q", got.GroupID, gid)
 	}
 }
+
+func TestSQLiteStoreSetPlatformInfoRoundTrip(t *testing.T) {
+	s := newTestSQLiteStore(t)
+	sys, err := s.Create(SystemInput{Name: "host", Hostname: "10.0.0.1"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	// Pre-detection defaults: every field empty.
+	pre, err := s.Get(sys.ID)
+	if err != nil {
+		t.Fatalf("Get pre: %v", err)
+	}
+	if pre.OSFamily != "" || pre.OSDistribution != "" || pre.Virtualization != "" {
+		t.Errorf("pre-detection defaults non-empty: %+v", pre)
+	}
+	// Round-trip a populated value.
+	if err := s.SetPlatformInfo(sys.ID, "Linux", "Fedora 41", "kvm"); err != nil {
+		t.Fatalf("SetPlatformInfo: %v", err)
+	}
+	got, err := s.Get(sys.ID)
+	if err != nil {
+		t.Fatalf("Get post: %v", err)
+	}
+	if got.OSFamily != "Linux" || got.OSDistribution != "Fedora 41" || got.Virtualization != "kvm" {
+		t.Errorf("after SetPlatformInfo: %+v", got)
+	}
+	// Empty Virtualization is the canonical bare-metal write — must
+	// overwrite a previously-set value.
+	if err := s.SetPlatformInfo(sys.ID, "Linux", "Fedora 41", ""); err != nil {
+		t.Fatalf("SetPlatformInfo overwrite: %v", err)
+	}
+	got2, _ := s.Get(sys.ID)
+	if got2.Virtualization != "" {
+		t.Errorf("Virtualization = %q, want empty", got2.Virtualization)
+	}
+}
+
+func TestSQLiteStoreSetPlatformInfoMissing(t *testing.T) {
+	s := newTestSQLiteStore(t)
+	if err := s.SetPlatformInfo("no-such-system", "Linux", "Fedora 41", ""); !errors.Is(err, ErrNotFound) {
+		t.Errorf("SetPlatformInfo on missing: err = %v, want ErrNotFound", err)
+	}
+}

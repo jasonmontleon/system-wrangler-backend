@@ -40,6 +40,12 @@ type Store interface {
 	// SetPlatformTx is the in-transaction sibling of SetPlatform so the
 	// row mutation and the accompanying audit row commit together.
 	SetPlatformTx(tx *sql.Tx, systemID string, isWindows bool) error
+	// SetPlatformInfo persists the detected platform facts the
+	// inspect playbook reports. Empty strings are valid values —
+	// they correspond to "not detected yet" / "bare metal". The
+	// operator-set IsWindows flag is intentionally not touched here;
+	// platform intent and platform detection are independent.
+	SetPlatformInfo(systemID, osFamily, osDistribution, virtualization string) error
 }
 
 // MemStore is an in-memory Store. Safe for concurrent use. Data is lost on
@@ -187,6 +193,21 @@ func (s *MemStore) SetPlatform(systemID string, isWindows bool) error {
 		return ErrNotFound
 	}
 	h.IsWindows = isWindows
+	s.systems[systemID] = h
+	return nil
+}
+
+// SetPlatformInfo persists detected platform facts on the system.
+func (s *MemStore) SetPlatformInfo(systemID, osFamily, osDistribution, virtualization string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	h, found := s.systems[systemID]
+	if !found {
+		return ErrNotFound
+	}
+	h.OSFamily = osFamily
+	h.OSDistribution = osDistribution
+	h.Virtualization = virtualization
 	s.systems[systemID] = h
 	return nil
 }

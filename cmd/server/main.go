@@ -504,6 +504,7 @@ func populateMux(mux router.Mux, db *sql.DB, store systems.Store, groupStore gro
 			Notify: func(t string) {
 				hub.Broadcast(events.Event{Type: t})
 			},
+			SetPlatformInfo: store.SetPlatformInfo,
 		}
 		updaterHandler := &updaters.Handler{
 			Runner:  updaterRunner,

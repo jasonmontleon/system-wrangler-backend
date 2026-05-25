@@ -57,6 +57,13 @@ type Runner struct {
 	// in-flight state change without polling. The runner package
 	// stays free of an events import by taking a plain callback.
 	Notify func(eventType string)
+	// SetPlatformInfo, if set, persists the platform facts the inspect
+	// playbook reports (OS family / distribution / virtualization).
+	// Wired in main.go to systems.Store.SetPlatformInfo so this
+	// package doesn't import systems directly. Errors are logged but
+	// non-fatal — failing to persist platform facts must not turn an
+	// otherwise-successful inspect into a failed run.
+	SetPlatformInfo func(systemID, osFamily, osDistribution, virtualization string) error
 }
 
 func (r *Runner) notify(eventType string) {
@@ -185,6 +192,16 @@ func (r *Runner) Inspect(ctx context.Context, systemID string) (InspectResult, e
 			"reason":    aErr.Error(),
 		})
 		return InspectResult{Run: run, Status: ansible.RunFailure, Reason: aErr.Error()}, aErr
+	}
+
+	// Persist detected platform facts before reconciling updaters so
+	// the SPA's per-host display picks up the new OS / virtualization
+	// info even when the rest of the inspect would surface no changes.
+	if r.SetPlatformInfo != nil {
+		pf := parsePlatformFacts(aRun.Stdout)
+		if perr := r.SetPlatformInfo(systemID, pf.OSFamily, pf.OSDistribution, pf.Virtualization); perr != nil {
+			slog.Warn("updaters: persist platform facts", "err", perr, "system_id", systemID)
+		}
 	}
 
 	// Reconcile system_updaters: every detected id gets an upsert,

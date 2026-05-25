@@ -2471,6 +2471,15 @@ components:
         running:
           type: boolean
           description: True when an updater (inspect / check / apply) is currently in flight against this system. Derived from `updater_run_locks`; lets the SPA keep a row's spinner lit even when the work was started from another tab and persists the indicator across page navigation.
+        osFamily:
+          type: string
+          description: Detected OS family ("Linux", "Darwin", "FreeBSD", "OpenBSD", "NetBSD", "Windows"). Populated by the inspect playbook's `SW_OS_FAMILY:` marker. Absent pre-inspect.
+        osDistribution:
+          type: string
+          description: Detected distribution + version, e.g. "Fedora 41", "macOS 14.6", "Microsoft Windows 11 Pro 10.0.22631". Populated by the inspect playbook's `SW_OS_DISTRIBUTION:` marker.
+        virtualization:
+          type: string
+          description: Lowercased virtualization type detected on the host ("kvm", "vmware", "hyperv", "xen", "virtualbox", "lxc", "parallels", ...). Empty when the host is bare-metal or pre-inspect.
 
     SystemInput:
       type: object

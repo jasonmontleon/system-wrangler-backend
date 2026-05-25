@@ -399,3 +399,6 @@ func (s *stubStore) UpdateProbe(string, bool, time.Time) error {
 func (s *stubStore) SetGroup(string, *string) error            { return s.err }
 func (s *stubStore) SetPlatform(string, bool) error            { return s.err }
 func (s *stubStore) SetPlatformTx(*sql.Tx, string, bool) error { return s.err }
+func (s *stubStore) SetPlatformInfo(string, string, string, string) error {
+	return s.err
+}

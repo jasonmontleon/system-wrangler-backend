@@ -72,6 +72,21 @@ type System struct {
 	// the PowerShell-on-OpenSSH path (`ansible_shell_type=powershell` in
 	// inventory, `where.exe` probes, `-m ansible.windows.win_ping`).
 	IsWindows bool `json:"isWindows,omitempty"`
+	// OSFamily / OSDistribution / Virtualization are the detected
+	// platform facts populated by the inspect playbook's
+	// SW_OS_FAMILY / SW_OS_DISTRIBUTION / SW_VIRTUALIZATION markers.
+	// OSFamily is one of "Linux", "Darwin", "FreeBSD", "OpenBSD",
+	// "NetBSD", "Windows", or empty pre-inspect. OSDistribution carries
+	// the human-readable distribution + version (e.g. "Fedora 41",
+	// "macOS 14.6", "Microsoft Windows 11 Pro 10.0.22631").
+	// Virtualization is empty for bare-metal hosts and otherwise
+	// carries the lowercased virtualization type ("kvm", "vmware",
+	// "hyperv", "xen", "virtualbox", "lxc"). All three are display-only
+	// — the operator-set IsWindows flag remains the inventory shell-type
+	// intent declaration.
+	OSFamily       string `json:"osFamily,omitempty"`
+	OSDistribution string `json:"osDistribution,omitempty"`
+	Virtualization string `json:"virtualization,omitempty"`
 	// Running is true when an updater (inspect / check / apply) is
 	// currently in flight against this system. Seeded by the
 	// systems-stats hook from system_action_locks so the SPA can keep

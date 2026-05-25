@@ -744,6 +744,126 @@ func TestParsePendingPackages(t *testing.T) {
 	}
 }
 
+func TestParsePlatformFacts(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want PlatformFacts
+	}{
+		{
+			name: "linux KVM guest",
+			in: `ok: [h] => { "msg": "SW_OS_FAMILY: Linux" }` + "\n" +
+				`ok: [h] => { "msg": "SW_OS_DISTRIBUTION: Fedora|41" }` + "\n" +
+				`ok: [h] => { "msg": "SW_VIRTUALIZATION: kvm|guest" }` + "\n",
+			want: PlatformFacts{
+				OSFamily:       "Linux",
+				OSDistribution: "Fedora 41",
+				Virtualization: "kvm",
+			},
+		},
+		{
+			name: "bare metal: virtualization role host stays empty",
+			in: `ok: [h] => { "msg": "SW_OS_FAMILY: Linux" }` + "\n" +
+				`ok: [h] => { "msg": "SW_OS_DISTRIBUTION: Arch|rolling" }` + "\n" +
+				`ok: [h] => { "msg": "SW_VIRTUALIZATION: kvm|host" }` + "\n",
+			want: PlatformFacts{
+				OSFamily:       "Linux",
+				OSDistribution: "Arch rolling",
+				Virtualization: "",
+			},
+		},
+		{
+			name: "macOS no virtualization",
+			in: `ok: [h] => { "msg": "SW_OS_FAMILY: Darwin" }` + "\n" +
+				`ok: [h] => { "msg": "SW_OS_DISTRIBUTION: MacOSX|14.6" }` + "\n" +
+				`ok: [h] => { "msg": "SW_VIRTUALIZATION: |NA" }` + "\n",
+			want: PlatformFacts{
+				OSFamily:       "Darwin",
+				OSDistribution: "MacOSX 14.6",
+				Virtualization: "",
+			},
+		},
+		{
+			name: "Windows VMware guest",
+			in: `ok: [h] => { "msg": "SW_OS_FAMILY: Windows" }` + "\n" +
+				`ok: [h] => { "msg": "SW_OS_DISTRIBUTION: Microsoft Windows 11 Pro|10.0.22631" }` + "\n" +
+				`ok: [h] => { "msg": "SW_VIRTUALIZATION: vmware|guest" }` + "\n",
+			want: PlatformFacts{
+				OSFamily:       "Windows",
+				OSDistribution: "Microsoft Windows 11 Pro 10.0.22631",
+				Virtualization: "vmware",
+			},
+		},
+		{
+			name: "distribution without version",
+			in:   `ok: [h] => { "msg": "SW_OS_DISTRIBUTION: FreeBSD|" }` + "\n",
+			want: PlatformFacts{OSDistribution: "FreeBSD"},
+		},
+		{
+			name: "marker absent",
+			in:   "nothing here\n",
+			want: PlatformFacts{},
+		},
+		{
+			name: "first marker wins, later duplicate ignored",
+			in: `ok: [h] => { "msg": "SW_OS_FAMILY: Linux" }` + "\n" +
+				`ok: [h] => { "msg": "SW_OS_FAMILY: Windows" }` + "\n",
+			want: PlatformFacts{OSFamily: "Linux"},
+		},
+		{
+			name: "virtualization type is lowercased",
+			in:   `ok: [h] => { "msg": "SW_VIRTUALIZATION: VMware|guest" }` + "\n",
+			want: PlatformFacts{Virtualization: "vmware"},
+		},
+		{
+			// ansible default-callback prints the `stdout` field of a
+			// win_shell task with literal \r\n escapes between lines.
+			// The parser must cut each marker's value at the first
+			// backslash so the next marker's text doesn't leak in.
+			name: "windows win_shell stdout with escaped line breaks",
+			in: `ok: [winhost] => {` + "\n" +
+				`    "changed": false,` + "\n" +
+				`    "rc": 0,` + "\n" +
+				`    "stdout": "SW_OS_FAMILY: Windows\r\nSW_OS_DISTRIBUTION: Microsoft Windows 11 Pro|10.0.22631\r\nSW_VIRTUALIZATION: vmware|guest",` + "\n" +
+				`    "stderr_lines": []` + "\n" +
+				`}` + "\n",
+			want: PlatformFacts{
+				OSFamily:       "Windows",
+				OSDistribution: "Microsoft Windows 11 Pro 10.0.22631",
+				Virtualization: "vmware",
+			},
+		},
+		{
+			// Same payload reaching us via the stdout_lines array
+			// (one marker per JSON line) should produce identical
+			// output — proves first-occurrence-wins doesn't trip when
+			// the same marker appears in both stdout and stdout_lines.
+			name: "windows win_shell stdout_lines + stdout both present",
+			in: `ok: [winhost] => {` + "\n" +
+				`    "stdout": "SW_OS_FAMILY: Windows\r\nSW_OS_DISTRIBUTION: Microsoft Windows 11 Pro|10.0.22631\r\nSW_VIRTUALIZATION: vmware|guest",` + "\n" +
+				`    "stdout_lines": [` + "\n" +
+				`        "SW_OS_FAMILY: Windows",` + "\n" +
+				`        "SW_OS_DISTRIBUTION: Microsoft Windows 11 Pro|10.0.22631",` + "\n" +
+				`        "SW_VIRTUALIZATION: vmware|guest"` + "\n" +
+				`    ]` + "\n" +
+				`}` + "\n",
+			want: PlatformFacts{
+				OSFamily:       "Windows",
+				OSDistribution: "Microsoft Windows 11 Pro 10.0.22631",
+				Virtualization: "vmware",
+			},
+		},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			got := parsePlatformFacts([]byte(tt.in))
+			if got != tt.want {
+				t.Errorf("parsePlatformFacts = %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}
+
 // verifyAuditPair asserts both rows are present and the complete's
 // detail.parent_id equals the start's id (== runID).
 func verifyAuditPair(t *testing.T, store *audit.Store, startAction, completeAction, runID string) {

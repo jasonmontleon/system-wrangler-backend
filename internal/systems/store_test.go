@@ -250,3 +250,21 @@ func TestMemStoreConcurrent(t *testing.T) {
 		t.Errorf("len = %d, want %d", len(systems), n)
 	}
 }
+
+func TestMemStoreSetPlatformInfoRoundTrip(t *testing.T) {
+	s := newTestStore()
+	sys, err := s.Create(SystemInput{Name: "host", Hostname: "10.0.0.1"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := s.SetPlatformInfo(sys.ID, "Darwin", "macOS 14.6", "vmware"); err != nil {
+		t.Fatalf("SetPlatformInfo: %v", err)
+	}
+	got, _ := s.Get(sys.ID)
+	if got.OSFamily != "Darwin" || got.OSDistribution != "macOS 14.6" || got.Virtualization != "vmware" {
+		t.Errorf("got %+v", got)
+	}
+	if err := s.SetPlatformInfo("no-such", "Linux", "", ""); !errors.Is(err, ErrNotFound) {
+		t.Errorf("missing: err = %v, want ErrNotFound", err)
+	}
+}

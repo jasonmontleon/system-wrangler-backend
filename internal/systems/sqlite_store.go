@@ -34,6 +34,9 @@ func NewSQLiteStore(db *sql.DB) (*SQLiteStore, error) {
 	if err := addIsWindowsColumn(db); err != nil {
 		return nil, fmt.Errorf("systems: migrate is_windows: %w", err)
 	}
+	if err := addPlatformInfoColumns(db); err != nil {
+		return nil, fmt.Errorf("systems: migrate platform info: %w", err)
+	}
 	return &SQLiteStore{db: db, NewID: newUUID, Now: time.Now}, nil
 }
 
@@ -53,7 +56,10 @@ CREATE TABLE IF NOT EXISTS hosts (
     status      TEXT NOT NULL,
     last_seen   INTEGER,
     group_id    TEXT,
-    is_windows  INTEGER NOT NULL DEFAULT 0
+    is_windows  INTEGER NOT NULL DEFAULT 0,
+    os_family       TEXT NOT NULL DEFAULT '',
+    os_distribution TEXT NOT NULL DEFAULT '',
+    virtualization  TEXT NOT NULL DEFAULT ''
 ) STRICT;
 
 CREATE INDEX IF NOT EXISTS hosts_created_at ON hosts(created_at, id);
@@ -96,6 +102,29 @@ func addIsWindowsColumn(db *sql.DB) error {
 	default:
 		return err
 	}
+}
+
+// addPlatformInfoColumns adds os_family, os_distribution, and
+// virtualization columns to older hosts tables. Each column probes
+// independently so a partially-migrated database (rare but possible
+// across upgrade interruptions) self-heals on the next start.
+func addPlatformInfoColumns(db *sql.DB) error {
+	for _, col := range []string{"os_family", "os_distribution", "virtualization"} {
+		row := db.QueryRow(`SELECT 1 FROM pragma_table_info('hosts') WHERE name = ?`, col)
+		var found int
+		switch err := row.Scan(&found); {
+		case err == nil:
+			continue
+		case errors.Is(err, sql.ErrNoRows):
+			//nolint:gosec // col is a fixed string literal from the loop above, not user input
+			if _, err := db.Exec(`ALTER TABLE hosts ADD COLUMN ` + col + ` TEXT NOT NULL DEFAULT ''`); err != nil {
+				return err
+			}
+		default:
+			return err
+		}
+	}
+	return nil
 }
 
 // Create persists a new System after running SystemInput.Validate.
@@ -144,7 +173,7 @@ func (s *SQLiteStore) createWith(e execer, in SystemInput) (System, error) {
 // Get returns the System with the given ID, or ErrNotFound.
 func (s *SQLiteStore) Get(id string) (System, error) {
 	row := s.db.QueryRow(
-		`SELECT id, name, hostname, created_at, status, last_seen, group_id, is_windows FROM hosts WHERE id = ?`,
+		`SELECT id, name, hostname, created_at, status, last_seen, group_id, is_windows, os_family, os_distribution, virtualization FROM hosts WHERE id = ?`,
 		id,
 	)
 	h, err := scanHost(row)
@@ -158,7 +187,7 @@ func (s *SQLiteStore) Get(id string) (System, error) {
 // MemStore so handler behavior is identical regardless of backend.
 func (s *SQLiteStore) List() ([]System, error) {
 	rows, err := s.db.Query(
-		`SELECT id, name, hostname, created_at, status, last_seen, group_id, is_windows FROM hosts ORDER BY created_at, id`,
+		`SELECT id, name, hostname, created_at, status, last_seen, group_id, is_windows, os_family, os_distribution, virtualization FROM hosts ORDER BY created_at, id`,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("systems: list: %w", err)
@@ -279,7 +308,11 @@ func scanHost(r rowScanner) (System, error) {
 		status    string
 		isWindows int64
 	)
-	if err := r.Scan(&h.ID, &h.Name, &h.Hostname, &createdNs, &status, &lastSeen, &groupID, &isWindows); err != nil {
+	if err := r.Scan(
+		&h.ID, &h.Name, &h.Hostname, &createdNs, &status, &lastSeen,
+		&groupID, &isWindows,
+		&h.OSFamily, &h.OSDistribution, &h.Virtualization,
+	); err != nil {
 		return System{}, err
 	}
 	h.CreatedAt = time.Unix(0, createdNs).UTC()
@@ -327,4 +360,25 @@ func boolToInt(b bool) int {
 		return 1
 	}
 	return 0
+}
+
+// SetPlatformInfo persists the detected OS family, distribution, and
+// virtualization fields the inspect playbook surfaced via the
+// SW_OS_* / SW_VIRTUALIZATION markers. Returns ErrNotFound when no
+// host matches. Empty strings are valid — they represent "not yet
+// detected" / "bare metal" respectively, and overwriting with empty
+// is the intentional path when a host's inspect can no longer reach
+// the gather_facts task.
+func (s *SQLiteStore) SetPlatformInfo(systemID, osFamily, osDistribution, virtualization string) error {
+	res, err := s.db.Exec(
+		`UPDATE hosts SET os_family = ?, os_distribution = ?, virtualization = ? WHERE id = ?`,
+		osFamily, osDistribution, virtualization, systemID,
+	)
+	if err != nil {
+		return fmt.Errorf("systems: set platform info: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
