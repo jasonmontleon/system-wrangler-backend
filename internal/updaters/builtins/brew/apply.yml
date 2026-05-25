@@ -4,10 +4,21 @@
   become: false
   environment:
     PATH: '/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin'
+  vars:
+    sw_targeted_packages: []
   tasks:
+    - name: Compose the brew command (all-pending vs targeted)
+      ansible.builtin.set_fact:
+        sw_brew_cmd: >-
+          {%- if sw_targeted_packages | length > 0 -%}
+          brew upgrade {{ sw_targeted_packages | join(' ') }}
+          {%- else -%}
+          brew upgrade
+          {%- endif -%}
+
     - name: Run brew upgrade  # noqa: command-instead-of-module
       ansible.builtin.command:
-        cmd: brew upgrade
+        cmd: "{{ sw_brew_cmd }}"
       register: brew_result
       changed_when: brew_result.stdout is search('^==> Upgrading ', multiline=True)
     - name: Compute upgraded package count from progress markers

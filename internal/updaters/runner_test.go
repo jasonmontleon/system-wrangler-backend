@@ -249,7 +249,7 @@ func TestApplyDoesNotPersistPendingPackages(t *testing.T) {
 				"\"msg\": \"SW_PENDING_PACKAGE: ignore-me|9.0|9.1\"\n",
 		),
 	}, nil)
-	if _, err := f.runner.Apply(context.Background(), f.systemID, "builtin.dnf"); err != nil {
+	if _, err := f.runner.Apply(context.Background(), f.systemID, "builtin.dnf", nil); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
 	avail, _ := f.store.AvailabilityFor(f.systemID)
@@ -444,7 +444,7 @@ func TestApplyEmitsAffectedAndLogSha(t *testing.T) {
 		ExitCode: 0,
 		Stdout:   []byte("output...\n\"msg\": \"SW_AFFECTED_COUNT: 3\"\n"),
 	}, nil)
-	res, err := f.runner.Apply(context.Background(), f.systemID, "builtin.dnf")
+	res, err := f.runner.Apply(context.Background(), f.systemID, "builtin.dnf", nil)
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
@@ -504,7 +504,7 @@ func TestRunnerNotifiesOnApplyFailure(t *testing.T) {
 	f := newRunnerFixture(t)
 	got := f.captureNotify()
 	f.queue(ansible.Run{Status: ansible.RunFailure, ExitCode: 2}, errors.New("exec died"))
-	_, err := f.runner.Apply(context.Background(), f.systemID, "builtin.dnf")
+	_, err := f.runner.Apply(context.Background(), f.systemID, "builtin.dnf", nil)
 	if err == nil {
 		t.Fatalf("Apply: expected error, got nil")
 	}
@@ -575,7 +575,7 @@ func TestApplyRejectsCheckOnlyUpdater(t *testing.T) {
 	if _, err := f.registry.CreateCustom(d); err != nil {
 		t.Fatalf("CreateCustom check-only: %v", err)
 	}
-	if _, err := f.runner.Apply(context.Background(), f.systemID, "custom.firmware"); !errors.Is(err, ErrCheckOnly) {
+	if _, err := f.runner.Apply(context.Background(), f.systemID, "custom.firmware", nil); !errors.Is(err, ErrCheckOnly) {
 		t.Fatalf("Apply on check-only: err = %v, want ErrCheckOnly", err)
 	}
 	// The ansible runner must not have been invoked — we refused
@@ -599,7 +599,7 @@ func TestApplyConflictWhenLockHeld(t *testing.T) {
 		t.Fatalf("seed lock: %v", err)
 	}
 	f.queue(ansible.Run{Status: ansible.RunSuccess}, nil)
-	res, err := f.runner.Apply(context.Background(), f.systemID, "builtin.dnf")
+	res, err := f.runner.Apply(context.Background(), f.systemID, "builtin.dnf", nil)
 	if !errors.Is(err, ErrConflict) {
 		t.Fatalf("err = %v, want ErrConflict", err)
 	}
@@ -778,3 +778,64 @@ func auditRowsWithAction(t *testing.T, store *audit.Store, action string) []audi
 
 // Keep strings import honest for the playbook composer test.
 var _ = strings.Contains
+
+func TestApplyThreadsTargetedPackages(t *testing.T) {
+	f := newRunnerFixture(t)
+	f.queue(ansible.Run{Status: ansible.RunSuccess, ExitCode: 0}, nil)
+	if _, err := f.runner.Apply(
+		context.Background(), f.systemID, "builtin.dnf",
+		[]string{"openssl", "openssl-libs"},
+	); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if len(f.ansible.calls) != 1 {
+		t.Fatalf("ansible call count = %d, want 1", len(f.ansible.calls))
+	}
+	got, ok := f.ansible.calls[0].Vars["sw_targeted_packages"].([]string)
+	if !ok {
+		t.Fatalf("Vars[sw_targeted_packages] = %v (type %T), want []string", f.ansible.calls[0].Vars["sw_targeted_packages"], f.ansible.calls[0].Vars["sw_targeted_packages"])
+	}
+	if len(got) != 2 || got[0] != "openssl" || got[1] != "openssl-libs" {
+		t.Errorf("packages = %v, want [openssl openssl-libs]", got)
+	}
+}
+
+func TestApplyWithNoPackagesOmitsVar(t *testing.T) {
+	f := newRunnerFixture(t)
+	f.queue(ansible.Run{Status: ansible.RunSuccess, ExitCode: 0}, nil)
+	if _, err := f.runner.Apply(context.Background(), f.systemID, "builtin.dnf", nil); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if len(f.ansible.calls) != 1 {
+		t.Fatalf("ansible call count = %d, want 1", len(f.ansible.calls))
+	}
+	if _, set := f.ansible.calls[0].Vars["sw_targeted_packages"]; set {
+		t.Errorf("Vars contains sw_targeted_packages on empty Apply; want absent")
+	}
+}
+
+func TestApplyTargetedAddsAuditDetail(t *testing.T) {
+	f := newRunnerFixture(t)
+	f.queue(ansible.Run{Status: ansible.RunSuccess, ExitCode: 0}, nil)
+	if _, err := f.runner.Apply(
+		context.Background(), f.systemID, "builtin.dnf",
+		[]string{"curl"},
+	); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	starts := auditRowsWithAction(t, f.auditStore, "system.update.apply.start")
+	completes := auditRowsWithAction(t, f.auditStore, "system.update.apply.complete")
+	if len(starts) != 1 || len(completes) != 1 {
+		t.Fatalf("audit start/complete = %d/%d, want 1/1", len(starts), len(completes))
+	}
+	for _, rec := range []audit.Record{starts[0], completes[0]} {
+		raw, ok := rec.Detail["targeted_packages"].([]any)
+		if !ok {
+			t.Errorf("%s detail targeted_packages missing or wrong type: %T", rec.Action, rec.Detail["targeted_packages"])
+			continue
+		}
+		if len(raw) != 1 || raw[0] != "curl" {
+			t.Errorf("%s targeted_packages = %v, want [curl]", rec.Action, raw)
+		}
+	}
+}

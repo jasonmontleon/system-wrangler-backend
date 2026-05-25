@@ -2,10 +2,21 @@
   hosts: all
   gather_facts: false
   become: true
+  vars:
+    sw_targeted_packages: []
   tasks:
+    - name: Compose the xbps command (all-pending vs targeted)
+      ansible.builtin.set_fact:
+        sw_xbps_cmd: >-
+          {%- if sw_targeted_packages | length > 0 -%}
+          xbps-install -uy {{ sw_targeted_packages | join(' ') }}
+          {%- else -%}
+          xbps-install -Suy
+          {%- endif -%}
+
     - name: Run xbps-install update  # noqa: command-instead-of-module
       ansible.builtin.command:
-        cmd: xbps-install -Suy
+        cmd: "{{ sw_xbps_cmd }}"
       register: xbps_result
       changed_when: >-
         xbps_result.stdout is search('configuring ', multiline=True)

@@ -5,8 +5,10 @@ package updaters
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -263,4 +265,59 @@ func postJSON(t *testing.T, url string) *http.Response {
 		t.Fatalf("post %q: %v", url, err)
 	}
 	return resp
+}
+
+func postJSONBody(t *testing.T, url, body string) *http.Response {
+	t.Helper()
+	resp, err := http.Post(url, "application/json", strings.NewReader(body)) //nolint:gosec
+	if err != nil {
+		t.Fatalf("post %q: %v", url, err)
+	}
+	return resp
+}
+
+func TestHandlerApplyTargetedPackages(t *testing.T) {
+	_, srv, rf := newHandlerFixture(t)
+	rf.queue(ansible.Run{Status: ansible.RunSuccess, ExitCode: 0}, nil)
+	url := srv.URL + "/api/systems/" + rf.systemID + "/updaters/builtin.dnf/apply"
+	resp := postJSONBody(t, url, `{"packages":["openssl"]}`)
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d body=%s", resp.StatusCode, body)
+	}
+	if len(rf.ansible.calls) != 1 {
+		t.Fatalf("ansible call count = %d, want 1", len(rf.ansible.calls))
+	}
+	got, ok := rf.ansible.calls[0].Vars["sw_targeted_packages"].([]string)
+	if !ok || len(got) != 1 || got[0] != "openssl" {
+		t.Errorf("packages threaded = %v", rf.ansible.calls[0].Vars["sw_targeted_packages"])
+	}
+}
+
+func TestHandlerApplyRejectsEmptyPackageName(t *testing.T) {
+	_, srv, rf := newHandlerFixture(t)
+	url := srv.URL + "/api/systems/" + rf.systemID + "/updaters/builtin.dnf/apply"
+	resp := postJSONBody(t, url, `{"packages":["openssl",""]}`)
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", resp.StatusCode)
+	}
+	if len(rf.ansible.calls) != 0 {
+		t.Errorf("ansible call count = %d on bad-request path, want 0", len(rf.ansible.calls))
+	}
+}
+
+func TestHandlerApplyEmptyBodyIsAllPending(t *testing.T) {
+	_, srv, rf := newHandlerFixture(t)
+	rf.queue(ansible.Run{Status: ansible.RunSuccess, ExitCode: 0}, nil)
+	url := srv.URL + "/api/systems/" + rf.systemID + "/updaters/builtin.dnf/apply"
+	resp := postJSONBody(t, url, ``)
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want 200", resp.StatusCode)
+	}
+	if _, set := rf.ansible.calls[0].Vars["sw_targeted_packages"]; set {
+		t.Errorf("empty body should not set sw_targeted_packages")
+	}
 }

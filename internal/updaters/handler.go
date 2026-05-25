@@ -6,9 +6,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"system-wrangler-backend/internal/ansible"
@@ -205,7 +208,12 @@ func (h *Handler) runUpdaterEndpoint(w http.ResponseWriter, r *http.Request, kin
 	var res RunResult
 	var err error
 	if kind == RunKindApply {
-		res, err = h.Runner.Apply(r.Context(), sys.ID, updaterID)
+		packages, perr := decodeTargetedPackages(r)
+		if perr != nil {
+			writeError(w, http.StatusBadRequest, perr.Error())
+			return
+		}
+		res, err = h.Runner.Apply(r.Context(), sys.ID, updaterID, packages)
 	} else {
 		res, err = h.Runner.Check(r.Context(), sys.ID, updaterID)
 	}
@@ -386,6 +394,45 @@ func writeConflict(w http.ResponseWriter, store Store, systemID, msg string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusConflict)
 	_ = json.NewEncoder(w).Encode(conflictDTO{Error: msg, ConflictingRun: holder})
+}
+
+// applyBody is the optional request body on POST .../apply. Empty
+// or omitted `packages` means "upgrade everything pending" (the
+// pre-feature behaviour). Non-empty narrows the apply to those
+// names; each builtin's apply.yml reads sw_targeted_packages and
+// composes the manager-native command accordingly.
+type applyBody struct {
+	Packages []string `json:"packages"`
+}
+
+func decodeTargetedPackages(r *http.Request) ([]string, error) {
+	if r.Body == nil {
+		return nil, nil
+	}
+	defer func() { _ = r.Body.Close() }()
+	buf, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		return nil, fmt.Errorf("read body: %w", err)
+	}
+	if len(buf) == 0 {
+		return nil, nil
+	}
+	var body applyBody
+	if err := json.Unmarshal(buf, &body); err != nil {
+		return nil, fmt.Errorf("invalid JSON body: %w", err)
+	}
+	out := make([]string, 0, len(body.Packages))
+	for _, p := range body.Packages {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			return nil, errors.New("packages must not contain empty entries")
+		}
+		out = append(out, p)
+	}
+	if len(out) == 0 {
+		return nil, nil
+	}
+	return out, nil
 }
 
 func writeJSON(w http.ResponseWriter, status int, body any) {

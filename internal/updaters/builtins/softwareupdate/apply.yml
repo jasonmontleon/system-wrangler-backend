@@ -2,10 +2,21 @@
   hosts: all
   gather_facts: false
   become: true
+  vars:
+    sw_targeted_packages: []
   tasks:
-    - name: Install all available softwareupdate items  # noqa: command-instead-of-module
+    - name: Compose the softwareupdate command (all vs targeted titles)
+      ansible.builtin.set_fact:
+        sw_softwareupdate_cmd: >-
+          {%- if sw_targeted_packages | length > 0 -%}
+          softwareupdate -i {{ sw_targeted_packages | map('quote') | join(' ') }}
+          {%- else -%}
+          softwareupdate -i -a
+          {%- endif -%}
+
+    - name: Install softwareupdate items  # noqa: command-instead-of-module
       ansible.builtin.command:
-        cmd: softwareupdate -i -a
+        cmd: "{{ sw_softwareupdate_cmd }}"
       register: softwareupdate_result
       changed_when: softwareupdate_result.stdout is search('^Installed ', multiline=True)
     - name: Compute installed-item count from progress markers

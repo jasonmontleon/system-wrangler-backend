@@ -2,11 +2,22 @@
   hosts: all
   gather_facts: false
   become: false
+  vars:
+    sw_targeted_packages: []
   tasks:
-    - name: Run scoop update *
+    - name: Compose the scoop target list (all vs targeted)
+      ansible.builtin.set_fact:
+        sw_scoop_target: >-
+          {%- if sw_targeted_packages | length > 0 -%}
+          {{ sw_targeted_packages | join(' ') }}
+          {%- else -%}
+          *
+          {%- endif -%}
+
+    - name: Run scoop update
       ansible.windows.win_shell: |
         [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-        scoop update * *>&1 | Out-String -Stream -Width 200
+        scoop update {{ sw_scoop_target }} *>&1 | Out-String -Stream -Width 200
         exit $LASTEXITCODE
       register: scoop_result
       changed_when: scoop_result.stdout is search("was installed successfully!", multiline=True)

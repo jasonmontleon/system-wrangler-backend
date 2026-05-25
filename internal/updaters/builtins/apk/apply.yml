@@ -2,10 +2,21 @@
   hosts: all
   gather_facts: false
   become: true
+  vars:
+    sw_targeted_packages: []
   tasks:
+    - name: Compose the apk command (all-pending vs targeted)
+      ansible.builtin.set_fact:
+        sw_apk_cmd: >-
+          {%- if sw_targeted_packages | length > 0 -%}
+          apk upgrade -U {{ sw_targeted_packages | join(' ') }}
+          {%- else -%}
+          apk upgrade -U
+          {%- endif -%}
+
     - name: Run apk upgrade  # noqa: command-instead-of-module
       ansible.builtin.command:
-        cmd: apk upgrade -U
+        cmd: "{{ sw_apk_cmd }}"
       register: apk_result
       changed_when: >-
         apk_result.stdout is search('^\([0-9]+/[0-9]+\) ', multiline=True)

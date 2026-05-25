@@ -2,11 +2,16 @@
   hosts: all
   gather_facts: false
   become: false
+  vars:
+    sw_targeted_packages: []
   tasks:
     - name: Install pending updates via the win_updates scheduled-task wrapper
       ansible.windows.win_updates:
         state: installed
         reboot: false
+        # When the operator targeted specific KBs, win_updates accepts a
+        # kb_filter list. Empty default = no filter = all pending.
+        kb_filter: "{{ sw_targeted_packages if sw_targeted_packages | length > 0 else omit }}"
       register: wu_result
     - name: Surface install count to the run log
       ansible.builtin.debug:

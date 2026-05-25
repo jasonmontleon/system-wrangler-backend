@@ -2,10 +2,21 @@
   hosts: all
   gather_facts: false
   become: true
+  vars:
+    sw_targeted_packages: []
   tasks:
+    - name: Compose the snap command (all-pending vs targeted)
+      ansible.builtin.set_fact:
+        sw_snap_cmd: >-
+          {%- if sw_targeted_packages | length > 0 -%}
+          snap refresh {{ sw_targeted_packages | join(' ') }}
+          {%- else -%}
+          snap refresh
+          {%- endif -%}
+
     - name: Run snap refresh
       ansible.builtin.command:
-        cmd: snap refresh
+        cmd: "{{ sw_snap_cmd }}"
       register: snap_result
       changed_when: snap_result.stdout != ''
     - name: Compute refreshed snap count

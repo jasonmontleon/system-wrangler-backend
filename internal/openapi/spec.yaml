@@ -1453,9 +1453,29 @@ paths:
         Emits `system.update.apply.start` / `.complete`. Apply
         completes with `affected_packages` and `log_sha` in
         `detail`, mirroring the check shape.
+
+        Optional JSON body narrows the apply to specific package
+        names: `{"packages": ["openssl", "openssl-libs"]}`. Each
+        builtin's apply playbook reads `sw_targeted_packages` and
+        composes the manager-native command (e.g. `dnf upgrade
+        openssl openssl-libs`). Empty body or omitted `packages`
+        upgrades everything pending — the legacy behaviour.
       parameters:
         - { in: path, name: id, required: true, schema: { type: string } }
         - { in: path, name: updater, required: true, schema: { type: string } }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                packages:
+                  type: array
+                  items: { type: string, minLength: 1 }
+                  description: |
+                    Package names to upgrade. Empty / omitted means
+                    "every pending update on this updater."
       responses:
         "200":
           description: Apply completed.
@@ -1463,6 +1483,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/UpdaterRunResult"
+        "400":
+          description: Malformed body (e.g. `packages` contains an empty entry).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404":

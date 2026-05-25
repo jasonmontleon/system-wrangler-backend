@@ -2,10 +2,21 @@
   hosts: all
   gather_facts: false
   become: true
+  vars:
+    sw_targeted_packages: []
   tasks:
+    - name: Compose the zypper command (all-pending vs targeted)
+      ansible.builtin.set_fact:
+        sw_zypper_cmd: >-
+          {%- if sw_targeted_packages | length > 0 -%}
+          zypper --non-interactive update {{ sw_targeted_packages | join(' ') }}
+          {%- else -%}
+          zypper --non-interactive update
+          {%- endif -%}
+
     - name: Run zypper update  # noqa: command-instead-of-module
       ansible.builtin.command:
-        cmd: zypper --non-interactive update
+        cmd: "{{ sw_zypper_cmd }}"
       register: zypper_result
       changed_when: "'Nothing to do.' not in zypper_result.stdout"
     - name: Compute upgraded package count from progress markers

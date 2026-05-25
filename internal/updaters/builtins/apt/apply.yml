@@ -2,14 +2,33 @@
   hosts: all
   gather_facts: false
   become: true
+  vars:
+    sw_targeted_packages: []
   tasks:
-    - name: Run apt dist-upgrade
+    - name: Run apt dist-upgrade (all pending)
+      when: sw_targeted_packages | length == 0
       ansible.builtin.apt:
         upgrade: dist
         update_cache: true
-      register: apt_result
+      register: apt_all
       environment:
         DEBIAN_FRONTEND: noninteractive
+
+    - name: Run apt-get install --only-upgrade (targeted)
+      when: sw_targeted_packages | length > 0
+      ansible.builtin.apt:
+        name: "{{ sw_targeted_packages }}"
+        state: latest  # noqa: package-latest
+        update_cache: true
+        only_upgrade: true
+      register: apt_targeted
+      environment:
+        DEBIAN_FRONTEND: noninteractive
+
+    - name: Pick whichever apt run executed
+      ansible.builtin.set_fact:
+        apt_result: "{{ apt_targeted if sw_targeted_packages | length > 0 else apt_all }}"
+
     - name: Compute upgraded package count from the dpkg trace
       ansible.builtin.set_fact:
         sw_upgraded_count: >-

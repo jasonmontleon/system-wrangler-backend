@@ -2,10 +2,21 @@
   hosts: all
   gather_facts: false
   become: true
+  vars:
+    sw_targeted_packages: []
   tasks:
+    - name: Compose the flatpak command (all-pending vs targeted)
+      ansible.builtin.set_fact:
+        sw_flatpak_cmd: >-
+          {%- if sw_targeted_packages | length > 0 -%}
+          flatpak --system update --assumeyes --noninteractive {{ sw_targeted_packages | join(' ') }}
+          {%- else -%}
+          flatpak --system update --assumeyes --noninteractive
+          {%- endif -%}
+
     - name: Run flatpak update
       ansible.builtin.command:
-        cmd: flatpak --system update --assumeyes --noninteractive
+        cmd: "{{ sw_flatpak_cmd }}"
       register: flatpak_result
       changed_when: flatpak_result.stdout != ''
     - name: Compute updated flatpak count from the numbered changelist

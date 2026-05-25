@@ -2,10 +2,21 @@
   hosts: all
   gather_facts: false
   become: true
+  vars:
+    sw_targeted_packages: []
   tasks:
+    - name: Compose the pkg_add command (all-pending vs targeted)
+      ansible.builtin.set_fact:
+        sw_pkg_add_cmd: >-
+          {%- if sw_targeted_packages | length > 0 -%}
+          pkg_add -uvI {{ sw_targeted_packages | join(' ') }}
+          {%- else -%}
+          pkg_add -uvI
+          {%- endif -%}
+
     - name: Run pkg_add -u
       ansible.builtin.command:
-        cmd: pkg_add -uvI
+        cmd: "{{ sw_pkg_add_cmd }}"
       register: pkg_add_result
       changed_when: >-
         pkg_add_result.stdout is search('^Adding \S+->', multiline=True)

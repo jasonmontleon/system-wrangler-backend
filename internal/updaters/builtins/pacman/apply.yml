@@ -2,10 +2,21 @@
   hosts: all
   gather_facts: false
   become: true
+  vars:
+    sw_targeted_packages: []
   tasks:
-    - name: Run pacman -Syu  # noqa: command-instead-of-module
+    - name: Compose the pacman command (all-pending vs targeted)
+      ansible.builtin.set_fact:
+        sw_pacman_cmd: >-
+          {%- if sw_targeted_packages | length > 0 -%}
+          pacman -S --noconfirm {{ sw_targeted_packages | join(' ') }}
+          {%- else -%}
+          pacman -Syu --noconfirm
+          {%- endif -%}
+
+    - name: Run pacman upgrade  # noqa: command-instead-of-module
       ansible.builtin.command:
-        cmd: pacman -Syu --noconfirm
+        cmd: "{{ sw_pacman_cmd }}"
       register: pacman_result
       changed_when: pacman_result.stdout is search('^upgrading ', multiline=True)
     - name: Compute upgraded package count from the progress lines

@@ -241,18 +241,21 @@ func (r *Runner) Inspect(ctx context.Context, systemID string) (InspectResult, e
 // run row with kind='check'. Returns ErrConflict (wrapped) when the
 // per-system lock is held.
 func (r *Runner) Check(ctx context.Context, systemID, updaterID string) (RunResult, error) {
-	return r.runUpdater(ctx, systemID, updaterID, RunKindCheck)
+	return r.runUpdater(ctx, systemID, updaterID, RunKindCheck, nil)
 }
 
 // Apply fires the named updater's apply playbook. Same shape as
 // Check; the audit action is system.update.apply.{start,complete}
 // and the complete-row detail carries affected_packages plus
-// log_sha.
-func (r *Runner) Apply(ctx context.Context, systemID, updaterID string) (RunResult, error) {
-	return r.runUpdater(ctx, systemID, updaterID, RunKindApply)
+// log_sha. When packages is non-empty, the run targets just those
+// names — the builtins read sw_targeted_packages from extra-vars
+// and narrow their manager-native command. Empty / nil applies
+// every pending update (the current behaviour).
+func (r *Runner) Apply(ctx context.Context, systemID, updaterID string, packages []string) (RunResult, error) {
+	return r.runUpdater(ctx, systemID, updaterID, RunKindApply, packages)
 }
 
-func (r *Runner) runUpdater(ctx context.Context, systemID, updaterID string, kind RunKind) (RunResult, error) {
+func (r *Runner) runUpdater(ctx context.Context, systemID, updaterID string, kind RunKind, packages []string) (RunResult, error) {
 	if err := r.validate(); err != nil {
 		return RunResult{}, err
 	}
@@ -308,17 +311,21 @@ func (r *Runner) runUpdater(ctx context.Context, systemID, updaterID string, kin
 	}()
 
 	startAction, completeAction := auditActions(kind)
+	startDetail := audit.Detail{
+		"run_id":       runID,
+		"updater_id":   updaterID,
+		"playbook_sha": sha,
+	}
+	if len(packages) > 0 {
+		startDetail["targeted_packages"] = packages
+	}
 	r.logStart(ctx, audit.Event{
 		ID:         runID,
 		Action:     startAction,
 		Outcome:    audit.Success,
 		TargetKind: "system",
 		TargetID:   systemID,
-		Detail: audit.Detail{
-			"run_id":       runID,
-			"updater_id":   updaterID,
-			"playbook_sha": sha,
-		},
+		Detail:     startDetail,
 	})
 
 	if r.Gate != nil {
@@ -346,11 +353,15 @@ func (r *Runner) runUpdater(ctx context.Context, systemID, updaterID string, kin
 	}
 	defer cleanup()
 
-	aRun, aErr := r.Ansible.Run(ctx, ansible.Request{
+	req := ansible.Request{
 		SystemID:     systemID,
 		PlaybookPath: playbookPath,
 		OmitAudit:    true,
-	})
+	}
+	if len(packages) > 0 {
+		req.Vars = map[string]any{"sw_targeted_packages": packages}
+	}
+	aRun, aErr := r.Ansible.Run(ctx, req)
 	finishedAt := r.now()
 	status := aRun.Status
 	exit := aRun.ExitCode
@@ -394,6 +405,9 @@ func (r *Runner) runUpdater(ctx context.Context, systemID, updaterID string, kin
 		"duration_ms":       finishedAt.Sub(run.StartedAt).Milliseconds(),
 		"affected_packages": affected,
 		"log_sha":           shaHex([]byte(logTail)),
+	}
+	if len(packages) > 0 {
+		detail["targeted_packages"] = packages
 	}
 	r.logComplete(ctx, completeAction, outcome, systemID, runID, run.StartedAt, detail)
 
