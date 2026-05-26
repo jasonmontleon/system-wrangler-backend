@@ -1,0 +1,60 @@
+- name: Test pacman apply command composition
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: All-pending with no excludes
+      ansible.builtin.set_fact:
+        sw_targeted_packages: []
+        sw_excluded_packages: []
+    - ansible.builtin.set_fact:
+        sw_pacman_cmd: >-
+          {%- set ignore = '' -%}
+          {%- if sw_excluded_packages | length > 0 -%}
+            {%- set ignore = ' --ignore ' ~ (sw_excluded_packages | join(',')) -%}
+          {%- endif -%}
+          {%- if sw_targeted_packages | length > 0 -%}
+          pacman -S --noconfirm{{ ignore }} {{ sw_targeted_packages | join(' ') }}
+          {%- else -%}
+          pacman -Syu --noconfirm{{ ignore }}
+          {%- endif -%}
+    - ansible.builtin.assert:
+        that: sw_pacman_cmd == 'pacman -Syu --noconfirm'
+        fail_msg: "got: {{ sw_pacman_cmd }}"
+
+    - name: All-pending with two excludes
+      ansible.builtin.set_fact:
+        sw_targeted_packages: []
+        sw_excluded_packages: ['linux', 'nginx']
+    - ansible.builtin.set_fact:
+        sw_pacman_cmd: >-
+          {%- set ignore = '' -%}
+          {%- if sw_excluded_packages | length > 0 -%}
+            {%- set ignore = ' --ignore ' ~ (sw_excluded_packages | join(',')) -%}
+          {%- endif -%}
+          {%- if sw_targeted_packages | length > 0 -%}
+          pacman -S --noconfirm{{ ignore }} {{ sw_targeted_packages | join(' ') }}
+          {%- else -%}
+          pacman -Syu --noconfirm{{ ignore }}
+          {%- endif -%}
+    - ansible.builtin.assert:
+        that: sw_pacman_cmd == 'pacman -Syu --noconfirm --ignore linux,nginx'
+        fail_msg: "got: {{ sw_pacman_cmd }}"
+
+    - name: Targeted with single exclude
+      ansible.builtin.set_fact:
+        sw_targeted_packages: ['curl', 'wget']
+        sw_excluded_packages: ['linux']
+    - ansible.builtin.set_fact:
+        sw_pacman_cmd: >-
+          {%- set ignore = '' -%}
+          {%- if sw_excluded_packages | length > 0 -%}
+            {%- set ignore = ' --ignore ' ~ (sw_excluded_packages | join(',')) -%}
+          {%- endif -%}
+          {%- if sw_targeted_packages | length > 0 -%}
+          pacman -S --noconfirm{{ ignore }} {{ sw_targeted_packages | join(' ') }}
+          {%- else -%}
+          pacman -Syu --noconfirm{{ ignore }}
+          {%- endif -%}
+    - ansible.builtin.assert:
+        that: sw_pacman_cmd == 'pacman -S --noconfirm --ignore linux curl wget'
+        fail_msg: "got: {{ sw_pacman_cmd }}"

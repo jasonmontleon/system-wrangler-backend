@@ -4,12 +4,14 @@
   become: true
   vars:
     sw_targeted_packages: []
+    sw_excluded_packages: []
   tasks:
     - name: Run dnf upgrade  # noqa: package-latest
       ansible.builtin.dnf:
         name: "{{ sw_targeted_packages if sw_targeted_packages | length > 0 else '*' }}"
         state: latest
         update_cache: true
+        exclude: "{{ sw_excluded_packages }}"
       register: dnf_result
     - name: Surface upgrade count to the run log
       ansible.builtin.debug:

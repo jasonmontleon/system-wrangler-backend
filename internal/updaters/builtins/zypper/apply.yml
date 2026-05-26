@@ -4,14 +4,19 @@
   become: true
   vars:
     sw_targeted_packages: []
+    sw_excluded_packages: []
   tasks:
     - name: Compose the zypper command (all-pending vs targeted)
       ansible.builtin.set_fact:
         sw_zypper_cmd: >-
+          {%- set excludes = ' ' ~ (sw_excluded_packages
+                                    | map('regex_replace', '^', '--exclude=')
+                                    | join(' '))
+            if sw_excluded_packages | length > 0 else '' -%}
           {%- if sw_targeted_packages | length > 0 -%}
-          zypper --non-interactive update {{ sw_targeted_packages | join(' ') }}
+          zypper --non-interactive update{{ excludes }} {{ sw_targeted_packages | join(' ') }}
           {%- else -%}
-          zypper --non-interactive update
+          zypper --non-interactive update{{ excludes }}
           {%- endif -%}
 
     - name: Run zypper update  # noqa: command-instead-of-module

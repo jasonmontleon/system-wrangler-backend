@@ -1,0 +1,21 @@
+- name: Test chocolatey apply flag composition
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: No excludes -> empty --except
+      ansible.builtin.set_fact:
+        sw_excluded_packages: []
+    - ansible.builtin.set_fact:
+        sw_choco_except: '{{ ("--except=" ~ (sw_excluded_packages | join(","))) if (sw_excluded_packages | length > 0) else "" }}'
+    - ansible.builtin.assert:
+        that: sw_choco_except == ''
+        fail_msg: "got: '{{ sw_choco_except }}'"
+
+    - name: Two excludes -> comma-joined --except
+      ansible.builtin.set_fact:
+        sw_excluded_packages: ['nginx', 'redis']
+    - ansible.builtin.set_fact:
+        sw_choco_except: '{{ ("--except=" ~ (sw_excluded_packages | join(","))) if (sw_excluded_packages | length > 0) else "" }}'
+    - ansible.builtin.assert:
+        that: sw_choco_except == '--except=nginx,redis'
+        fail_msg: "got: '{{ sw_choco_except }}'"

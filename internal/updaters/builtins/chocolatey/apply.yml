@@ -4,6 +4,7 @@
   become: false
   vars:
     sw_targeted_packages: []
+    sw_excluded_packages: []
   tasks:
     - name: Compose the choco package list (all vs targeted)
       ansible.builtin.set_fact:
@@ -13,11 +14,14 @@
           {%- else -%}
           all
           {%- endif -%}
+    - name: Compose the choco --except flag (excludes only)
+      ansible.builtin.set_fact:
+        sw_choco_except: '{{ ("--except=" ~ (sw_excluded_packages | join(","))) if (sw_excluded_packages | length > 0) else "" }}'
 
     - name: Run choco upgrade
       ansible.windows.win_shell: |
         [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-        choco upgrade {{ sw_choco_target }} -y --no-progress *>&1 | Out-String -Stream -Width 200
+        choco upgrade {{ sw_choco_target }} {{ sw_choco_except }} -y --no-progress *>&1 | Out-String -Stream -Width 200
         exit $LASTEXITCODE
       register: choco_result
       changed_when: choco_result.stdout is search('^The upgrade of \S+ was successful', multiline=True)

@@ -1,0 +1,41 @@
+- name: Test zypper apply command composition
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: No excludes, all-pending
+      ansible.builtin.set_fact:
+        sw_targeted_packages: []
+        sw_excluded_packages: []
+    - ansible.builtin.set_fact:
+        sw_zypper_cmd: >-
+          {%- set excludes = ' ' ~ (sw_excluded_packages
+                                    | map('regex_replace', '^', '--exclude=')
+                                    | join(' '))
+            if sw_excluded_packages | length > 0 else '' -%}
+          {%- if sw_targeted_packages | length > 0 -%}
+          zypper --non-interactive update{{ excludes }} {{ sw_targeted_packages | join(' ') }}
+          {%- else -%}
+          zypper --non-interactive update{{ excludes }}
+          {%- endif -%}
+    - ansible.builtin.assert:
+        that: sw_zypper_cmd == 'zypper --non-interactive update'
+        fail_msg: "got: {{ sw_zypper_cmd }}"
+
+    - name: Two excludes, all-pending
+      ansible.builtin.set_fact:
+        sw_targeted_packages: []
+        sw_excluded_packages: ['kernel-default', 'libfoo']
+    - ansible.builtin.set_fact:
+        sw_zypper_cmd: >-
+          {%- set excludes = ' ' ~ (sw_excluded_packages
+                                    | map('regex_replace', '^', '--exclude=')
+                                    | join(' '))
+            if sw_excluded_packages | length > 0 else '' -%}
+          {%- if sw_targeted_packages | length > 0 -%}
+          zypper --non-interactive update{{ excludes }} {{ sw_targeted_packages | join(' ') }}
+          {%- else -%}
+          zypper --non-interactive update{{ excludes }}
+          {%- endif -%}
+    - ansible.builtin.assert:
+        that: sw_zypper_cmd == 'zypper --non-interactive update --exclude=kernel-default --exclude=libfoo'
+        fail_msg: "got: {{ sw_zypper_cmd }}"

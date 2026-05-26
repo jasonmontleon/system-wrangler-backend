@@ -1,0 +1,23 @@
+- name: Test winget apply flag composition
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: No excludes -> empty --exclude flag list
+      ansible.builtin.set_fact:
+        sw_excluded_packages: []
+    - ansible.builtin.set_fact:
+        sw_winget_exclude_flags: >-
+          {{ sw_excluded_packages | map('regex_replace', '^', '--exclude ') | list | join(' ') }}
+    - ansible.builtin.assert:
+        that: sw_winget_exclude_flags | trim == ''
+        fail_msg: "got: '{{ sw_winget_exclude_flags }}'"
+
+    - name: Two excludes -> two --exclude flags
+      ansible.builtin.set_fact:
+        sw_excluded_packages: ['Mozilla.Firefox', 'Microsoft.PowerShell']
+    - ansible.builtin.set_fact:
+        sw_winget_exclude_flags: >-
+          {{ sw_excluded_packages | map('regex_replace', '^', '--exclude ') | list | join(' ') }}
+    - ansible.builtin.assert:
+        that: sw_winget_exclude_flags | trim == '--exclude Mozilla.Firefox --exclude Microsoft.PowerShell'
+        fail_msg: "got: '{{ sw_winget_exclude_flags }}'"

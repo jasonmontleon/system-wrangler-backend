@@ -1,0 +1,60 @@
+- name: Test pkg apply command composition
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: No excludes, all-pending
+      ansible.builtin.set_fact:
+        sw_targeted_packages: []
+        sw_excluded_packages: []
+    - ansible.builtin.set_fact:
+        sw_pkg_cmd: >-
+          {%- set excludes = ' ' ~ (sw_excluded_packages
+                                    | map('regex_replace', '^', '-x ')
+                                    | join(' '))
+            if sw_excluded_packages | length > 0 else '' -%}
+          {%- if sw_targeted_packages | length > 0 -%}
+          pkg upgrade -y{{ excludes }} {{ sw_targeted_packages | join(' ') }}
+          {%- else -%}
+          pkg upgrade -y{{ excludes }}
+          {%- endif -%}
+    - ansible.builtin.assert:
+        that: sw_pkg_cmd == 'pkg upgrade -y'
+        fail_msg: "got: {{ sw_pkg_cmd }}"
+
+    - name: One exclude, all-pending
+      ansible.builtin.set_fact:
+        sw_targeted_packages: []
+        sw_excluded_packages: ['nginx']
+    - ansible.builtin.set_fact:
+        sw_pkg_cmd: >-
+          {%- set excludes = ' ' ~ (sw_excluded_packages
+                                    | map('regex_replace', '^', '-x ')
+                                    | join(' '))
+            if sw_excluded_packages | length > 0 else '' -%}
+          {%- if sw_targeted_packages | length > 0 -%}
+          pkg upgrade -y{{ excludes }} {{ sw_targeted_packages | join(' ') }}
+          {%- else -%}
+          pkg upgrade -y{{ excludes }}
+          {%- endif -%}
+    - ansible.builtin.assert:
+        that: sw_pkg_cmd == 'pkg upgrade -y -x nginx'
+        fail_msg: "got: {{ sw_pkg_cmd }}"
+
+    - name: Targeted and excluded
+      ansible.builtin.set_fact:
+        sw_targeted_packages: ['curl']
+        sw_excluded_packages: ['nginx', 'redis']
+    - ansible.builtin.set_fact:
+        sw_pkg_cmd: >-
+          {%- set excludes = ' ' ~ (sw_excluded_packages
+                                    | map('regex_replace', '^', '-x ')
+                                    | join(' '))
+            if sw_excluded_packages | length > 0 else '' -%}
+          {%- if sw_targeted_packages | length > 0 -%}
+          pkg upgrade -y{{ excludes }} {{ sw_targeted_packages | join(' ') }}
+          {%- else -%}
+          pkg upgrade -y{{ excludes }}
+          {%- endif -%}
+    - ansible.builtin.assert:
+        that: sw_pkg_cmd == 'pkg upgrade -y -x nginx -x redis curl'
+        fail_msg: "got: {{ sw_pkg_cmd }}"
