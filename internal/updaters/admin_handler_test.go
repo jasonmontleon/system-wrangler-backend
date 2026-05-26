@@ -92,6 +92,67 @@ func TestAdminListIncludesBuiltinAndCustom(t *testing.T) {
 	}
 }
 
+// TestAdminListSupportsExclusionsFlag pins which updaters advertise
+// exclusion support. The flag drives the exclusion form's dropdown on
+// the SPA — turning it on for a non-supporting builtin would let
+// operators add rules that silently do nothing.
+func TestAdminListSupportsExclusionsFlag(t *testing.T) {
+	_, srv, _, rf := newAdminFixture(t)
+	if _, err := rf.registry.CreateCustom(sampleDef("custom.alpha")); err != nil {
+		t.Fatalf("CreateCustom: %v", err)
+	}
+	resp, err := http.Get(srv.URL + "/api/admin/updater-definitions")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	var got listResponseDTO
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	want := map[string]bool{
+		// v1 supported per research/package-exclusions.md.
+		"builtin.dnf":        true,
+		"builtin.pacman":     true,
+		"builtin.zypper":     true,
+		"builtin.pkg":        true,
+		"builtin.winget":     true,
+		"builtin.chocolatey": true,
+		// Custom updaters default to true (operator trust).
+		"custom.alpha": true,
+		// Hold-based managers + no-mechanism builtins are false.
+		"builtin.apt":            false,
+		"builtin.brew":           false,
+		"builtin.snap":           false,
+		"builtin.flatpak":        false,
+		"builtin.apk":            false,
+		"builtin.pkg_add":        false,
+		"builtin.pkgin":          false,
+		"builtin.xbps":           false,
+		"builtin.eopkg":          false,
+		"builtin.scoop":          false,
+		"builtin.mas":            false,
+		"builtin.softwareupdate": false,
+		"builtin.windowsupdate":  false,
+		"builtin.fwupdmgr":       false,
+		"builtin.syspatch":       false,
+	}
+	gotByID := map[string]bool{}
+	for _, d := range got.Definitions {
+		gotByID[d.ID] = d.SupportsExclusions
+	}
+	for id, expected := range want {
+		actual, present := gotByID[id]
+		if !present {
+			t.Errorf("definition %q absent from list", id)
+			continue
+		}
+		if actual != expected {
+			t.Errorf("supportsExclusions[%q] = %v, want %v", id, actual, expected)
+		}
+	}
+}
+
 func TestAdminCreatePrependsCustomPrefix(t *testing.T) {
 	_, srv, syntax, _ := newAdminFixture(t)
 	resp, err := http.Post(srv.URL+"/api/admin/updater-definitions", "application/json", encode(t, samplePostBody()))

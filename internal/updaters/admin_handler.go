@@ -51,17 +51,18 @@ func (h *AdminHandler) Register(mux router.Mux, mw func(http.Handler) http.Handl
 // edit them; they are also returned on create so the operator can
 // confirm the saved canonical bytes.
 type definitionDTO struct {
-	ID            string `json:"id"`
-	Source        Source `json:"source"`
-	DisplayName   string `json:"displayName"`
-	Description   string `json:"description"`
-	DetectBinary  string `json:"detectBinary"`
-	CheckPlaybook string `json:"checkPlaybook"`
-	ApplyPlaybook string `json:"applyPlaybook"`
-	CheckOnly     bool   `json:"checkOnly"`
-	CreatedBy     string `json:"createdBy,omitempty"`
-	CreatedAt     string `json:"createdAt,omitempty"`
-	UpdatedAt     string `json:"updatedAt,omitempty"`
+	ID                 string `json:"id"`
+	Source             Source `json:"source"`
+	DisplayName        string `json:"displayName"`
+	Description        string `json:"description"`
+	DetectBinary       string `json:"detectBinary"`
+	CheckPlaybook      string `json:"checkPlaybook"`
+	ApplyPlaybook      string `json:"applyPlaybook"`
+	CheckOnly          bool   `json:"checkOnly"`
+	SupportsExclusions bool   `json:"supportsExclusions"`
+	CreatedBy          string `json:"createdBy,omitempty"`
+	CreatedAt          string `json:"createdAt,omitempty"`
+	UpdatedAt          string `json:"updatedAt,omitempty"`
 }
 
 // listResponseDTO wraps the array so future cursor/page-info fields
@@ -298,16 +299,28 @@ func normalizeCustomID(in string) string {
 }
 
 func definitionToDTO(d Definition) definitionDTO {
+	// Custom updaters opt in by default: the playbook author wrote the
+	// apply.yml and is the only one who can know whether it reads
+	// `sw_excluded_packages`. Surfacing the flag as true means the
+	// SPA's exclusion form will include the row; if the playbook
+	// silently ignores the var, the only consequence is the operator
+	// adds an exclusion that has no effect for that updater — same
+	// failure mode as the unmodified `*` sentinel rule.
+	supports := d.SupportsExclusions
+	if d.Source == SourceCustom {
+		supports = true
+	}
 	dto := definitionDTO{
-		ID:            d.ID,
-		Source:        d.Source,
-		DisplayName:   d.DisplayName,
-		Description:   d.Description,
-		DetectBinary:  d.DetectBinary,
-		CheckPlaybook: string(d.CheckPlaybook),
-		ApplyPlaybook: string(d.ApplyPlaybook),
-		CheckOnly:     d.CheckOnly,
-		CreatedBy:     d.CreatedBy,
+		ID:                 d.ID,
+		Source:             d.Source,
+		DisplayName:        d.DisplayName,
+		Description:        d.Description,
+		DetectBinary:       d.DetectBinary,
+		CheckPlaybook:      string(d.CheckPlaybook),
+		ApplyPlaybook:      string(d.ApplyPlaybook),
+		CheckOnly:          d.CheckOnly,
+		SupportsExclusions: supports,
+		CreatedBy:          d.CreatedBy,
 	}
 	if !d.CreatedAt.IsZero() {
 		dto.CreatedAt = d.CreatedAt.UTC().Format(time.RFC3339Nano)
