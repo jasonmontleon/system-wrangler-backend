@@ -64,6 +64,16 @@ type Runner struct {
 	// non-fatal — failing to persist platform facts must not turn an
 	// otherwise-successful inspect into a failed run.
 	SetPlatformInfo func(systemID, osFamily, osDistribution, virtualization string) error
+	// ResolveExclusions, if set, returns the deduplicated list of
+	// package patterns the Apply path must skip for (systemID,
+	// updaterID). Wired in main.go to exclusions.Store.ResolveForSystem
+	// so this package doesn't import exclusions. The runner threads
+	// the non-empty result into the ansible request's Vars as
+	// `sw_excluded_packages` and records it on the apply complete
+	// audit detail. Errors are logged but non-fatal — failure to
+	// resolve exclusions degrades to "no exclusions" rather than
+	// blocking the run; the audit detail will reflect the empty list.
+	ResolveExclusions func(systemID, updaterID string) ([]string, error)
 }
 
 func (r *Runner) notify(eventType string) {
@@ -376,7 +386,27 @@ func (r *Runner) runUpdater(ctx context.Context, systemID, updaterID string, kin
 		OmitAudit:    true,
 	}
 	if len(packages) > 0 {
-		req.Vars = map[string]any{"sw_targeted_packages": packages}
+		if req.Vars == nil {
+			req.Vars = map[string]any{}
+		}
+		req.Vars["sw_targeted_packages"] = packages
+	}
+	// Exclusions only apply on Apply — Check is read-only and a Check
+	// playbook that surfaces every pending package is the correct
+	// shape regardless of what the operator has marked excluded.
+	var excludes []string
+	if kind == RunKindApply && r.ResolveExclusions != nil {
+		ex, err := r.ResolveExclusions(systemID, updaterID)
+		if err != nil {
+			slog.Warn("updaters: resolve exclusions", "err", err, "system_id", systemID, "updater_id", updaterID) //nolint:gosec
+		}
+		excludes = ex
+	}
+	if len(excludes) > 0 {
+		if req.Vars == nil {
+			req.Vars = map[string]any{}
+		}
+		req.Vars["sw_excluded_packages"] = excludes
 	}
 	aRun, aErr := r.Ansible.Run(ctx, req)
 	finishedAt := r.now()
@@ -425,6 +455,12 @@ func (r *Runner) runUpdater(ctx context.Context, systemID, updaterID string, kin
 	}
 	if len(packages) > 0 {
 		detail["targeted_packages"] = packages
+	}
+	// Forensic record of what the operator's exclusion rules removed
+	// from this run. Stored on Apply only — Check doesn't honour the
+	// var.
+	if len(excludes) > 0 {
+		detail["excluded_packages"] = excludes
 	}
 	r.logComplete(ctx, completeAction, outcome, systemID, runID, run.StartedAt, detail)
 

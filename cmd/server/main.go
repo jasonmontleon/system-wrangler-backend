@@ -30,6 +30,7 @@ import (
 	"system-wrangler-backend/internal/credentials"
 	"system-wrangler-backend/internal/database"
 	"system-wrangler-backend/internal/events"
+	"system-wrangler-backend/internal/exclusions"
 	"system-wrangler-backend/internal/exporters"
 	"system-wrangler-backend/internal/groups"
 	"system-wrangler-backend/internal/hostkeys"
@@ -154,6 +155,11 @@ func main() {
 		slog.Error("init settings store", "err", err)
 		os.Exit(1)
 	}
+	exclusionStore, err := exclusions.NewSQLiteStore(db)
+	if err != nil {
+		slog.Error("init exclusions store", "err", err)
+		os.Exit(1)
+	}
 	authSvc := auth.NewService(authStore, secret, useTLS)
 	authSvc.TOTPStore = authStore
 	authSvc.RecoveryStore = authStore
@@ -188,7 +194,7 @@ func main() {
 		Handler: withRequestMeta(
 			withLogging(
 				auth.CSRF(auditStore)(
-					newMux(db, store, groupStore, authStore, authSvc, secret, vault, hub, auditStore, rbacStore, credStore, hostKeyStore, updaterStore, exporterStore, settingsStore, onCreate, broadcastSystemsChanged),
+					newMux(db, store, groupStore, authStore, authSvc, secret, vault, hub, auditStore, rbacStore, credStore, hostKeyStore, updaterStore, exporterStore, settingsStore, exclusionStore, onCreate, broadcastSystemsChanged),
 				),
 			),
 		),
@@ -266,9 +272,9 @@ func main() {
 	<-probeDone
 }
 
-func newMux(db *sql.DB, store systems.Store, groupStore groups.Store, authStore *auth.SQLiteAuthStore, authSvc *auth.Service, secret []byte, vault *secrets.Vault, hub *events.Hub, auditStore *audit.Store, rbacStore rbac.Store, credStore credentials.Store, hostKeyStore hostkeys.Store, updaterStore updaters.Store, exporterStore exporters.Store, settingsStore settings.Store, onSystemCreate, onSystemDelete func()) *http.ServeMux {
+func newMux(db *sql.DB, store systems.Store, groupStore groups.Store, authStore *auth.SQLiteAuthStore, authSvc *auth.Service, secret []byte, vault *secrets.Vault, hub *events.Hub, auditStore *audit.Store, rbacStore rbac.Store, credStore credentials.Store, hostKeyStore hostkeys.Store, updaterStore updaters.Store, exporterStore exporters.Store, settingsStore settings.Store, exclusionStore exclusions.Store, onSystemCreate, onSystemDelete func()) *http.ServeMux {
 	mux := http.NewServeMux()
-	populateMux(mux, db, store, groupStore, authStore, authSvc, secret, vault, hub, auditStore, rbacStore, credStore, hostKeyStore, updaterStore, exporterStore, settingsStore, onSystemCreate, onSystemDelete)
+	populateMux(mux, db, store, groupStore, authStore, authSvc, secret, vault, hub, auditStore, rbacStore, credStore, hostKeyStore, updaterStore, exporterStore, settingsStore, exclusionStore, onSystemCreate, onSystemDelete)
 	return mux
 }
 
@@ -277,7 +283,7 @@ func newMux(db *sql.DB, store systems.Store, groupStore groups.Store, authStore 
 // that captures every (method, path) pattern without spinning up a real
 // *http.ServeMux. main.go and tests reach for newMux; only the drift
 // test needs this entry point.
-func populateMux(mux router.Mux, db *sql.DB, store systems.Store, groupStore groups.Store, authStore *auth.SQLiteAuthStore, authSvc *auth.Service, secret []byte, vault *secrets.Vault, hub *events.Hub, auditStore *audit.Store, rbacStore rbac.Store, credStore credentials.Store, hostKeyStore hostkeys.Store, updaterStore updaters.Store, exporterStore exporters.Store, settingsStore settings.Store, onSystemCreate, onSystemDelete func()) {
+func populateMux(mux router.Mux, db *sql.DB, store systems.Store, groupStore groups.Store, authStore *auth.SQLiteAuthStore, authSvc *auth.Service, secret []byte, vault *secrets.Vault, hub *events.Hub, auditStore *audit.Store, rbacStore rbac.Store, credStore credentials.Store, hostKeyStore hostkeys.Store, updaterStore updaters.Store, exporterStore exporters.Store, settingsStore settings.Store, exclusionStore exclusions.Store, onSystemCreate, onSystemDelete func()) {
 	mux.Handle("GET /api/health", http.HandlerFunc(handleHealth))
 	authSvc.Register(mux)
 	requireUserOnly := auth.RequireUser(secret, authStore, time.Now)
@@ -504,7 +510,8 @@ func populateMux(mux router.Mux, db *sql.DB, store systems.Store, groupStore gro
 			Notify: func(t string) {
 				hub.Broadcast(events.Event{Type: t})
 			},
-			SetPlatformInfo: store.SetPlatformInfo,
+			SetPlatformInfo:   store.SetPlatformInfo,
+			ResolveExclusions: exclusionStore.ResolveForSystem,
 		}
 		updaterHandler := &updaters.Handler{
 			Runner:  updaterRunner,
@@ -542,6 +549,52 @@ func populateMux(mux router.Mux, db *sql.DB, store systems.Store, groupStore gro
 			},
 		}
 		updaterAdmin.Register(mux, requireUser)
+
+		exclusionHandler := &exclusions.Handler{
+			Store: exclusionStore,
+			Audit: auditStore,
+			CanManageGlobal: func(ctx context.Context) bool {
+				scope, ok := rbac.ScopeFromContext(ctx)
+				return ok && scope.IsGlobalAdmin()
+			},
+			CanReadGroup: func(ctx context.Context, groupID string) bool {
+				scope, ok := rbac.ScopeFromContext(ctx)
+				return ok && scope.CanReadGroup(groupID)
+			},
+			CanManageGroup: func(ctx context.Context, groupID string) bool {
+				scope, ok := rbac.ScopeFromContext(ctx)
+				return ok && scope.CanAdminGroup(groupID)
+			},
+			CanReadSystem: func(ctx context.Context, systemID string) bool {
+				scope, ok := rbac.ScopeFromContext(ctx)
+				if !ok {
+					return false
+				}
+				sys, err := store.Get(systemID)
+				if err != nil {
+					return false
+				}
+				return scope.CanReadSystem(sys.GroupID)
+			},
+			CanManageSystem: func(ctx context.Context, systemID string) bool {
+				scope, ok := rbac.ScopeFromContext(ctx)
+				if !ok {
+					return false
+				}
+				if scope.IsGlobalOperator() {
+					return true
+				}
+				sys, err := store.Get(systemID)
+				if err != nil {
+					return false
+				}
+				if sys.GroupID == nil {
+					return false
+				}
+				return scope.CanOperateGroup(*sys.GroupID)
+			},
+		}
+		exclusionHandler.Register(mux, requireUser)
 
 		exporterRegistry := exporters.NewRegistry(exporterStore)
 		exporterRunner := &exporters.Runner{

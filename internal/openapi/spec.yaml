@@ -43,6 +43,8 @@ tags:
     description: Operator-facing ansible affordances — connectivity testing today, ad-hoc actions later.
   - name: updaters
     description: Pluggable per-OS updater substrate. Inspect, check, apply against managed systems; custom playbooks managed by Global Admin.
+  - name: exclusions
+    description: Per-scope package exclusion rules (global / group / system). Resolved as a union at apply time and threaded into each apply.yml as `sw_excluded_packages`.
   - name: exporters
     description: Pluggable Prometheus exporter substrate. Install, status, remove the per-OS node_exporter / windows_exporter on managed systems; custom installers managed by Global Admin.
   - name: metrics
@@ -2071,6 +2073,191 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /api/admin/package-exclusions:
+    get:
+      tags: [exclusions]
+      summary: List fleet-wide (global-scope) package exclusions.
+      responses:
+        "200":
+          description: Global-scope rows ordered by created_at.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Exclusion" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      tags: [exclusions]
+      summary: Create a fleet-wide exclusion. Global Admin only.
+      description: |
+        Updater must be `*` (every updater on this scope) or
+        `builtin.<name>` / `custom.<name>`. Pattern is verbatim — each
+        updater's apply.yml uses it in its native syntax. Emits
+        `package_exclusion.create`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ExclusionInput" }
+      responses:
+        "201":
+          description: Exclusion created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Exclusion" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409":
+          description: An identical (scope, target, updater, pattern) row already exists.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /api/admin/package-exclusions/{id}:
+    delete:
+      tags: [exclusions]
+      summary: Remove a fleet-wide exclusion. Global Admin only.
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+      responses:
+        "204": { description: Exclusion removed. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/groups/{id}/package-exclusions:
+    get:
+      tags: [exclusions]
+      summary: List group-scope exclusions for one group.
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: Group-scope rows.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Exclusion" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    post:
+      tags: [exclusions]
+      summary: Create a group-scope exclusion. Group Admin / Global Admin only.
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ExclusionInput" }
+      responses:
+        "201":
+          description: Exclusion created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Exclusion" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409":
+          description: An identical (scope, target, updater, pattern) row already exists.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /api/groups/{id}/package-exclusions/{exclusionId}:
+    delete:
+      tags: [exclusions]
+      summary: Remove a group-scope exclusion. Group Admin / Global Admin only.
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+        - { in: path, name: exclusionId, required: true, schema: { type: string } }
+      responses:
+        "204": { description: Exclusion removed. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/systems/{id}/package-exclusions:
+    get:
+      tags: [exclusions]
+      summary: List system-scope exclusions for one system.
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: System-scope rows.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Exclusion" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    post:
+      tags: [exclusions]
+      summary: Create a system-scope exclusion. Group Operator+ on the system's group / Global Operator+.
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ExclusionInput" }
+      responses:
+        "201":
+          description: Exclusion created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Exclusion" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409":
+          description: An identical (scope, target, updater, pattern) row already exists.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /api/systems/{id}/package-exclusions/{exclusionId}:
+    delete:
+      tags: [exclusions]
+      summary: Remove a system-scope exclusion. Group Operator+ / Global Operator+.
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+        - { in: path, name: exclusionId, required: true, schema: { type: string } }
+      responses:
+        "204": { description: Exclusion removed. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/systems/{id}/package-exclusions/effective:
+    get:
+      tags: [exclusions]
+      summary: Resolve the unioned exclusion set for one system + updater.
+      description: |
+        Returns the global + group + system rows that match the given
+        updater. Used by the System Detail "what will be skipped"
+        card. Each row keeps its source scope so the SPA can attribute
+        attribution.
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+        - in: query
+          name: updater
+          required: true
+          schema: { type: string }
+          description: Registered updater id (`builtin.<name>` / `custom.<name>`). The `*` sentinel from rule rows is matched server-side.
+      responses:
+        "200":
+          description: Resolved union; global rows first, then group, then system.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Exclusion" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
   /api/admin/secrets/undecryptable:
     get:
       tags: [secrets]
@@ -2503,6 +2690,40 @@ components:
       properties:
         name: { type: string, maxLength: 255 }
 
+    Exclusion:
+      type: object
+      required: [id, scope, updater, pattern, createdAt, createdBy]
+      properties:
+        id: { type: string }
+        scope:
+          type: string
+          enum: [global, group, system]
+        targetId:
+          type: string
+          description: Group id for group scope, system id for system scope, omitted for global scope.
+        updater:
+          type: string
+          description: Registered updater id or `*` (every updater on this scope).
+        pattern:
+          type: string
+          maxLength: 256
+          description: Manager-native package name or glob; verbatim, not normalized.
+        reason:
+          type: string
+          maxLength: 1024
+        createdAt: { type: string, format: date-time }
+        createdBy: { type: string }
+
+    ExclusionInput:
+      type: object
+      required: [updater, pattern]
+      properties:
+        updater:
+          type: string
+          description: Registered updater id (`builtin.<name>` / `custom.<name>`) or `*`.
+        pattern: { type: string, maxLength: 256 }
+        reason: { type: string, maxLength: 1024 }
+
     Role:
       type: string
       enum: [admin, operator, auditor]
@@ -2673,7 +2894,7 @@ components:
 
     UpdaterDefinition:
       type: object
-      required: [id, source, displayName, detectBinary, checkPlaybook, applyPlaybook, checkOnly]
+      required: [id, source, displayName, detectBinary, checkPlaybook, applyPlaybook, checkOnly, supportsExclusions]
       properties:
         id:
           type: string
@@ -2695,6 +2916,18 @@ components:
         checkOnly:
           type: boolean
           description: When true the updater surfaces pending changes but is never auto-applied; Apply requests return 409. applyPlaybook must be empty.
+        supportsExclusions:
+          type: boolean
+          description: |
+            Whether the updater's apply.yml honours the
+            `sw_excluded_packages` extra-var. v1 builtins covered are
+            dnf, pacman, zypper, pkg (FreeBSD), winget, chocolatey.
+            Hold-based managers (apt, brew, snap, flatpak, pkgin,
+            xbps, scoop) and builtins with no usable exclude mechanism
+            (apk, pkg_add, syspatch, eopkg, mas, softwareupdate,
+            windowsupdate, fwupdmgr) report false. Custom updaters
+            always report true — the playbook author is the only one
+            who can know whether the var is read.
         createdBy: { type: string }
         createdAt: { type: string, format: date-time }
         updatedAt: { type: string, format: date-time }

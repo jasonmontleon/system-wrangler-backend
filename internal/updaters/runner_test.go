@@ -951,6 +951,114 @@ func TestApplyWithNoPackagesOmitsVar(t *testing.T) {
 	}
 }
 
+func TestApplyThreadsExcludedPackages(t *testing.T) {
+	f := newRunnerFixture(t)
+	f.runner.ResolveExclusions = func(_, updaterID string) ([]string, error) {
+		if updaterID != "builtin.dnf" {
+			return nil, nil
+		}
+		return []string{"kernel*", "nginx"}, nil
+	}
+	f.queue(ansible.Run{Status: ansible.RunSuccess, ExitCode: 0}, nil)
+	if _, err := f.runner.Apply(context.Background(), f.systemID, "builtin.dnf", nil); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if len(f.ansible.calls) != 1 {
+		t.Fatalf("ansible call count = %d, want 1", len(f.ansible.calls))
+	}
+	got, ok := f.ansible.calls[0].Vars["sw_excluded_packages"].([]string)
+	if !ok {
+		t.Fatalf("Vars[sw_excluded_packages] = %v (type %T), want []string",
+			f.ansible.calls[0].Vars["sw_excluded_packages"],
+			f.ansible.calls[0].Vars["sw_excluded_packages"])
+	}
+	if len(got) != 2 || got[0] != "kernel*" || got[1] != "nginx" {
+		t.Errorf("excluded = %v, want [kernel* nginx]", got)
+	}
+	// Complete audit row records the resolved set so an operator can
+	// reconstruct what got skipped without running the apply twice.
+	completes := auditRowsWithAction(t, f.auditStore, "system.update.apply.complete")
+	if len(completes) != 1 {
+		t.Fatalf("complete rows = %d", len(completes))
+	}
+	raw, ok := completes[0].Detail["excluded_packages"].([]any)
+	if !ok {
+		t.Fatalf("detail excluded_packages missing or wrong type: %T",
+			completes[0].Detail["excluded_packages"])
+	}
+	if len(raw) != 2 || raw[0] != "kernel*" || raw[1] != "nginx" {
+		t.Errorf("audit excluded = %v, want [kernel* nginx]", raw)
+	}
+}
+
+func TestApplyExclusionsAndTargetedCoexist(t *testing.T) {
+	f := newRunnerFixture(t)
+	f.runner.ResolveExclusions = func(string, string) ([]string, error) {
+		return []string{"kernel"}, nil
+	}
+	f.queue(ansible.Run{Status: ansible.RunSuccess, ExitCode: 0}, nil)
+	if _, err := f.runner.Apply(
+		context.Background(), f.systemID, "builtin.dnf",
+		[]string{"nginx", "redis"},
+	); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	vars := f.ansible.calls[0].Vars
+	if got, _ := vars["sw_targeted_packages"].([]string); len(got) != 2 {
+		t.Errorf("sw_targeted_packages = %v", got)
+	}
+	if got, _ := vars["sw_excluded_packages"].([]string); len(got) != 1 || got[0] != "kernel" {
+		t.Errorf("sw_excluded_packages = %v", got)
+	}
+}
+
+func TestApplyEmptyExclusionsOmitsVar(t *testing.T) {
+	f := newRunnerFixture(t)
+	f.runner.ResolveExclusions = func(string, string) ([]string, error) {
+		return nil, nil
+	}
+	f.queue(ansible.Run{Status: ansible.RunSuccess, ExitCode: 0}, nil)
+	if _, err := f.runner.Apply(context.Background(), f.systemID, "builtin.dnf", nil); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if _, set := f.ansible.calls[0].Vars["sw_excluded_packages"]; set {
+		t.Errorf("sw_excluded_packages set on empty resolution; want absent")
+	}
+}
+
+func TestCheckDoesNotResolveExclusions(t *testing.T) {
+	f := newRunnerFixture(t)
+	called := false
+	f.runner.ResolveExclusions = func(string, string) ([]string, error) {
+		called = true
+		return []string{"kernel"}, nil
+	}
+	f.queue(ansible.Run{Status: ansible.RunSuccess, ExitCode: 0}, nil)
+	if _, err := f.runner.Check(context.Background(), f.systemID, "builtin.dnf"); err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+	if called {
+		t.Errorf("ResolveExclusions called on Check; Check must not pass excludes through")
+	}
+	if _, set := f.ansible.calls[0].Vars["sw_excluded_packages"]; set {
+		t.Errorf("sw_excluded_packages set on Check call; want absent")
+	}
+}
+
+func TestApplyResolverErrorDegradesGracefully(t *testing.T) {
+	f := newRunnerFixture(t)
+	f.runner.ResolveExclusions = func(string, string) ([]string, error) {
+		return nil, errors.New("db down")
+	}
+	f.queue(ansible.Run{Status: ansible.RunSuccess, ExitCode: 0}, nil)
+	if _, err := f.runner.Apply(context.Background(), f.systemID, "builtin.dnf", nil); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if _, set := f.ansible.calls[0].Vars["sw_excluded_packages"]; set {
+		t.Errorf("resolver error must not surface stale exclusions in Vars")
+	}
+}
+
 func TestApplyTargetedAddsAuditDetail(t *testing.T) {
 	f := newRunnerFixture(t)
 	f.queue(ansible.Run{Status: ansible.RunSuccess, ExitCode: 0}, nil)
