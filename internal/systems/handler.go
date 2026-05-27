@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 
+	"system-wrangler-backend/internal/labels"
 	"system-wrangler-backend/internal/router"
 )
 
@@ -70,6 +71,12 @@ type Handler struct {
 	// the rows simply lack those fields on the wire, matching the
 	// "never run" empty state.
 	SystemStats func() (map[string]Stats, error)
+	// SystemLabels, if non-nil, bulk-loads the labels attached to the
+	// supplied system IDs and is merged into the System rows the
+	// handler serializes. Same shape-preservation contract as
+	// SystemStats: a failure is logged and rows go out without the
+	// Labels field rather than the handler 500'ing.
+	SystemLabels func(ids []string) (map[string][]labels.Label, error)
 }
 
 // NewHandler constructs a Handler bound to the given Store. The optional
@@ -91,7 +98,18 @@ func (h *Handler) Register(mux router.Mux, mw func(http.Handler) http.Handler) {
 }
 
 func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
-	systems, err := h.Store.List()
+	// Parse ?labels= up front so a malformed selector is rejected
+	// before we hit the store.
+	var sel labels.Selector
+	if raw := r.URL.Query().Get("labels"); raw != "" {
+		parsed, err := labels.ParseSelector(raw)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid labels selector: "+err.Error())
+			return
+		}
+		sel = parsed
+	}
+	rows, err := h.Store.List()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "list failed")
 		slog.Error("systems list", "err", err)
@@ -101,16 +119,50 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 	// see every row, matching the pre-RBAC behavior.
 	if h.VisibleSystem != nil {
 		ctx := r.Context()
-		filtered := systems[:0]
-		for _, s := range systems {
+		filtered := rows[:0]
+		for _, s := range rows {
 			if h.VisibleSystem(ctx, s) {
 				filtered = append(filtered, s)
 			}
 		}
-		systems = filtered
+		rows = filtered
 	}
-	h.enrichStats(systems)
-	writeJSON(w, http.StatusOK, systems)
+	h.enrichLabels(rows)
+	if len(sel) > 0 {
+		filtered := rows[:0]
+		for _, s := range rows {
+			if sel.Matches(s.Labels) {
+				filtered = append(filtered, s)
+			}
+		}
+		rows = filtered
+	}
+	h.enrichStats(rows)
+	writeJSON(w, http.StatusOK, rows)
+}
+
+// enrichLabels merges the SystemLabels bulk-fetch result into the
+// supplied rows in place. Same absorb-on-failure semantics as
+// enrichStats: a producer-side failure is logged and rows go out
+// without the Labels field rather than the handler 500'ing.
+func (h *Handler) enrichLabels(rows []System) {
+	if h.SystemLabels == nil || len(rows) == 0 {
+		return
+	}
+	ids := make([]string, len(rows))
+	for i, s := range rows {
+		ids[i] = s.ID
+	}
+	got, err := h.SystemLabels(ids)
+	if err != nil {
+		slog.Warn("systems: labels fetch failed", "err", err)
+		return
+	}
+	for i := range rows {
+		if ls, ok := got[rows[i].ID]; ok {
+			rows[i].Labels = ls
+		}
+	}
 }
 
 // enrichStats merges the injected SystemStats result into the
@@ -221,6 +273,7 @@ func (h *Handler) get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out := []System{sys}
+	h.enrichLabels(out)
 	h.enrichStats(out)
 	writeJSON(w, http.StatusOK, out[0])
 }

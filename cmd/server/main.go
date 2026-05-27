@@ -35,6 +35,7 @@ import (
 	"system-wrangler-backend/internal/groups"
 	"system-wrangler-backend/internal/holds"
 	"system-wrangler-backend/internal/hostkeys"
+	"system-wrangler-backend/internal/labels"
 	"system-wrangler-backend/internal/metrics"
 	"system-wrangler-backend/internal/openapi"
 	"system-wrangler-backend/internal/promtargets"
@@ -166,6 +167,16 @@ func main() {
 		slog.Error("init holds store", "err", err)
 		os.Exit(1)
 	}
+	labelStore, err := labels.NewSQLiteStore(db)
+	if err != nil {
+		slog.Error("init labels store", "err", err)
+		os.Exit(1)
+	}
+	labelStyleStore, err := labels.NewSQLiteStyleStore(db)
+	if err != nil {
+		slog.Error("init label styles store", "err", err)
+		os.Exit(1)
+	}
 	authSvc := auth.NewService(authStore, secret, useTLS)
 	authSvc.TOTPStore = authStore
 	authSvc.RecoveryStore = authStore
@@ -200,7 +211,7 @@ func main() {
 		Handler: withRequestMeta(
 			withLogging(
 				auth.CSRF(auditStore)(
-					newMux(db, store, groupStore, authStore, authSvc, secret, vault, hub, auditStore, rbacStore, credStore, hostKeyStore, updaterStore, exporterStore, settingsStore, exclusionStore, holdsStore, onCreate, broadcastSystemsChanged),
+					newMux(db, store, groupStore, authStore, authSvc, secret, vault, hub, auditStore, rbacStore, credStore, hostKeyStore, updaterStore, exporterStore, settingsStore, exclusionStore, holdsStore, labelStore, labelStyleStore, onCreate, broadcastSystemsChanged),
 				),
 			),
 		),
@@ -278,9 +289,9 @@ func main() {
 	<-probeDone
 }
 
-func newMux(db *sql.DB, store systems.Store, groupStore groups.Store, authStore *auth.SQLiteAuthStore, authSvc *auth.Service, secret []byte, vault *secrets.Vault, hub *events.Hub, auditStore *audit.Store, rbacStore rbac.Store, credStore credentials.Store, hostKeyStore hostkeys.Store, updaterStore updaters.Store, exporterStore exporters.Store, settingsStore settings.Store, exclusionStore exclusions.Store, holdsStore holds.Store, onSystemCreate, onSystemDelete func()) *http.ServeMux {
+func newMux(db *sql.DB, store systems.Store, groupStore groups.Store, authStore *auth.SQLiteAuthStore, authSvc *auth.Service, secret []byte, vault *secrets.Vault, hub *events.Hub, auditStore *audit.Store, rbacStore rbac.Store, credStore credentials.Store, hostKeyStore hostkeys.Store, updaterStore updaters.Store, exporterStore exporters.Store, settingsStore settings.Store, exclusionStore exclusions.Store, holdsStore holds.Store, labelStore labels.Store, labelStyleStore labels.StyleStore, onSystemCreate, onSystemDelete func()) *http.ServeMux {
 	mux := http.NewServeMux()
-	populateMux(mux, db, store, groupStore, authStore, authSvc, secret, vault, hub, auditStore, rbacStore, credStore, hostKeyStore, updaterStore, exporterStore, settingsStore, exclusionStore, holdsStore, onSystemCreate, onSystemDelete)
+	populateMux(mux, db, store, groupStore, authStore, authSvc, secret, vault, hub, auditStore, rbacStore, credStore, hostKeyStore, updaterStore, exporterStore, settingsStore, exclusionStore, holdsStore, labelStore, labelStyleStore, onSystemCreate, onSystemDelete)
 	return mux
 }
 
@@ -289,7 +300,7 @@ func newMux(db *sql.DB, store systems.Store, groupStore groups.Store, authStore 
 // that captures every (method, path) pattern without spinning up a real
 // *http.ServeMux. main.go and tests reach for newMux; only the drift
 // test needs this entry point.
-func populateMux(mux router.Mux, db *sql.DB, store systems.Store, groupStore groups.Store, authStore *auth.SQLiteAuthStore, authSvc *auth.Service, secret []byte, vault *secrets.Vault, hub *events.Hub, auditStore *audit.Store, rbacStore rbac.Store, credStore credentials.Store, hostKeyStore hostkeys.Store, updaterStore updaters.Store, exporterStore exporters.Store, settingsStore settings.Store, exclusionStore exclusions.Store, holdsStore holds.Store, onSystemCreate, onSystemDelete func()) {
+func populateMux(mux router.Mux, db *sql.DB, store systems.Store, groupStore groups.Store, authStore *auth.SQLiteAuthStore, authSvc *auth.Service, secret []byte, vault *secrets.Vault, hub *events.Hub, auditStore *audit.Store, rbacStore rbac.Store, credStore credentials.Store, hostKeyStore hostkeys.Store, updaterStore updaters.Store, exporterStore exporters.Store, settingsStore settings.Store, exclusionStore exclusions.Store, holdsStore holds.Store, labelStore labels.Store, labelStyleStore labels.StyleStore, onSystemCreate, onSystemDelete func()) {
 	mux.Handle("GET /api/health", http.HandlerFunc(handleHealth))
 	authSvc.Register(mux)
 	requireUserOnly := auth.RequireUser(secret, authStore, time.Now)
@@ -368,7 +379,81 @@ func populateMux(mux router.Mux, db *sql.DB, store systems.Store, groupStore gro
 		scope, ok := rbac.ScopeFromContext(ctx)
 		return ok && scope.CanEditSystem(s.GroupID)
 	}
+	sysHandler.SystemLabels = func(ids []string) (map[string][]labels.Label, error) {
+		return labelStore.ForSystems(ids)
+	}
 	sysHandler.Register(mux, requireUser)
+	labelHandler := labels.NewHandler(labelStore)
+	labelHandler.Styles = labelStyleStore
+	labelHandler.CanManageStyles = func(ctx context.Context) bool {
+		scope, ok := rbac.ScopeFromContext(ctx)
+		return ok && scope.IsGlobalAdmin()
+	}
+	if auditStore != nil {
+		labelHandler.StyleAudit = func(ctx context.Context, action, key, color string) {
+			d := audit.NewDetail()
+			_ = d.SetSafe("key", key)
+			if color != "" {
+				_ = d.SetSafe("color", color)
+			}
+			err := auditStore.Log(ctx, audit.Event{
+				Action:      action,
+				Outcome:     audit.Success,
+				TargetKind:  "label_style",
+				TargetID:    key,
+				TargetLabel: key,
+				Detail:      d,
+			})
+			if err != nil {
+				slog.Error("label styles audit log", "err", err, "action", action)
+			}
+		}
+	}
+	labelHandler.Lookup = func(id string) (labels.SystemRef, error) {
+		s, err := store.Get(id)
+		if err != nil {
+			if errors.Is(err, systems.ErrNotFound) {
+				return labels.SystemRef{}, labels.ErrSystemNotFound
+			}
+			return labels.SystemRef{}, err
+		}
+		return labels.SystemRef{ID: s.ID, Name: s.Name, GroupID: s.GroupID}, nil
+	}
+	if auditStore != nil {
+		labelHandler.Audit = func(ctx context.Context, action string, sys labels.SystemRef, key string, value *string) {
+			d := audit.NewDetail()
+			_ = d.SetSafe("key", key)
+			if value == nil {
+				_ = d.SetSafe("value", nil)
+			} else {
+				_ = d.SetSafe("value", *value)
+			}
+			err := auditStore.Log(ctx, audit.Event{
+				Action:      action,
+				Outcome:     audit.Success,
+				TargetKind:  "system",
+				TargetID:    sys.ID,
+				TargetLabel: sys.Name,
+				Detail:      d,
+			})
+			if err != nil {
+				slog.Error("labels audit log", "err", err, "action", action)
+			}
+		}
+	}
+	labelHandler.OnChange = onSystemDelete
+	labelHandler.VisibleSystem = func(ctx context.Context, s labels.SystemRef) bool {
+		scope, ok := rbac.ScopeFromContext(ctx)
+		if !ok {
+			return true
+		}
+		return scope.CanReadSystem(s.GroupID)
+	}
+	labelHandler.CanEditSystem = func(ctx context.Context, s labels.SystemRef) bool {
+		scope, ok := rbac.ScopeFromContext(ctx)
+		return ok && scope.CanEditSystem(s.GroupID)
+	}
+	labelHandler.Register(mux, requireUser)
 	groupHandler := groups.NewHandler(groupStore, store)
 	groupHandler.OnChange = onSystemDelete
 	groupHandler.Audit = auditStore

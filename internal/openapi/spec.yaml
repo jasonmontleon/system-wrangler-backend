@@ -35,6 +35,8 @@ tags:
     description: Managed hosts in the fleet.
   - name: groups
     description: Named collections of systems.
+  - name: labels
+    description: N:M key/value selectors attached to systems. Filter-only — no override semantics or RBAC implications, unlike groups.
   - name: credentials
     description: Ansible authentication slots (global / group / system) and the resolved view.
   - name: hostkeys
@@ -786,6 +788,16 @@ paths:
     get:
       tags: [systems]
       summary: List systems visible to the caller's scope.
+      parameters:
+        - in: query
+          name: labels
+          required: false
+          schema: { type: string }
+          description: |
+            Optional k8s-subset label selector. When set, the response is
+            restricted to systems whose labels satisfy every comma-joined
+            requirement (`env=prod,role!=cache,!owner` etc). See the
+            Label schema description for the grammar.
       responses:
         "200":
           description: Systems the caller can see.
@@ -795,6 +807,7 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/System"
+        "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
     post:
       tags: [systems]
@@ -894,6 +907,143 @@ paths:
       responses:
         "204": { description: Membership updated. }
         "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/label-styles:
+    get:
+      tags: [labels]
+      summary: Global label color overrides keyed by label key.
+      description: |
+        Returns the hybrid color model's user-set override layer. The
+        SPA falls back to a deterministic hash of the label key for any
+        key not present in this map, so callers always have a color.
+      responses:
+        "200":
+          description: Map of label key → color.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties:
+                  type: string
+                  enum: [blue, teal, green, orange, purple, red, orangered, grey, yellow]
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/label-styles/{key}:
+    put:
+      tags: [labels]
+      summary: Set or replace the color override for a label key.
+      description: Global Admin only — color is a fleet-wide visual setting.
+      parameters:
+        - { in: path, name: key, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [color]
+              properties:
+                color:
+                  type: string
+                  enum: [blue, teal, green, orange, purple, red, orangered, grey, yellow]
+      responses:
+        "200":
+          description: The applied style.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LabelStyle" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    delete:
+      tags: [labels]
+      summary: Remove the color override for a label key, reverting to the hash default.
+      parameters:
+        - { in: path, name: key, required: true, schema: { type: string } }
+      responses:
+        "204": { description: Override removed. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/labels:
+    get:
+      tags: [labels]
+      summary: Distinct label keys with per-value cardinalities.
+      description: |
+        Drives the filter-bar autocomplete and the labels-overview UI.
+        Each entry counts how many systems carry that key (across all
+        values), with a breakdown by value. Bare tags surface as
+        ValueSummary entries with `value: null`.
+      responses:
+        "200":
+          description: Label key summary, ordered by key ascending.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/LabelKeySummary"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/systems/{id}/labels:
+    get:
+      tags: [labels]
+      summary: List the labels attached to a system.
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: Labels on the system, ordered by key.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Label" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404":
+          description: System not found or hidden from the caller's scope.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/systems/{id}/labels/{key}:
+    put:
+      tags: [labels]
+      summary: Set or update a single label on a system.
+      description: |
+        Body carries the value. Send `{"value": null}` for a bare tag.
+        Reserved-prefix keys (`system-wrangler.io/…`) are rejected with
+        403 — those slots are owned by System Wrangler itself.
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+        - { in: path, name: key, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/LabelInput" }
+      responses:
+        "200":
+          description: The applied label.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Label" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [labels]
+      summary: Remove a label key from a system.
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+        - { in: path, name: key, required: true, schema: { type: string } }
+      responses:
+        "204": { description: Label removed. }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
@@ -2667,6 +2817,76 @@ components:
         virtualization:
           type: string
           description: Lowercased virtualization type detected on the host ("kvm", "vmware", "hyperv", "xen", "virtualbox", "lxc", "parallels", ...). Empty when the host is bare-metal or pre-inspect.
+        labels:
+          type: array
+          items: { $ref: "#/components/schemas/Label" }
+          description: |
+            Every label currently attached to this system. Inline on the
+            list response so SPAs can render chips + click-to-filter
+            without an N+1 per-row fetch. Absent / empty when the system
+            has no labels set.
+
+    Label:
+      type: object
+      required: [key]
+      description: |
+        One (key, value) tag attached to a system. `value` is nullable
+        — a `null` value represents a bare tag (existence-only match),
+        an empty string is a legal equality target.
+      properties:
+        key:
+          type: string
+          description: |
+            k8s-subset key. Charset `[a-zA-Z0-9._-]`, optional
+            `prefix/` segment; per-segment cap 63, total cap 253.
+            The `system-wrangler.io/` prefix is reserved for
+            system-set labels and rejected from user input.
+        value:
+          type: [string, "null"]
+          description: |
+            Optional value. Same charset as key (minus `/`); cap 63
+            chars. `null` means "bare tag, matched by existence."
+
+    LabelInput:
+      type: object
+      required: [value]
+      description: Request body for PUT /api/systems/{id}/labels/{key}.
+      properties:
+        value:
+          type: [string, "null"]
+          description: Same shape as Label.value.
+
+    LabelStyle:
+      type: object
+      required: [key, color]
+      description: |
+        One row from the global label color override table. The SPA
+        composes auto-color (hash) + this override map to render
+        chips; setting an override is Global Admin only.
+      properties:
+        key: { type: string }
+        color:
+          type: string
+          enum: [blue, teal, green, orange, purple, red, orangered, grey, yellow]
+
+    LabelKeySummary:
+      type: object
+      required: [key, values, count]
+      description: One entry from GET /api/labels.
+      properties:
+        key: { type: string }
+        count:
+          type: integer
+          description: Total systems carrying this key, summing all values + bare-tag bucket.
+        values:
+          type: array
+          description: "Per-value breakdown. A `value: null` entry counts bare tags."
+          items:
+            type: object
+            required: [count]
+            properties:
+              value: { type: [string, "null"] }
+              count: { type: integer }
 
     SystemInput:
       type: object

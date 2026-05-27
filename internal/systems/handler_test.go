@@ -15,6 +15,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"system-wrangler-backend/internal/labels"
 )
 
 func newTestServer(t *testing.T) (*httptest.Server, *MemStore) {
@@ -211,6 +213,109 @@ func TestHandlerListAndGet(t *testing.T) {
 	if single.ID != systems[0].ID {
 		t.Errorf("got %q, want %q", single.ID, systems[0].ID)
 	}
+}
+
+// TestHandlerListLabelsEnrichmentAndSelector exercises the
+// SystemLabels hook (which decorates rows with their label set) and
+// the ?labels= selector filter, both added when the labels feature
+// landed.
+func TestHandlerListLabelsEnrichmentAndSelector(t *testing.T) {
+	store := newTestStore()
+	a, err := store.Create(SystemInput{Name: "a", Hostname: "a.example"})
+	if err != nil {
+		t.Fatalf("seed a: %v", err)
+	}
+	b, err := store.Create(SystemInput{Name: "b", Hostname: "b.example"})
+	if err != nil {
+		t.Fatalf("seed b: %v", err)
+	}
+	prod := "prod"
+	stg := "staging"
+	labelMap := map[string][]labels.Label{
+		a.ID: {{Key: "env", Value: &prod}, {Key: "oncall", Value: nil}},
+		b.ID: {{Key: "env", Value: &stg}},
+	}
+	h := NewHandler(store)
+	h.SystemLabels = func(ids []string) (map[string][]labels.Label, error) {
+		out := make(map[string][]labels.Label, len(ids))
+		for _, id := range ids {
+			if ls, ok := labelMap[id]; ok {
+				out[id] = ls
+			}
+		}
+		return out, nil
+	}
+	mux := http.NewServeMux()
+	h.Register(mux, nil)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	// Unfiltered list returns both systems with their labels attached.
+	resp := mustGet(t, srv.URL+"/api/systems")
+	defer func() { _ = resp.Body.Close() }()
+	var all []System
+	decodeJSON(t, resp.Body, &all)
+	if len(all) != 2 {
+		t.Fatalf("len = %d, want 2", len(all))
+	}
+	for _, s := range all {
+		if len(s.Labels) == 0 {
+			t.Errorf("system %q has no labels in response", s.Name)
+		}
+	}
+
+	// ?labels=env=prod returns only system a.
+	resp2 := mustGet(t, srv.URL+"/api/systems?labels=env%3Dprod")
+	defer func() { _ = resp2.Body.Close() }()
+	var filtered []System
+	decodeJSON(t, resp2.Body, &filtered)
+	if len(filtered) != 1 || filtered[0].ID != a.ID {
+		t.Errorf("filtered = %+v, want only %s", filtered, a.ID)
+	}
+
+	// Bad selector → 400.
+	resp3 := mustGet(t, srv.URL+"/api/systems?labels=env%3D%21bad")
+	defer func() { _ = resp3.Body.Close() }()
+	if resp3.StatusCode != http.StatusBadRequest {
+		t.Errorf("bad selector status = %d, want 400", resp3.StatusCode)
+	}
+}
+
+// TestHandlerGetLabelsEnrichment ensures the single-system endpoint
+// runs through enrichLabels as well so the SPA can avoid a second
+// fetch on the detail page.
+func TestHandlerGetLabelsEnrichment(t *testing.T) {
+	store := newTestStore()
+	sys, err := store.Create(SystemInput{Name: "x", Hostname: "x.example"})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	prod := "prod"
+	h := NewHandler(store)
+	h.SystemLabels = func(_ []string) (map[string][]labels.Label, error) {
+		return map[string][]labels.Label{sys.ID: {{Key: "env", Value: &prod}}}, nil
+	}
+	mux := http.NewServeMux()
+	h.Register(mux, nil)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	resp := mustGet(t, srv.URL+"/api/systems/"+sys.ID)
+	defer func() { _ = resp.Body.Close() }()
+	var got System
+	decodeJSON(t, resp.Body, &got)
+	if len(got.Labels) != 1 || got.Labels[0].Key != "env" {
+		t.Errorf("labels = %+v, want [env=prod]", got.Labels)
+	}
+}
+
+func mustGet(t *testing.T, url string) *http.Response {
+	t.Helper()
+	resp, err := http.Get(url) //nolint:gosec,noctx
+	if err != nil {
+		t.Fatalf("get %q: %v", url, err)
+	}
+	return resp
 }
 
 func TestHandlerGetMissing(t *testing.T) {

@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"system-wrangler-backend/internal/labels"
 )
 
 // Maximum lengths are conservative; tighten only if a concrete need appears.
@@ -92,6 +94,11 @@ type System struct {
 	// systems-stats hook from system_action_locks so the SPA can keep
 	// a row's spinner lit across page navigation.
 	Running bool `json:"running,omitempty"`
+	// Labels is the system's full label set, attached at handler time
+	// by an injected bulk-fetch hook so the systems list response is
+	// self-sufficient (no N+1 fetch per row). Empty when no labels are
+	// set or the hook is not wired (tests).
+	Labels []labels.Label `json:"labels,omitempty"`
 }
 
 // PendingPackage is the systems-package mirror of the updaters
