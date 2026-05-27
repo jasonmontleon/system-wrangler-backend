@@ -4,7 +4,52 @@
   become: true
   vars:
     sw_targeted_packages: []
+    sw_excluded_packages: []
+    sw_currently_held: []
   tasks:
+    - name: List host-side apt holds
+      ansible.builtin.command: apt-mark showhold
+      register: sw_apt_holds_raw
+      changed_when: false
+      environment:
+        DEBIAN_FRONTEND: noninteractive
+
+    - name: Compute hold reconcile sets
+      ansible.builtin.set_fact:
+        sw_actual_held: "{{ sw_apt_holds_raw.stdout_lines | default([]) | reject('equalto', '') | list }}"
+        sw_to_hold: >-
+          {{ sw_excluded_packages | difference(sw_apt_holds_raw.stdout_lines | default([])) }}
+        sw_to_unhold: >-
+          {{ (sw_currently_held | difference(sw_excluded_packages))
+             | intersect(sw_apt_holds_raw.stdout_lines | default([])) }}
+        sw_drift_reaped: >-
+          {{ (sw_currently_held | difference(sw_excluded_packages))
+             | difference(sw_apt_holds_raw.stdout_lines | default([])) }}
+
+    - name: Apply new apt holds  # noqa: command-instead-of-module
+      ansible.builtin.command: "apt-mark hold {{ item }}"
+      loop: "{{ sw_to_hold }}"
+      changed_when: true
+      environment:
+        DEBIAN_FRONTEND: noninteractive
+
+    - name: Clear apt holds we no longer manage  # noqa: command-instead-of-module
+      ansible.builtin.command: "apt-mark unhold {{ item }}"
+      loop: "{{ sw_to_unhold }}"
+      changed_when: true
+      environment:
+        DEBIAN_FRONTEND: noninteractive
+
+    - name: Surface holds-added count
+      ansible.builtin.debug:
+        msg: "SW_HOLDS_ADDED: {{ sw_to_hold | length }}"
+    - name: Surface holds-removed count
+      ansible.builtin.debug:
+        msg: "SW_HOLDS_REMOVED: {{ sw_to_unhold | length }}"
+    - name: Surface holds-drift-reaped count
+      ansible.builtin.debug:
+        msg: "SW_HOLDS_DRIFT_REAPED: {{ sw_drift_reaped | length }}"
+
     - name: Run apt dist-upgrade (all pending)
       when: sw_targeted_packages | length == 0
       ansible.builtin.apt:

@@ -1,0 +1,90 @@
+- name: Test apt apply hold-reconcile + count parsing
+  hosts: localhost
+  gather_facts: false
+  vars:
+    apt_holds_typical:
+      stdout_lines:
+        - "openssh-server"
+        - "vim"
+        - "curl"
+    apt_holds_empty:
+      stdout_lines: []
+    apt_result_typical:
+      stdout_lines:
+        - "Reading package lists..."
+        - "Setting up libfoo (1.2-3)..."
+        - "Setting up bar (4.5-6)..."
+        - "Setting up baz (0.0.1)..."
+    apt_result_empty:
+      stdout_lines:
+        - "Reading package lists..."
+        - "0 upgraded, 0 newly installed, 0 to remove and 0 not upgraded."
+  tasks:
+    - name: Compute hold reconcile sets (typical desired + currently_held)
+      ansible.builtin.set_fact:
+        sw_excluded_packages:
+          - vim
+          - newpin
+        sw_currently_held:
+          - vim
+          - stale-tracked
+        sw_actual_held: "{{ apt_holds_typical.stdout_lines | default([]) | reject('equalto', '') | list }}"
+
+    - name: Compute hold reconcile sets (typical, continued)
+      ansible.builtin.set_fact:
+        sw_to_hold: >-
+          {{ sw_excluded_packages | difference(apt_holds_typical.stdout_lines | default([])) }}
+        sw_to_unhold: >-
+          {{ (sw_currently_held | difference(sw_excluded_packages))
+             | intersect(apt_holds_typical.stdout_lines | default([])) }}
+        sw_drift_reaped: >-
+          {{ (sw_currently_held | difference(sw_excluded_packages))
+             | difference(apt_holds_typical.stdout_lines | default([])) }}
+
+    - name: Assert to_hold contains only newly-desired patterns not yet held
+      ansible.builtin.assert:
+        that:
+          - sw_to_hold | length == 1
+          - "'newpin' in sw_to_hold"
+          - "'vim' not in sw_to_hold"
+        fail_msg: "sw_to_hold={{ sw_to_hold }}, want [newpin]"
+
+    - name: Assert to_unhold is empty (stale-tracked drifted; vim still desired)
+      ansible.builtin.assert:
+        that:
+          - sw_to_unhold | length == 0
+        fail_msg: "sw_to_unhold={{ sw_to_unhold }}, want []"
+
+    - name: Assert drift_reaped flags the operator-cleared pattern
+      ansible.builtin.assert:
+        that:
+          - sw_drift_reaped | length == 1
+          - "'stale-tracked' in sw_drift_reaped"
+        fail_msg: "sw_drift_reaped={{ sw_drift_reaped }}, want [stale-tracked]"
+
+    - name: Compute upgrade count from dpkg trace
+      ansible.builtin.set_fact:
+        typical_count: >-
+          {{ apt_result_typical.stdout_lines
+             | default([])
+             | select('match', '^Setting up ')
+             | list
+             | length }}
+        empty_count: >-
+          {{ apt_result_empty.stdout_lines
+             | default([])
+             | select('match', '^Setting up ')
+             | list
+             | length }}
+
+    - name: Assert typical setting-up count
+      ansible.builtin.assert:
+        that:
+          - typical_count | int == 3
+        fail_msg: "typical_count={{ typical_count }}, want 3"
+
+    - name: Assert empty produces zero
+      ansible.builtin.assert:
+        that:
+          - empty_count | int == 0
+        fail_msg: "empty_count={{ empty_count }}, want 0"

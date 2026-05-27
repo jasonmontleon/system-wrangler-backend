@@ -1,0 +1,69 @@
+- name: Test scoop apply hold-reconcile + count parsing
+  hosts: localhost
+  gather_facts: false
+  vars:
+    scoop_holds_typical:
+      stdout_lines:
+        - "git"
+        - "nodejs"
+    scoop_result_typical:
+      stdout_lines:
+        - "Updating Scoop..."
+        - "'foo' (1.2.3) was installed successfully!"
+        - "'bar' (4.5.6) was installed successfully!"
+    scoop_result_empty:
+      stdout_lines:
+        - "Latest versions for all apps are installed!"
+  tasks:
+    - name: Compute hold reconcile sets — adoption + drift mix
+      ansible.builtin.set_fact:
+        sw_excluded_packages:
+          - git
+          - newpkg
+        sw_currently_held:
+          - stale
+        sw_actual_held: "{{ scoop_holds_typical.stdout_lines | default([]) | reject('equalto', '') | list }}"
+        sw_to_hold: >-
+          {{ ['git', 'newpkg'] | difference(scoop_holds_typical.stdout_lines | default([])) }}
+        sw_to_unhold: >-
+          {{ (['stale'] | difference(['git', 'newpkg']))
+             | intersect(scoop_holds_typical.stdout_lines | default([])) }}
+        sw_drift_reaped: >-
+          {{ (['stale'] | difference(['git', 'newpkg']))
+             | difference(scoop_holds_typical.stdout_lines | default([])) }}
+
+    - name: Assert adoption + drift bookkeeping
+      ansible.builtin.assert:
+        that:
+          - "'newpkg' in sw_to_hold"
+          - "'git' not in sw_to_hold"
+          - sw_to_unhold | length == 0
+          - "'stale' in sw_drift_reaped"
+        fail_msg: "to_hold={{ sw_to_hold }} to_unhold={{ sw_to_unhold }} drift={{ sw_drift_reaped }}"
+
+    - name: Compute upgrade count from per-package success lines
+      ansible.builtin.set_fact:
+        typical_count: >-
+          {{ scoop_result_typical.stdout_lines
+             | default([])
+             | select('search', "was installed successfully!")
+             | list
+             | length }}
+        empty_count: >-
+          {{ scoop_result_empty.stdout_lines
+             | default([])
+             | select('search', "was installed successfully!")
+             | list
+             | length }}
+
+    - name: Assert typical success count
+      ansible.builtin.assert:
+        that:
+          - typical_count | int == 2
+        fail_msg: "typical_count={{ typical_count }}, want 2"
+
+    - name: Assert empty produces zero
+      ansible.builtin.assert:
+        that:
+          - empty_count | int == 0
+        fail_msg: "empty_count={{ empty_count }}, want 0"

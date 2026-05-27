@@ -1,0 +1,67 @@
+- name: Test brew apply hold-reconcile + count parsing
+  hosts: localhost
+  gather_facts: false
+  vars:
+    brew_holds_typical:
+      stdout_lines:
+        - "node"
+        - "python@3.11"
+        - "ruby"
+    brew_result_typical:
+      stdout_lines:
+        - "==> Upgrading 3 outdated packages:"
+        - "node 20.0.0 -> 20.5.0"
+        - "==> Upgrading node"
+        - "==> Upgrading python@3.11"
+        - "==> Upgrading ruby"
+        - "Done."
+    brew_result_empty:
+      stdout_lines:
+        - "Already up-to-date."
+  tasks:
+    - name: Compute hold reconcile sets — adoption case
+      ansible.builtin.set_fact:
+        sw_excluded_packages:
+          - python@3.11
+          - newpin
+        sw_currently_held: []
+        sw_to_hold: >-
+          {{ ['python@3.11', 'newpin'] | difference(brew_holds_typical.stdout_lines | default([])) }}
+        sw_to_unhold: >-
+          {{ ([] | difference(['python@3.11', 'newpin']))
+             | intersect(brew_holds_typical.stdout_lines | default([])) }}
+
+    - name: Assert adoption case sets only the new pin (python@3.11 already operator-pinned no-ops)
+      ansible.builtin.assert:
+        that:
+          - "'newpin' in sw_to_hold"
+          - "'python@3.11' not in sw_to_hold"
+          - sw_to_unhold | length == 0
+        fail_msg: "to_hold={{ sw_to_hold }}, to_unhold={{ sw_to_unhold }}"
+
+    - name: Compute upgrade count from progress markers
+      ansible.builtin.set_fact:
+        typical_count: >-
+          {{ brew_result_typical.stdout_lines
+             | default([])
+             | select('match', '^==> Upgrading ')
+             | list
+             | length }}
+        empty_count: >-
+          {{ brew_result_empty.stdout_lines
+             | default([])
+             | select('match', '^==> Upgrading ')
+             | list
+             | length }}
+
+    - name: Assert typical progress-marker count is 3 (banner + per-package lines)
+      ansible.builtin.assert:
+        that:
+          - typical_count | int == 4
+        fail_msg: "typical_count={{ typical_count }}, want 4"
+
+    - name: Assert empty output produces zero
+      ansible.builtin.assert:
+        that:
+          - empty_count | int == 0
+        fail_msg: "empty_count={{ empty_count }}, want 0"

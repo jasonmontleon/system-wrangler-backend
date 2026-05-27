@@ -1,7 +1,11 @@
-- name: Test flatpak apply count parsing
+- name: Test flatpak apply hold-reconcile + count parsing
   hosts: localhost
   gather_facts: false
   vars:
+    flatpak_masks_typical:
+      stdout_lines:
+        - "org.mozilla.firefox"
+        - "com.spotify.Client"
     flatpak_result_typical:
       stdout_lines:
         - "Looking for updates..."
@@ -18,6 +22,38 @@
         - "Looking for updates..."
         - "Nothing to do."
   tasks:
+    - name: Compute hold reconcile sets — operator already masked one of our patterns
+      ansible.builtin.set_fact:
+        sw_excluded_packages:
+          - org.mozilla.firefox
+          - org.example.New
+        sw_currently_held:
+          - org.example.Old
+        sw_actual_held: "{{ flatpak_masks_typical.stdout_lines | default([]) | reject('equalto', '') | list }}"
+        sw_to_hold: >-
+          {{ ['org.mozilla.firefox', 'org.example.New']
+             | difference(flatpak_masks_typical.stdout_lines | default([])) }}
+        sw_to_unhold: >-
+          {{ (['org.example.Old'] | difference(['org.mozilla.firefox', 'org.example.New']))
+             | intersect(flatpak_masks_typical.stdout_lines | default([])) }}
+        sw_drift_reaped: >-
+          {{ (['org.example.Old'] | difference(['org.mozilla.firefox', 'org.example.New']))
+             | difference(flatpak_masks_typical.stdout_lines | default([])) }}
+
+    - name: Assert to_hold drops the already-masked appid
+      ansible.builtin.assert:
+        that:
+          - "'org.example.New' in sw_to_hold"
+          - "'org.mozilla.firefox' not in sw_to_hold"
+        fail_msg: "sw_to_hold={{ sw_to_hold }}"
+
+    - name: Assert drift captures the tracked appid no longer host-masked
+      ansible.builtin.assert:
+        that:
+          - sw_drift_reaped | length == 1
+          - "'org.example.Old' in sw_drift_reaped"
+        fail_msg: "sw_drift_reaped={{ sw_drift_reaped }}"
+
     - name: Count numbered changelist items in typical output
       ansible.builtin.set_fact:
         typical_count: >-

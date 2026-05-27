@@ -4,7 +4,61 @@
   become: false
   vars:
     sw_targeted_packages: []
+    sw_excluded_packages: []
+    sw_currently_held: []
   tasks:
+    - name: List host-side scoop holds
+      ansible.windows.win_shell: |
+        $apps = if ($env:SCOOP) { Join-Path $env:SCOOP 'apps' } else { Join-Path $HOME 'scoop\apps' }
+        if (-not (Test-Path $apps)) { return }
+        Get-ChildItem $apps -Directory | ForEach-Object {
+          $manifest = Join-Path $_.FullName 'current\install.json'
+          if (Test-Path $manifest) {
+            try {
+              $data = Get-Content $manifest -Raw | ConvertFrom-Json
+              if ($data.hold -eq $true) { $_.Name }
+            } catch {}
+          }
+        }
+      register: sw_scoop_holds_raw
+      changed_when: false
+
+    - name: Compute hold reconcile sets
+      ansible.builtin.set_fact:
+        sw_actual_held: "{{ sw_scoop_holds_raw.stdout_lines | default([]) | reject('equalto', '') | list }}"
+        sw_to_hold: >-
+          {{ sw_excluded_packages | difference(sw_scoop_holds_raw.stdout_lines | default([])) }}
+        sw_to_unhold: >-
+          {{ (sw_currently_held | difference(sw_excluded_packages))
+             | intersect(sw_scoop_holds_raw.stdout_lines | default([])) }}
+        sw_drift_reaped: >-
+          {{ (sw_currently_held | difference(sw_excluded_packages))
+             | difference(sw_scoop_holds_raw.stdout_lines | default([])) }}
+
+    - name: Apply new scoop holds
+      ansible.windows.win_shell: |
+        scoop hold {{ item }}
+        exit $LASTEXITCODE
+      loop: "{{ sw_to_hold }}"
+      changed_when: true
+
+    - name: Clear scoop holds we no longer manage
+      ansible.windows.win_shell: |
+        scoop unhold {{ item }}
+        exit $LASTEXITCODE
+      loop: "{{ sw_to_unhold }}"
+      changed_when: true
+
+    - name: Surface holds-added count
+      ansible.builtin.debug:
+        msg: "SW_HOLDS_ADDED: {{ sw_to_hold | length }}"
+    - name: Surface holds-removed count
+      ansible.builtin.debug:
+        msg: "SW_HOLDS_REMOVED: {{ sw_to_unhold | length }}"
+    - name: Surface holds-drift-reaped count
+      ansible.builtin.debug:
+        msg: "SW_HOLDS_DRIFT_REAPED: {{ sw_drift_reaped | length }}"
+
     - name: Compose the scoop target list (all vs targeted)
       ansible.builtin.set_fact:
         sw_scoop_target: >-

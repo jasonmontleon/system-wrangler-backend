@@ -1,0 +1,63 @@
+- name: Test xbps apply hold-reconcile + count parsing
+  hosts: localhost
+  gather_facts: false
+  vars:
+    xbps_holds_typical:
+      stdout_lines:
+        - "vim-9.0.1234_1"
+        - "gtk+3-3.24.36_1"
+        - "libpng16-1.6.40_1"
+    xbps_result_typical:
+      stdout_lines:
+        - "Updating package index..."
+        - "xbps-install: configuring foo-1.0_1..."
+        - "xbps-install: configuring bar-2.0_1..."
+        - "xbps-install: configuring baz-3.0_1..."
+    xbps_result_empty:
+      stdout_lines:
+        - "Updating package index..."
+        - "Nothing to do."
+  tasks:
+    - name: Parse host-side holds — strip the trailing -VERSION_REV component
+      ansible.builtin.set_fact:
+        sw_actual_held: >-
+          {{ xbps_holds_typical.stdout_lines | default([])
+             | reject('equalto', '')
+             | map('regex_replace', '^(.+)-[^-]+$', '\1')
+             | list }}
+
+    - name: Assert xbps name extraction handles + and digits in names
+      ansible.builtin.assert:
+        that:
+          - sw_actual_held | length == 3
+          - "'vim' in sw_actual_held"
+          - "'gtk+3' in sw_actual_held"
+          - "'libpng16' in sw_actual_held"
+        fail_msg: "sw_actual_held={{ sw_actual_held }}"
+
+    - name: Compute upgrade count from configuring markers
+      ansible.builtin.set_fact:
+        typical_count: >-
+          {{ xbps_result_typical.stdout_lines
+             | default([])
+             | select('search', ': configuring ')
+             | list
+             | length }}
+        empty_count: >-
+          {{ xbps_result_empty.stdout_lines
+             | default([])
+             | select('search', ': configuring ')
+             | list
+             | length }}
+
+    - name: Assert typical configuring count
+      ansible.builtin.assert:
+        that:
+          - typical_count | int == 3
+        fail_msg: "typical_count={{ typical_count }}, want 3"
+
+    - name: Assert empty produces zero
+      ansible.builtin.assert:
+        that:
+          - empty_count | int == 0
+        fail_msg: "empty_count={{ empty_count }}, want 0"

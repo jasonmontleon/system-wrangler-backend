@@ -4,7 +4,53 @@
   become: true
   vars:
     sw_targeted_packages: []
+    sw_excluded_packages: []
+    sw_currently_held: []
   tasks:
+    - name: List host-side snap holds
+      ansible.builtin.command: snap holds
+      register: sw_snap_holds_raw
+      changed_when: false
+      failed_when: false
+
+    - name: Compute hold reconcile sets
+      ansible.builtin.set_fact:
+        sw_actual_held: >-
+          {{ sw_snap_holds_raw.stdout_lines | default([])
+             | reject('match', '^Name\s')
+             | reject('match', '^No holds')
+             | reject('equalto', '')
+             | map('regex_replace', '^(\S+).*$', '\1')
+             | list }}
+
+    - name: Compute hold reconcile sets (continued)
+      ansible.builtin.set_fact:
+        sw_to_hold: "{{ sw_excluded_packages | difference(sw_actual_held) }}"
+        sw_to_unhold: >-
+          {{ (sw_currently_held | difference(sw_excluded_packages)) | intersect(sw_actual_held) }}
+        sw_drift_reaped: >-
+          {{ (sw_currently_held | difference(sw_excluded_packages)) | difference(sw_actual_held) }}
+
+    - name: Apply new snap holds  # noqa: command-instead-of-module
+      ansible.builtin.command: "snap refresh --hold {{ item }}"
+      loop: "{{ sw_to_hold }}"
+      changed_when: true
+
+    - name: Clear snap holds we no longer manage  # noqa: command-instead-of-module
+      ansible.builtin.command: "snap refresh --unhold {{ item }}"
+      loop: "{{ sw_to_unhold }}"
+      changed_when: true
+
+    - name: Surface holds-added count
+      ansible.builtin.debug:
+        msg: "SW_HOLDS_ADDED: {{ sw_to_hold | length }}"
+    - name: Surface holds-removed count
+      ansible.builtin.debug:
+        msg: "SW_HOLDS_REMOVED: {{ sw_to_unhold | length }}"
+    - name: Surface holds-drift-reaped count
+      ansible.builtin.debug:
+        msg: "SW_HOLDS_DRIFT_REAPED: {{ sw_drift_reaped | length }}"
+
     - name: Compose the snap command (all-pending vs targeted)
       ansible.builtin.set_fact:
         sw_snap_cmd: >-

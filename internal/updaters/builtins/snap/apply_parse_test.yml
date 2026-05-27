@@ -1,0 +1,80 @@
+- name: Test snap apply hold-reconcile + count parsing
+  hosts: localhost
+  gather_facts: false
+  vars:
+    snap_holds_typical:
+      stdout_lines:
+        - "Name        Until    Reason"
+        - "firefox     forever  user"
+        - "code        forever  user"
+    snap_holds_none:
+      stdout_lines:
+        - "No holds set."
+    snap_result_typical:
+      stdout_lines:
+        - "core20 20240101 from Canonical refreshed"
+        - "firefox 123.0 from Mozilla refreshed"
+    snap_result_empty:
+      stdout_lines:
+        - "All snaps up to date."
+  tasks:
+    - name: Parse host-side holds (typical)
+      ansible.builtin.set_fact:
+        sw_actual_held: >-
+          {{ snap_holds_typical.stdout_lines | default([])
+             | reject('match', '^Name\s')
+             | reject('match', '^No holds')
+             | reject('equalto', '')
+             | map('regex_replace', '^(\S+).*$', '\1')
+             | list }}
+
+    - name: Assert snap list parser drops the header + extracts names
+      ansible.builtin.assert:
+        that:
+          - sw_actual_held | length == 2
+          - "'firefox' in sw_actual_held"
+          - "'code' in sw_actual_held"
+        fail_msg: "sw_actual_held={{ sw_actual_held }}, want [firefox, code]"
+
+    - name: Parse host-side holds (no-holds banner)
+      ansible.builtin.set_fact:
+        sw_actual_held_empty: >-
+          {{ snap_holds_none.stdout_lines | default([])
+             | reject('match', '^Name\s')
+             | reject('match', '^No holds')
+             | reject('equalto', '')
+             | map('regex_replace', '^(\S+).*$', '\1')
+             | list }}
+
+    - name: Assert no-holds banner produces empty list
+      ansible.builtin.assert:
+        that:
+          - sw_actual_held_empty | length == 0
+        fail_msg: "sw_actual_held_empty={{ sw_actual_held_empty }}, want []"
+
+    - name: Compute refresh count
+      ansible.builtin.set_fact:
+        typical_count: >-
+          {{ snap_result_typical.stdout_lines
+             | default([])
+             | select('search', ' refreshed$')
+             | list
+             | length }}
+        empty_count: >-
+          {{ snap_result_empty.stdout_lines
+             | default([])
+             | select('search', ' refreshed$')
+             | list
+             | length }}
+
+    - name: Assert typical refresh count
+      ansible.builtin.assert:
+        that:
+          - typical_count | int == 2
+        fail_msg: "typical_count={{ typical_count }}, want 2"
+
+    - name: Assert empty refresh count
+      ansible.builtin.assert:
+        that:
+          - empty_count | int == 0
+        fail_msg: "empty_count={{ empty_count }}, want 0"

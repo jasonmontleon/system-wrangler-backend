@@ -4,7 +4,51 @@
   become: true
   vars:
     sw_targeted_packages: []
+    sw_excluded_packages: []
+    sw_currently_held: []
   tasks:
+    - name: List host-side xbps holds  # noqa: command-instead-of-module
+      ansible.builtin.command: xbps-query -H
+      register: sw_xbps_holds_raw
+      changed_when: false
+      failed_when: false
+
+    - name: Compute hold reconcile sets
+      ansible.builtin.set_fact:
+        sw_actual_held: >-
+          {{ sw_xbps_holds_raw.stdout_lines | default([])
+             | reject('equalto', '')
+             | map('regex_replace', '^(.+)-[^-]+$', '\1')
+             | list }}
+
+    - name: Compute hold reconcile sets (continued)
+      ansible.builtin.set_fact:
+        sw_to_hold: "{{ sw_excluded_packages | difference(sw_actual_held) }}"
+        sw_to_unhold: >-
+          {{ (sw_currently_held | difference(sw_excluded_packages)) | intersect(sw_actual_held) }}
+        sw_drift_reaped: >-
+          {{ (sw_currently_held | difference(sw_excluded_packages)) | difference(sw_actual_held) }}
+
+    - name: Apply new xbps holds  # noqa: command-instead-of-module
+      ansible.builtin.command: "xbps-pkgdb -m hold {{ item }}"
+      loop: "{{ sw_to_hold }}"
+      changed_when: true
+
+    - name: Clear xbps holds we no longer manage  # noqa: command-instead-of-module
+      ansible.builtin.command: "xbps-pkgdb -m unhold {{ item }}"
+      loop: "{{ sw_to_unhold }}"
+      changed_when: true
+
+    - name: Surface holds-added count
+      ansible.builtin.debug:
+        msg: "SW_HOLDS_ADDED: {{ sw_to_hold | length }}"
+    - name: Surface holds-removed count
+      ansible.builtin.debug:
+        msg: "SW_HOLDS_REMOVED: {{ sw_to_unhold | length }}"
+    - name: Surface holds-drift-reaped count
+      ansible.builtin.debug:
+        msg: "SW_HOLDS_DRIFT_REAPED: {{ sw_drift_reaped | length }}"
+
     - name: Compose the xbps command (all-pending vs targeted)
       ansible.builtin.set_fact:
         sw_xbps_cmd: >-

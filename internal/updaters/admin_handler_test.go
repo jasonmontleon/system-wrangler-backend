@@ -118,19 +118,20 @@ func TestAdminListSupportsExclusionsFlag(t *testing.T) {
 		"builtin.pkg":        true,
 		"builtin.winget":     true,
 		"builtin.chocolatey": true,
+		// v2 hold-based managers — research/package-exclusions-v2.md.
+		"builtin.apt":     true,
+		"builtin.brew":    true,
+		"builtin.snap":    true,
+		"builtin.flatpak": true,
+		"builtin.xbps":    true,
+		"builtin.scoop":   true,
 		// Custom updaters default to true (operator trust).
 		"custom.alpha": true,
-		// Hold-based managers + no-mechanism builtins are false.
-		"builtin.apt":            false,
-		"builtin.brew":           false,
-		"builtin.snap":           false,
-		"builtin.flatpak":        false,
+		// No-mechanism builtins stay false.
 		"builtin.apk":            false,
 		"builtin.pkg_add":        false,
 		"builtin.pkgin":          false,
-		"builtin.xbps":           false,
 		"builtin.eopkg":          false,
-		"builtin.scoop":          false,
 		"builtin.mas":            false,
 		"builtin.softwareupdate": false,
 		"builtin.windowsupdate":  false,
