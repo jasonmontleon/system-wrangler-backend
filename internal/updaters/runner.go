@@ -74,6 +74,22 @@ type Runner struct {
 	// resolve exclusions degrades to "no exclusions" rather than
 	// blocking the run; the audit detail will reflect the empty list.
 	ResolveExclusions func(systemID, updaterID string) ([]string, error)
+	// ResolveHolds, if set, returns the list of patterns SW has
+	// already placed host-side holds on for (systemID, updaterID).
+	// Wired in main.go to holds.Store.List so this package doesn't
+	// import holds. The runner threads the result into the apply
+	// request's Vars as `sw_currently_held` for the playbook's
+	// to_hold / to_unhold Jinja diff. Only consulted on Apply against
+	// definitions with UsesHolds=true. Errors degrade to "no managed
+	// holds known" — the next reconcile catches up.
+	ResolveHolds func(systemID, updaterID string) ([]string, error)
+	// RecordHolds, if set, persists the post-Apply managed-hold set
+	// for (systemID, updaterID). Called with the resolved exclude
+	// patterns after the apply playbook returns success; the holds
+	// store replaces the row set so removing an exclusion later still
+	// finds the matching managed_holds row to undo. Errors are logged
+	// but non-fatal — the next successful Apply will reconcile.
+	RecordHolds func(systemID, updaterID string, desired []string) error
 }
 
 func (r *Runner) notify(eventType string) {
@@ -408,6 +424,25 @@ func (r *Runner) runUpdater(ctx context.Context, systemID, updaterID string, kin
 		}
 		req.Vars["sw_excluded_packages"] = excludes
 	}
+	// Hold reconciliation only runs against hold-based managers on
+	// Apply. The playbook receives the currently-managed set so its
+	// Jinja diff can compute to_hold / to_unhold without a second
+	// round-trip; we always pass a (possibly empty) list so the diff
+	// doesn't have to guard on `is defined`.
+	if kind == RunKindApply && def.UsesHolds && r.ResolveHolds != nil {
+		held, err := r.ResolveHolds(systemID, updaterID)
+		if err != nil {
+			slog.Warn("updaters: resolve holds", "err", err, "system_id", systemID, "updater_id", updaterID) //nolint:gosec
+			held = nil
+		}
+		if req.Vars == nil {
+			req.Vars = map[string]any{}
+		}
+		if held == nil {
+			held = []string{}
+		}
+		req.Vars["sw_currently_held"] = held
+	}
 	aRun, aErr := r.Ansible.Run(ctx, req)
 	finishedAt := r.now()
 	status := aRun.Status
@@ -461,6 +496,24 @@ func (r *Runner) runUpdater(ctx context.Context, systemID, updaterID string, kin
 	// var.
 	if len(excludes) > 0 {
 		detail["excluded_packages"] = excludes
+	}
+	// Hold reconciliation summary for hold-based managers. The Go side
+	// always re-mirrors the desired exclude set into managed_holds on
+	// a structurally-successful run; the per-direction counts come from
+	// the playbook's stdout markers (0 when absent). We persist even
+	// when ansible reports RunFailure because the host-side hold
+	// commands ran before the upgrade step — leaving managed_holds
+	// stale would re-fire the same set/unhold pair on every retry.
+	if kind == RunKindApply && def.UsesHolds {
+		counts := parseHoldCounts(aRun.Stdout)
+		detail["holds_added"] = counts.Added
+		detail["holds_removed"] = counts.Removed
+		detail["holds_drift_reaped"] = counts.DriftReaped
+		if r.RecordHolds != nil {
+			if err := r.RecordHolds(systemID, updaterID, excludes); err != nil {
+				slog.Warn("updaters: record holds", "err", err, "system_id", systemID, "updater_id", updaterID) //nolint:gosec
+			}
+		}
 	}
 	r.logComplete(ctx, completeAction, outcome, systemID, runID, run.StartedAt, detail)
 

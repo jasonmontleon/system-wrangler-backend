@@ -71,15 +71,22 @@ type Definition struct {
 	// honours the `sw_excluded_packages` extra-var. Builtins set the
 	// flag explicitly per research/package-exclusions.md (v1 covers
 	// per-invocation flags on dnf, pacman, zypper, pkg, winget,
-	// chocolatey; hold-based managers and updaters with no exclude
-	// mechanism are false). Custom definitions trust the author — the
-	// SPA can't introspect the playbook, so the operator opts in
-	// implicitly by appearing in the exclusion form's dropdown.
+	// chocolatey; v2 picks up the hold-based managers below).
+	// Custom definitions trust the author — the SPA can't introspect
+	// the playbook, so the operator opts in implicitly by appearing in
+	// the exclusion form's dropdown.
 	SupportsExclusions bool
-	CreatedBy          string    // empty for builtins
-	CreatedAt          time.Time // zero for builtins
-	UpdatedAt          time.Time // zero for builtins
-	DeletedAt          *time.Time
+	// UsesHolds marks managers whose exclusion mechanism flips a
+	// persistent host-side flag (apt-mark hold, brew pin, snap refresh
+	// --hold, flatpak mask, pkgin/xbps/scoop). The runner reads from
+	// holds.Store before such applies and writes back after a
+	// successful run so removing an exclusion row clears the matching
+	// host-side hold on the next Apply.
+	UsesHolds bool
+	CreatedBy string    // empty for builtins
+	CreatedAt time.Time // zero for builtins
+	UpdatedAt time.Time // zero for builtins
+	DeletedAt *time.Time
 }
 
 // IsDeleted reports whether d carries a soft-delete tombstone.

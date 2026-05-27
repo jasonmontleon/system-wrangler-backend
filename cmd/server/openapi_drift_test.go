@@ -18,6 +18,7 @@ import (
 	"system-wrangler-backend/internal/exclusions"
 	"system-wrangler-backend/internal/exporters"
 	"system-wrangler-backend/internal/groups"
+	"system-wrangler-backend/internal/holds"
 	"system-wrangler-backend/internal/hostkeys"
 	"system-wrangler-backend/internal/openapi"
 	"system-wrangler-backend/internal/rbac"
@@ -130,6 +131,10 @@ func recordRoutes(t *testing.T) map[string]bool {
 	if err != nil {
 		t.Fatalf("exclusions store: %v", err)
 	}
+	holdsStore, err := holds.NewSQLiteStore(db)
+	if err != nil {
+		t.Fatalf("holds store: %v", err)
+	}
 	svc := auth.NewService(authStore, secret, false)
 	svc.Audit = auditStore
 	svc.DB = db
@@ -144,7 +149,7 @@ func recordRoutes(t *testing.T) map[string]bool {
 	}
 
 	rec := &recordingMux{patterns: map[string]bool{}}
-	populateMux(rec, db, invStore, groupStore, authStore, svc, secret, vault, hub, auditStore, rbacStore, credStore, hostKeyStore, updaterStore, exporterStore, settingsStore, exclusionStore, nil, nil)
+	populateMux(rec, db, invStore, groupStore, authStore, svc, secret, vault, hub, auditStore, rbacStore, credStore, hostKeyStore, updaterStore, exporterStore, settingsStore, exclusionStore, holdsStore, nil, nil)
 	return rec.patterns
 }
 

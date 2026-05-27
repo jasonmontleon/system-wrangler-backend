@@ -1059,6 +1059,211 @@ func TestApplyResolverErrorDegradesGracefully(t *testing.T) {
 	}
 }
 
+// withHoldBuiltin patches the registry's in-memory entry for the
+// given builtin to UsesHolds=true so the Apply path runs the hold
+// branches. Phase 2 will flip this flag in source for the seven
+// hold-based managers; until then tests opt in explicitly.
+func withHoldBuiltin(t *testing.T, r *Registry, id string) {
+	t.Helper()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	def, ok := r.builtins[id]
+	if !ok {
+		t.Fatalf("builtins map missing %q", id)
+	}
+	def.UsesHolds = true
+	r.builtins[id] = def
+}
+
+func TestApplyThreadsCurrentlyHeldVar(t *testing.T) {
+	f := newRunnerFixture(t)
+	withHoldBuiltin(t, f.registry, "builtin.apt")
+	var holdCall struct {
+		systemID, updaterID string
+		called              bool
+	}
+	f.runner.ResolveHolds = func(systemID, updaterID string) ([]string, error) {
+		holdCall.systemID, holdCall.updaterID, holdCall.called = systemID, updaterID, true
+		return []string{"existing", "stale"}, nil
+	}
+	f.runner.ResolveExclusions = func(string, string) ([]string, error) {
+		return []string{"existing", "newpin"}, nil
+	}
+	f.queue(ansible.Run{Status: ansible.RunSuccess, ExitCode: 0}, nil)
+	if _, err := f.runner.Apply(context.Background(), f.systemID, "builtin.apt", nil); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if !holdCall.called || holdCall.systemID != f.systemID || holdCall.updaterID != "builtin.apt" {
+		t.Errorf("ResolveHolds call = %+v", holdCall)
+	}
+	got, ok := f.ansible.calls[0].Vars["sw_currently_held"].([]string)
+	if !ok {
+		t.Fatalf("sw_currently_held = %v (type %T), want []string",
+			f.ansible.calls[0].Vars["sw_currently_held"],
+			f.ansible.calls[0].Vars["sw_currently_held"])
+	}
+	if len(got) != 2 || got[0] != "existing" || got[1] != "stale" {
+		t.Errorf("sw_currently_held = %v", got)
+	}
+}
+
+func TestApplyEmptyHoldsThreadsEmptyList(t *testing.T) {
+	// The playbook's Jinja diff fails on `is defined` checks, so the
+	// runner must thread an empty list (not omit the key) when there
+	// are no managed holds yet — first-ever apply on a host.
+	f := newRunnerFixture(t)
+	withHoldBuiltin(t, f.registry, "builtin.apt")
+	f.runner.ResolveHolds = func(string, string) ([]string, error) { return nil, nil }
+	f.queue(ansible.Run{Status: ansible.RunSuccess, ExitCode: 0}, nil)
+	if _, err := f.runner.Apply(context.Background(), f.systemID, "builtin.apt", nil); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	got, ok := f.ansible.calls[0].Vars["sw_currently_held"].([]string)
+	if !ok {
+		t.Fatalf("sw_currently_held missing or wrong type: %v", f.ansible.calls[0].Vars["sw_currently_held"])
+	}
+	if len(got) != 0 {
+		t.Errorf("sw_currently_held = %v, want []", got)
+	}
+}
+
+func TestApplyHoldsResolverErrorDegradesToEmpty(t *testing.T) {
+	f := newRunnerFixture(t)
+	withHoldBuiltin(t, f.registry, "builtin.apt")
+	f.runner.ResolveHolds = func(string, string) ([]string, error) {
+		return nil, errors.New("db down")
+	}
+	f.queue(ansible.Run{Status: ansible.RunSuccess, ExitCode: 0}, nil)
+	if _, err := f.runner.Apply(context.Background(), f.systemID, "builtin.apt", nil); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	got, ok := f.ansible.calls[0].Vars["sw_currently_held"].([]string)
+	if !ok {
+		t.Fatalf("sw_currently_held = %v, want empty []string", f.ansible.calls[0].Vars["sw_currently_held"])
+	}
+	if len(got) != 0 {
+		t.Errorf("sw_currently_held = %v on resolver error, want []", got)
+	}
+}
+
+func TestApplyHoldsSkippedForNonHoldUpdater(t *testing.T) {
+	// builtin.dnf is a v1 (per-invocation flag) manager — UsesHolds
+	// false. ResolveHolds must not fire, and the Var must be absent.
+	f := newRunnerFixture(t)
+	called := false
+	f.runner.ResolveHolds = func(string, string) ([]string, error) {
+		called = true
+		return []string{"x"}, nil
+	}
+	f.queue(ansible.Run{Status: ansible.RunSuccess, ExitCode: 0}, nil)
+	if _, err := f.runner.Apply(context.Background(), f.systemID, "builtin.dnf", nil); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if called {
+		t.Errorf("ResolveHolds fired for non-hold updater")
+	}
+	if _, set := f.ansible.calls[0].Vars["sw_currently_held"]; set {
+		t.Errorf("sw_currently_held set on non-hold updater")
+	}
+}
+
+func TestCheckDoesNotResolveHolds(t *testing.T) {
+	f := newRunnerFixture(t)
+	withHoldBuiltin(t, f.registry, "builtin.apt")
+	called := false
+	f.runner.ResolveHolds = func(string, string) ([]string, error) {
+		called = true
+		return nil, nil
+	}
+	f.queue(ansible.Run{Status: ansible.RunSuccess, ExitCode: 0}, nil)
+	if _, err := f.runner.Check(context.Background(), f.systemID, "builtin.apt"); err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+	if called {
+		t.Errorf("ResolveHolds called on Check; must apply only")
+	}
+}
+
+func TestApplyRecordsHoldsOnSuccess(t *testing.T) {
+	f := newRunnerFixture(t)
+	withHoldBuiltin(t, f.registry, "builtin.apt")
+	f.runner.ResolveHolds = func(string, string) ([]string, error) {
+		return []string{"a"}, nil
+	}
+	f.runner.ResolveExclusions = func(string, string) ([]string, error) {
+		return []string{"a", "b"}, nil
+	}
+	var recorded struct {
+		systemID, updaterID string
+		desired             []string
+	}
+	f.runner.RecordHolds = func(systemID, updaterID string, desired []string) error {
+		recorded.systemID, recorded.updaterID, recorded.desired = systemID, updaterID, desired
+		return nil
+	}
+	f.queue(ansible.Run{
+		Status:   ansible.RunSuccess,
+		ExitCode: 0,
+		Stdout: []byte(
+			`"msg": "SW_HOLDS_ADDED: 2"` + "\n" +
+				`"msg": "SW_HOLDS_REMOVED: 1"` + "\n" +
+				`"msg": "SW_HOLDS_DRIFT_REAPED: 3"` + "\n",
+		),
+	}, nil)
+	if _, err := f.runner.Apply(context.Background(), f.systemID, "builtin.apt", nil); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if recorded.systemID != f.systemID || recorded.updaterID != "builtin.apt" {
+		t.Errorf("RecordHolds called with %+v", recorded)
+	}
+	if len(recorded.desired) != 2 || recorded.desired[0] != "a" || recorded.desired[1] != "b" {
+		t.Errorf("desired = %v, want [a b]", recorded.desired)
+	}
+	completes := auditRowsWithAction(t, f.auditStore, "system.update.apply.complete")
+	if len(completes) != 1 {
+		t.Fatalf("complete rows = %d", len(completes))
+	}
+	d := completes[0].Detail
+	if got, _ := d["holds_added"].(float64); got != 2 {
+		t.Errorf("holds_added = %v, want 2", d["holds_added"])
+	}
+	if got, _ := d["holds_removed"].(float64); got != 1 {
+		t.Errorf("holds_removed = %v, want 1", d["holds_removed"])
+	}
+	if got, _ := d["holds_drift_reaped"].(float64); got != 3 {
+		t.Errorf("holds_drift_reaped = %v, want 3", d["holds_drift_reaped"])
+	}
+}
+
+func TestApplyRecordHoldsErrorIsNonFatal(t *testing.T) {
+	f := newRunnerFixture(t)
+	withHoldBuiltin(t, f.registry, "builtin.apt")
+	f.runner.RecordHolds = func(string, string, []string) error {
+		return errors.New("db down")
+	}
+	f.queue(ansible.Run{Status: ansible.RunSuccess, ExitCode: 0}, nil)
+	if _, err := f.runner.Apply(context.Background(), f.systemID, "builtin.apt", nil); err != nil {
+		t.Errorf("Apply must succeed even when RecordHolds errors: %v", err)
+	}
+}
+
+func TestApplyHoldsAuditAbsentForNonHoldUpdater(t *testing.T) {
+	f := newRunnerFixture(t)
+	f.queue(ansible.Run{Status: ansible.RunSuccess, ExitCode: 0}, nil)
+	if _, err := f.runner.Apply(context.Background(), f.systemID, "builtin.dnf", nil); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	completes := auditRowsWithAction(t, f.auditStore, "system.update.apply.complete")
+	if len(completes) != 1 {
+		t.Fatalf("complete rows = %d", len(completes))
+	}
+	for _, key := range []string{"holds_added", "holds_removed", "holds_drift_reaped"} {
+		if _, set := completes[0].Detail[key]; set {
+			t.Errorf("non-hold updater leaked %s into audit detail", key)
+		}
+	}
+}
+
 func TestApplyTargetedAddsAuditDetail(t *testing.T) {
 	f := newRunnerFixture(t)
 	f.queue(ansible.Run{Status: ansible.RunSuccess, ExitCode: 0}, nil)

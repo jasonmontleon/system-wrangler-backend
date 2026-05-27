@@ -25,6 +25,17 @@ const detectMarker = "SW_DETECTED:"
 // row's exit_code is the source of truth for success/failure.
 const affectedMarker = "SW_AFFECTED_COUNT:"
 
+// Hold-reconciliation markers emitted by hold-based-manager apply
+// playbooks (apt, brew, snap, flatpak, pkgin, xbps, scoop). Each is
+// optional — apply playbooks for v1 managers (dnf, pacman, zypper, …)
+// never emit them, in which case the runner records 0 for each into
+// audit detail.
+const (
+	holdsAddedMarker       = "SW_HOLDS_ADDED:"
+	holdsRemovedMarker     = "SW_HOLDS_REMOVED:"
+	holdsDriftReapedMarker = "SW_HOLDS_DRIFT_REAPED:"
+)
+
 // pendingPackageMarker is one line per pending package emitted by
 // check playbooks via a debug task. The payload format is
 // `<name>|<old>|<new>` — pipe-delimited so each marker carries the
@@ -378,17 +389,40 @@ func extractMarkerValue(s string) string {
 // parseable — callers stuff the result into audit detail and treat
 // "no marker" as "0 affected" rather than a runtime error.
 func parseAffectedCount(stdout []byte) int {
+	return parseFirstMarkerInt(stdout, affectedMarker)
+}
+
+// holdReconcileCounts is the playbook-reported summary of the
+// pre-apply hold reconciliation. Each integer is 0 when the marker is
+// absent — which is the correct value for both v1 managers (no hold
+// step exists) and hold-based managers whose reconcile resulted in no
+// changes for that direction.
+type holdReconcileCounts struct {
+	Added       int
+	Removed     int
+	DriftReaped int
+}
+
+// parseHoldCounts collects the three hold-reconcile markers in a
+// single stdout pass.
+func parseHoldCounts(stdout []byte) holdReconcileCounts {
+	return holdReconcileCounts{
+		Added:       parseFirstMarkerInt(stdout, holdsAddedMarker),
+		Removed:     parseFirstMarkerInt(stdout, holdsRemovedMarker),
+		DriftReaped: parseFirstMarkerInt(stdout, holdsDriftReapedMarker),
+	}
+}
+
+func parseFirstMarkerInt(stdout []byte, marker string) int {
 	scanner := bufio.NewScanner(bytes.NewReader(stdout))
 	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
 	for scanner.Scan() {
 		line := scanner.Text()
-		idx := strings.Index(line, affectedMarker)
+		idx := strings.Index(line, marker)
 		if idx < 0 {
 			continue
 		}
-		rest := strings.Trim(line[idx+len(affectedMarker):], " \t\r\n\",}")
-		// Take the leading integer; an ansible callback may append
-		// quote characters or trailing whitespace.
+		rest := strings.Trim(line[idx+len(marker):], " \t\r\n\",}")
 		var n int
 		for _, c := range rest {
 			if c < '0' || c > '9' {
