@@ -2868,6 +2868,18 @@ components:
             list response so SPAs can render chips + click-to-filter
             without an N+1 per-row fetch. Absent / empty when the system
             has no labels set.
+        rebootRequiredAt:
+          type: string
+          format: date-time
+          description: |
+            UTC timestamp of the most recent apply that emitted
+            `SW_REBOOT_REQUIRED: 1` — the host is known to need a
+            reboot to finish applying staged updates. Absent when no
+            apply has flagged the host, or when a subsequent
+            structurally-successful inspect/check/apply cleared the
+            hint. Independent of the steady-state `sw_reboot_required`
+            gauge the textfile collector pipeline emits on dnf +
+            Windows; the SPA may merge the two signals for display.
 
     Label:
       type: object

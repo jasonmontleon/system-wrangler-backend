@@ -47,6 +47,15 @@ const (
 // recent check.
 const pendingPackageMarker = "SW_PENDING_PACKAGE:"
 
+// rebootRequiredMarker is the one-shot signal an apply playbook
+// emits when it concludes the target host needs a reboot to finish
+// applying staged updates. Format: `SW_REBOOT_REQUIRED: 1` (or
+// `true`). Any other value — or absence of the marker — means "not
+// known to need a reboot" and the runner clears the persisted hint.
+// The exporter textfile collector pipeline (dnf + Windows) provides
+// the steady-state signal; this marker is the fast-path bridge.
+const rebootRequiredMarker = "SW_REBOOT_REQUIRED:"
+
 // osFamilyMarker / osDistributionMarker / virtualizationMarker are
 // the platform-detection markers the inspect playbook emits per host.
 // Format:
@@ -411,6 +420,30 @@ func parseHoldCounts(stdout []byte) holdReconcileCounts {
 		Removed:     parseFirstMarkerInt(stdout, holdsRemovedMarker),
 		DriftReaped: parseFirstMarkerInt(stdout, holdsDriftReapedMarker),
 	}
+}
+
+// parseRebootRequired returns true iff any SW_REBOOT_REQUIRED
+// marker in stdout carries a truthy payload (1 or true,
+// case-insensitive). 0, false, missing, or unparseable all return
+// false. Apply playbooks emit at most one such marker per run; we
+// scan all lines anyway so a chatty callback that repeats the line
+// can't accidentally hide the signal.
+func parseRebootRequired(stdout []byte) bool {
+	scanner := bufio.NewScanner(bytes.NewReader(stdout))
+	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+	for scanner.Scan() {
+		line := scanner.Text()
+		idx := strings.Index(line, rebootRequiredMarker)
+		if idx < 0 {
+			continue
+		}
+		rest := strings.Trim(line[idx+len(rebootRequiredMarker):], " \t\r\n\",}")
+		switch strings.ToLower(rest) {
+		case "1", "true", "yes":
+			return true
+		}
+	}
+	return false
 }
 
 func parseFirstMarkerInt(stdout []byte, marker string) int {

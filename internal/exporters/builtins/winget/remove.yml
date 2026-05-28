@@ -2,11 +2,36 @@
   hosts: all
   gather_facts: false
   become: false
+  vars:
+    sw_textfile_dir: 'C:\ProgramData\windows_exporter\textfile_collector'
+    sw_reboot_script: 'C:\ProgramData\windows_exporter\sw-reboot-required.ps1'
+    sw_reboot_task: 'sw-reboot-required'
   tasks:
     - name: Stop windows_exporter (tolerate not-running / not-installed)
       ansible.windows.win_service:
         name: windows_exporter
         state: stopped
+      failed_when: false
+
+    - name: Unregister sw-reboot-required scheduled task (tolerate absent)
+      ansible.windows.win_shell: |
+        $name = '{{ sw_reboot_task }}'
+        if (Get-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue) {
+          Unregister-ScheduledTask -TaskName $name -Confirm:$false
+          Write-Output "unregistered $name"
+        } else {
+          Write-Output "task already absent"
+        }
+      changed_when: false
+      failed_when: false
+
+    - name: Remove reboot-required collector script and metric file
+      ansible.windows.win_file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - "{{ sw_reboot_script }}"
+        - "{{ sw_textfile_dir }}\\sw_reboot_required.prom"
       failed_when: false
 
     - name: Uninstall Prometheus.WindowsExporter via winget

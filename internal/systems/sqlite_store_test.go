@@ -443,3 +443,43 @@ func TestSQLiteStoreSetPlatformInfoMissing(t *testing.T) {
 		t.Errorf("SetPlatformInfo on missing: err = %v, want ErrNotFound", err)
 	}
 }
+
+func TestSQLiteStoreRebootRequiredRoundTrip(t *testing.T) {
+	s := newTestSQLiteStore(t)
+	sys, err := s.Create(SystemInput{Name: "host", Hostname: "10.0.0.1"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	pre, err := s.Get(sys.ID)
+	if err != nil {
+		t.Fatalf("Get pre: %v", err)
+	}
+	if pre.RebootRequiredAt != nil {
+		t.Errorf("pre-set RebootRequiredAt = %v, want nil", *pre.RebootRequiredAt)
+	}
+	when := time.Date(2026, 5, 28, 14, 30, 0, 0, time.UTC)
+	if err := s.SetRebootRequired(sys.ID, when); err != nil {
+		t.Fatalf("SetRebootRequired: %v", err)
+	}
+	got, _ := s.Get(sys.ID)
+	if got.RebootRequiredAt == nil || !got.RebootRequiredAt.Equal(when) {
+		t.Errorf("after SetRebootRequired: %v, want %v", got.RebootRequiredAt, when)
+	}
+	if err := s.ClearRebootRequired(sys.ID); err != nil {
+		t.Fatalf("ClearRebootRequired: %v", err)
+	}
+	cleared, _ := s.Get(sys.ID)
+	if cleared.RebootRequiredAt != nil {
+		t.Errorf("after ClearRebootRequired = %v, want nil", *cleared.RebootRequiredAt)
+	}
+}
+
+func TestSQLiteStoreSetRebootRequiredMissing(t *testing.T) {
+	s := newTestSQLiteStore(t)
+	if err := s.SetRebootRequired("no-such-system", time.Unix(0, 0).UTC()); !errors.Is(err, ErrNotFound) {
+		t.Errorf("SetRebootRequired on missing: err = %v, want ErrNotFound", err)
+	}
+	if err := s.ClearRebootRequired("no-such-system"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("ClearRebootRequired on missing: err = %v, want ErrNotFound", err)
+	}
+}

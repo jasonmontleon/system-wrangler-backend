@@ -607,3 +607,5 @@ func (s *stubStore) SetPlatformTx(*sql.Tx, string, bool) error { return s.err }
 func (s *stubStore) SetPlatformInfo(string, string, string, string) error {
 	return s.err
 }
+func (s *stubStore) SetRebootRequired(string, time.Time) error { return s.err }
+func (s *stubStore) ClearRebootRequired(string) error          { return s.err }

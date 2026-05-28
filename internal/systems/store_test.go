@@ -268,3 +268,32 @@ func TestMemStoreSetPlatformInfoRoundTrip(t *testing.T) {
 		t.Errorf("missing: err = %v, want ErrNotFound", err)
 	}
 }
+
+func TestMemStoreRebootRequiredRoundTrip(t *testing.T) {
+	s := newTestStore()
+	sys, err := s.Create(SystemInput{Name: "host", Hostname: "10.0.0.1"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	when := time.Date(2026, 5, 28, 0, 0, 0, 0, time.UTC)
+	if err := s.SetRebootRequired(sys.ID, when); err != nil {
+		t.Fatalf("SetRebootRequired: %v", err)
+	}
+	got, _ := s.Get(sys.ID)
+	if got.RebootRequiredAt == nil || !got.RebootRequiredAt.Equal(when) {
+		t.Errorf("after Set: %v, want %v", got.RebootRequiredAt, when)
+	}
+	if err := s.ClearRebootRequired(sys.ID); err != nil {
+		t.Fatalf("ClearRebootRequired: %v", err)
+	}
+	got2, _ := s.Get(sys.ID)
+	if got2.RebootRequiredAt != nil {
+		t.Errorf("after Clear = %v, want nil", got2.RebootRequiredAt)
+	}
+	if err := s.SetRebootRequired("no-such", when); !errors.Is(err, ErrNotFound) {
+		t.Errorf("SetRebootRequired missing: err = %v, want ErrNotFound", err)
+	}
+	if err := s.ClearRebootRequired("no-such"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("ClearRebootRequired missing: err = %v, want ErrNotFound", err)
+	}
+}

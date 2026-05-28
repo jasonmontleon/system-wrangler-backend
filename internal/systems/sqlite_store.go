@@ -37,6 +37,9 @@ func NewSQLiteStore(db *sql.DB) (*SQLiteStore, error) {
 	if err := addPlatformInfoColumns(db); err != nil {
 		return nil, fmt.Errorf("systems: migrate platform info: %w", err)
 	}
+	if err := addRebootRequiredColumn(db); err != nil {
+		return nil, fmt.Errorf("systems: migrate reboot_required_at: %w", err)
+	}
 	return &SQLiteStore{db: db, NewID: newUUID, Now: time.Now}, nil
 }
 
@@ -59,7 +62,8 @@ CREATE TABLE IF NOT EXISTS hosts (
     is_windows  INTEGER NOT NULL DEFAULT 0,
     os_family       TEXT NOT NULL DEFAULT '',
     os_distribution TEXT NOT NULL DEFAULT '',
-    virtualization  TEXT NOT NULL DEFAULT ''
+    virtualization  TEXT NOT NULL DEFAULT '',
+    reboot_required_at INTEGER
 ) STRICT;
 
 CREATE INDEX IF NOT EXISTS hosts_created_at ON hosts(created_at, id);
@@ -127,6 +131,25 @@ func addPlatformInfoColumns(db *sql.DB) error {
 	return nil
 }
 
+// addRebootRequiredColumn brings older databases up to schema. The
+// column is nullable: NULL means "no SW-known reboot requirement,"
+// non-NULL is the epoch-ns timestamp of the apply run that flipped
+// the host into needs-reboot state. Cleared by the next clean
+// inspect/check/apply (no marker re-emit).
+func addRebootRequiredColumn(db *sql.DB) error {
+	row := db.QueryRow(`SELECT 1 FROM pragma_table_info('hosts') WHERE name = 'reboot_required_at'`)
+	var found int
+	switch err := row.Scan(&found); {
+	case err == nil:
+		return nil
+	case errors.Is(err, sql.ErrNoRows):
+		_, err := db.Exec(`ALTER TABLE hosts ADD COLUMN reboot_required_at INTEGER`)
+		return err
+	default:
+		return err
+	}
+}
+
 // Create persists a new System after running SystemInput.Validate.
 func (s *SQLiteStore) Create(in SystemInput) (System, error) {
 	return s.createWith(s.db, in)
@@ -173,7 +196,7 @@ func (s *SQLiteStore) createWith(e execer, in SystemInput) (System, error) {
 // Get returns the System with the given ID, or ErrNotFound.
 func (s *SQLiteStore) Get(id string) (System, error) {
 	row := s.db.QueryRow(
-		`SELECT id, name, hostname, created_at, status, last_seen, group_id, is_windows, os_family, os_distribution, virtualization FROM hosts WHERE id = ?`,
+		`SELECT id, name, hostname, created_at, status, last_seen, group_id, is_windows, os_family, os_distribution, virtualization, reboot_required_at FROM hosts WHERE id = ?`,
 		id,
 	)
 	h, err := scanHost(row)
@@ -187,7 +210,7 @@ func (s *SQLiteStore) Get(id string) (System, error) {
 // MemStore so handler behavior is identical regardless of backend.
 func (s *SQLiteStore) List() ([]System, error) {
 	rows, err := s.db.Query(
-		`SELECT id, name, hostname, created_at, status, last_seen, group_id, is_windows, os_family, os_distribution, virtualization FROM hosts ORDER BY created_at, id`,
+		`SELECT id, name, hostname, created_at, status, last_seen, group_id, is_windows, os_family, os_distribution, virtualization, reboot_required_at FROM hosts ORDER BY created_at, id`,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("systems: list: %w", err)
@@ -301,17 +324,19 @@ type rowScanner interface {
 
 func scanHost(r rowScanner) (System, error) {
 	var (
-		h         System
-		createdNs int64
-		lastSeen  sql.NullInt64
-		groupID   sql.NullString
-		status    string
-		isWindows int64
+		h          System
+		createdNs  int64
+		lastSeen   sql.NullInt64
+		groupID    sql.NullString
+		status     string
+		isWindows  int64
+		rebootAtNs sql.NullInt64
 	)
 	if err := r.Scan(
 		&h.ID, &h.Name, &h.Hostname, &createdNs, &status, &lastSeen,
 		&groupID, &isWindows,
 		&h.OSFamily, &h.OSDistribution, &h.Virtualization,
+		&rebootAtNs,
 	); err != nil {
 		return System{}, err
 	}
@@ -326,6 +351,10 @@ func scanHost(r rowScanner) (System, error) {
 		h.GroupID = &v
 	}
 	h.IsWindows = isWindows != 0
+	if rebootAtNs.Valid {
+		t := time.Unix(0, rebootAtNs.Int64).UTC()
+		h.RebootRequiredAt = &t
+	}
 	return h, nil
 }
 
@@ -360,6 +389,38 @@ func boolToInt(b bool) int {
 		return 1
 	}
 	return 0
+}
+
+// SetRebootRequired stamps reboot_required_at on the host so the SPA
+// can show a "reboot required" chip immediately after an apply
+// emitted the SW_REBOOT_REQUIRED marker, without waiting for the
+// next exporter scrape to land. Subsequent calls overwrite the
+// timestamp so the most recent triggering apply is the one
+// displayed.
+func (s *SQLiteStore) SetRebootRequired(systemID string, at time.Time) error {
+	res, err := s.db.Exec(`UPDATE hosts SET reboot_required_at = ? WHERE id = ?`, at.UTC().UnixNano(), systemID)
+	if err != nil {
+		return fmt.Errorf("systems: set reboot required: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// ClearRebootRequired nils reboot_required_at. Called when a
+// successful run completes without re-emitting the marker (the
+// natural "reboot happened and Check confirms no pending reboot"
+// path).
+func (s *SQLiteStore) ClearRebootRequired(systemID string) error {
+	res, err := s.db.Exec(`UPDATE hosts SET reboot_required_at = NULL WHERE id = ?`, systemID)
+	if err != nil {
+		return fmt.Errorf("systems: clear reboot required: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 // SetPlatformInfo persists the detected OS family, distribution, and

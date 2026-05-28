@@ -634,10 +634,12 @@ func populateMux(mux router.Mux, db *sql.DB, store systems.Store, groupStore gro
 			Notify: func(t string) {
 				hub.Broadcast(events.Event{Type: t})
 			},
-			SetPlatformInfo:   store.SetPlatformInfo,
-			ResolveExclusions: exclusionStore.ResolveForSystem,
-			ResolveHolds:      holdsStore.List,
-			RecordHolds:       holdsStore.Replace,
+			SetPlatformInfo:     store.SetPlatformInfo,
+			ResolveExclusions:   exclusionStore.ResolveForSystem,
+			ResolveHolds:        holdsStore.List,
+			RecordHolds:         holdsStore.Replace,
+			SetRebootRequired:   store.SetRebootRequired,
+			ClearRebootRequired: store.ClearRebootRequired,
 		}
 		updaterHandler := &updaters.Handler{
 			Runner:  updaterRunner,

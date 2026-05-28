@@ -547,6 +547,117 @@ func TestRunnerSilentOnLockConflict(t *testing.T) {
 	}
 }
 
+// TestRunnerRebootRequiredReconciliation pins the lifecycle of the
+// hosts.reboot_required_at hint across the three run kinds: an
+// apply that emits SW_REBOOT_REQUIRED:1 stamps it, an apply that
+// doesn't clears it, and a structurally-successful check or inspect
+// always clears regardless of emission. Transport failures (aErr !=
+// nil) leave prior state intact.
+func TestRunnerRebootRequiredReconciliation(t *testing.T) {
+	type call struct {
+		op string
+		id string
+	}
+	cases := []struct {
+		name     string
+		kind     RunKind
+		stdout   string
+		ansErr   error
+		runFunc  func(*runnerFixture) error
+		wantCall *call
+	}{
+		{
+			name:   "apply emits marker -> Set",
+			kind:   RunKindApply,
+			stdout: `ok: [h] => { "msg": "SW_REBOOT_REQUIRED: 1" }` + "\n",
+			runFunc: func(f *runnerFixture) error {
+				_, err := f.runner.Apply(context.Background(), f.systemID, "builtin.dnf", nil)
+				return err
+			},
+			wantCall: &call{op: "set"},
+		},
+		{
+			name:   "apply no marker -> Clear",
+			kind:   RunKindApply,
+			stdout: "",
+			runFunc: func(f *runnerFixture) error {
+				_, err := f.runner.Apply(context.Background(), f.systemID, "builtin.dnf", nil)
+				return err
+			},
+			wantCall: &call{op: "clear"},
+		},
+		{
+			name:   "check with marker (ignored) still Clears",
+			kind:   RunKindCheck,
+			stdout: `ok: [h] => { "msg": "SW_REBOOT_REQUIRED: 1" }` + "\n",
+			runFunc: func(f *runnerFixture) error {
+				_, err := f.runner.Check(context.Background(), f.systemID, "builtin.dnf")
+				return err
+			},
+			wantCall: &call{op: "clear"},
+		},
+		{
+			name:     "inspect always Clears",
+			kind:     RunKindInspect,
+			stdout:   "",
+			runFunc:  func(f *runnerFixture) error { _, err := f.runner.Inspect(context.Background(), f.systemID); return err },
+			wantCall: &call{op: "clear"},
+		},
+		{
+			name:   "apply ansible failure -> no call",
+			kind:   RunKindApply,
+			stdout: `ok: [h] => { "msg": "SW_REBOOT_REQUIRED: 1" }` + "\n",
+			ansErr: errors.New("transport"),
+			runFunc: func(f *runnerFixture) error {
+				_, err := f.runner.Apply(context.Background(), f.systemID, "builtin.dnf", nil)
+				return err
+			},
+			wantCall: nil,
+		},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newRunnerFixture(t)
+			var got *call
+			f.runner.SetRebootRequired = func(id string, _ time.Time) error {
+				got = &call{op: "set", id: id}
+				return nil
+			}
+			f.runner.ClearRebootRequired = func(id string) error {
+				got = &call{op: "clear", id: id}
+				return nil
+			}
+			f.queue(ansible.Run{Status: ansible.RunSuccess, ExitCode: 0, Stdout: []byte(tt.stdout)}, tt.ansErr)
+			_ = tt.runFunc(f)
+			switch {
+			case tt.wantCall == nil && got != nil:
+				t.Errorf("got call %+v, want none", *got)
+			case tt.wantCall != nil && got == nil:
+				t.Errorf("got no call, want %s", tt.wantCall.op)
+			case tt.wantCall != nil && got.op != tt.wantCall.op:
+				t.Errorf("op = %q, want %q", got.op, tt.wantCall.op)
+			}
+		})
+	}
+}
+
+// TestRunnerRebootRequiredCallbackError verifies a callback that
+// returns an error degrades to a warning instead of failing the
+// run. Hits the slog.Warn branches inside reconcileRebootRequired.
+func TestRunnerRebootRequiredCallbackError(t *testing.T) {
+	f := newRunnerFixture(t)
+	f.runner.SetRebootRequired = func(string, time.Time) error { return errors.New("boom-set") }
+	f.runner.ClearRebootRequired = func(string) error { return errors.New("boom-clear") }
+	f.queue(ansible.Run{Status: ansible.RunSuccess, ExitCode: 0, Stdout: []byte(`ok: [h] => { "msg": "SW_REBOOT_REQUIRED: 1" }` + "\n")}, nil)
+	if _, err := f.runner.Apply(context.Background(), f.systemID, "builtin.dnf", nil); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	f.queue(ansible.Run{Status: ansible.RunSuccess, ExitCode: 0, Stdout: nil}, nil)
+	if _, err := f.runner.Check(context.Background(), f.systemID, "builtin.dnf"); err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+}
+
 func TestCheckRejectsUnknownUpdater(t *testing.T) {
 	f := newRunnerFixture(t)
 	if _, err := f.runner.Check(context.Background(), f.systemID, "builtin.nope"); !errors.Is(err, ErrNotFound) {
@@ -734,6 +845,30 @@ func TestParseAffectedCount(t *testing.T) {
 		if got := parseAffectedCount([]byte(tt.in)); got != tt.want {
 			t.Errorf("parseAffectedCount(%q) = %d, want %d", tt.in, got, tt.want)
 		}
+	}
+}
+
+func TestParseRebootRequired(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want bool
+	}{
+		{name: "marker 1", in: `ok: [h] => { "msg": "SW_REBOOT_REQUIRED: 1" }` + "\n", want: true},
+		{name: "marker true", in: `ok: [h] => { "msg": "SW_REBOOT_REQUIRED: true" }` + "\n", want: true},
+		{name: "marker yes upper", in: `ok: [h] => { "msg": "SW_REBOOT_REQUIRED: YES" }` + "\n", want: true},
+		{name: "marker 0", in: `ok: [h] => { "msg": "SW_REBOOT_REQUIRED: 0" }` + "\n", want: false},
+		{name: "marker false", in: `ok: [h] => { "msg": "SW_REBOOT_REQUIRED: false" }` + "\n", want: false},
+		{name: "no marker", in: "unrelated stdout\n", want: false},
+		{name: "marker absent payload", in: `ok: [h] => { "msg": "SW_REBOOT_REQUIRED:" }` + "\n", want: false},
+		{name: "repeated lines, last 1 still wins", in: `ok: [h] => { "msg": "SW_REBOOT_REQUIRED: 0" }` + "\n" + `ok: [h] => { "msg": "SW_REBOOT_REQUIRED: 1" }` + "\n", want: true},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := parseRebootRequired([]byte(tt.in)); got != tt.want {
+				t.Errorf("parseRebootRequired = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }
 

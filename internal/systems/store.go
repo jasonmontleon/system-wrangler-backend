@@ -46,6 +46,13 @@ type Store interface {
 	// operator-set IsWindows flag is intentionally not touched here;
 	// platform intent and platform detection are independent.
 	SetPlatformInfo(systemID, osFamily, osDistribution, virtualization string) error
+	// SetRebootRequired records the timestamp of the apply that
+	// flipped the host into needs-reboot state.
+	SetRebootRequired(systemID string, at time.Time) error
+	// ClearRebootRequired nils the reboot-required timestamp. Called
+	// when a structurally-successful run completes without
+	// re-emitting the SW_REBOOT_REQUIRED marker.
+	ClearRebootRequired(systemID string) error
 }
 
 // MemStore is an in-memory Store. Safe for concurrent use. Data is lost on
@@ -208,6 +215,34 @@ func (s *MemStore) SetPlatformInfo(systemID, osFamily, osDistribution, virtualiz
 	h.OSFamily = osFamily
 	h.OSDistribution = osDistribution
 	h.Virtualization = virtualization
+	s.systems[systemID] = h
+	return nil
+}
+
+// SetRebootRequired stamps the reboot-required timestamp on the
+// system.
+func (s *MemStore) SetRebootRequired(systemID string, at time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	h, found := s.systems[systemID]
+	if !found {
+		return ErrNotFound
+	}
+	t := at.UTC()
+	h.RebootRequiredAt = &t
+	s.systems[systemID] = h
+	return nil
+}
+
+// ClearRebootRequired nils RebootRequiredAt.
+func (s *MemStore) ClearRebootRequired(systemID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	h, found := s.systems[systemID]
+	if !found {
+		return ErrNotFound
+	}
+	h.RebootRequiredAt = nil
 	s.systems[systemID] = h
 	return nil
 }

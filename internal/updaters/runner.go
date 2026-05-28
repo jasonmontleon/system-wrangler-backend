@@ -90,6 +90,14 @@ type Runner struct {
 	// finds the matching managed_holds row to undo. Errors are logged
 	// but non-fatal — the next successful Apply will reconcile.
 	RecordHolds func(systemID, updaterID string, desired []string) error
+	// SetRebootRequired / ClearRebootRequired persist the fast-path
+	// hint that a host needs a reboot to finish staged updates. Wired
+	// in main.go to systems.Store so this package doesn't import
+	// systems. Called after a structurally-successful apply that
+	// emits SW_REBOOT_REQUIRED: 1 / does not emit it, respectively.
+	// Errors are logged but non-fatal — the next clean run reconciles.
+	SetRebootRequired   func(systemID string, at time.Time) error
+	ClearRebootRequired func(systemID string) error
 }
 
 func (r *Runner) notify(eventType string) {
@@ -229,6 +237,10 @@ func (r *Runner) Inspect(ctx context.Context, systemID string) (InspectResult, e
 			slog.Warn("updaters: persist platform facts", "err", perr, "system_id", systemID)
 		}
 	}
+	// Inspect playbooks don't emit SW_REBOOT_REQUIRED, so a
+	// structurally-successful inspect always clears the hint — same
+	// auto-clear semantics as Check.
+	r.reconcileRebootRequired(RunKindInspect, systemID, aRun.Stdout, finishedAt)
 
 	// Reconcile system_updaters: every detected id gets an upsert,
 	// every previously-recorded id that is no longer detected gets
@@ -464,6 +476,14 @@ func (r *Runner) runUpdater(ctx context.Context, systemID, updaterID string, kin
 			slog.Warn("updaters: set pending packages", "err", err, "system_id", systemID, "updater_id", updaterID) //nolint:gosec
 		}
 	}
+	// Reboot-required reconciliation. Apply that emitted the marker
+	// flips the host into needs-reboot; any structurally-successful
+	// run (apply or check) that did NOT emit the marker clears the
+	// hint. A transport-level failure leaves prior state intact so
+	// we don't lose the signal because ansible itself crashed.
+	if aErr == nil {
+		r.reconcileRebootRequired(kind, systemID, aRun.Stdout, finishedAt)
+	}
 
 	if aErr != nil {
 		r.logComplete(ctx, completeAction, audit.Failure, systemID, runID, run.StartedAt, audit.Detail{
@@ -525,6 +545,29 @@ func (r *Runner) runUpdater(ctx context.Context, systemID, updaterID string, kin
 		ExitCode:      exit,
 		AffectedCount: affected,
 	}, nil
+}
+
+// reconcileRebootRequired applies the SW_REBOOT_REQUIRED marker
+// against the persisted hint. Apply that emits the marker sets the
+// hint; any structurally-successful run that does not emit it
+// clears the hint. Errors degrade to a warning — the next clean
+// run reconciles.
+func (r *Runner) reconcileRebootRequired(kind RunKind, systemID string, stdout []byte, at time.Time) {
+	if kind == RunKindApply && parseRebootRequired(stdout) {
+		if r.SetRebootRequired == nil {
+			return
+		}
+		if err := r.SetRebootRequired(systemID, at); err != nil {
+			slog.Warn("updaters: set reboot required", "err", err, "system_id", systemID) //nolint:gosec
+		}
+		return
+	}
+	if r.ClearRebootRequired == nil {
+		return
+	}
+	if err := r.ClearRebootRequired(systemID); err != nil {
+		slog.Warn("updaters: clear reboot required", "err", err, "system_id", systemID) //nolint:gosec
+	}
 }
 
 // trimHistory invokes the per-system retention trim using the

@@ -2,6 +2,10 @@
   hosts: all
   gather_facts: false
   become: false
+  vars:
+    sw_textfile_dir: 'C:\ProgramData\windows_exporter\textfile_collector'
+    sw_reboot_script: 'C:\ProgramData\windows_exporter\sw-reboot-required.ps1'
+    sw_reboot_task: 'sw-reboot-required'
   tasks:
     - name: Detect existing windows_exporter service
       ansible.windows.win_service:
@@ -26,6 +30,57 @@
         state: stopped
       failed_when: false
 
+    - name: Ensure textfile collector directory exists
+      ansible.windows.win_file:
+        path: "{{ sw_textfile_dir }}"
+        state: directory
+
+    - name: Drop reboot-required textfile collector script
+      ansible.windows.win_copy:
+        dest: "{{ sw_reboot_script }}"
+        content: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = 'Stop'
+          $out = '{{ sw_textfile_dir }}\sw_reboot_required.prom'
+          $tmp = "$out.tmp"
+          $needed = $false
+          if (Test-Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired') { $needed = $true }
+          if (Test-Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending') { $needed = $true }
+          $sm = Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager' -Name 'PendingFileRenameOperations' -ErrorAction SilentlyContinue
+          if ($sm -and $sm.PendingFileRenameOperations) { $needed = $true }
+          $uev = Get-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Updates' -Name 'UpdateExeVolatile' -ErrorAction SilentlyContinue
+          if ($uev -and ($uev.UpdateExeVolatile -ne 0)) { $needed = $true }
+          $val = if ($needed) { 1 } else { 0 }
+          $body = @(
+            '# HELP sw_reboot_required 1 if the host needs a reboot to apply staged updates.',
+            '# TYPE sw_reboot_required gauge',
+            "sw_reboot_required $val"
+          ) -join "`n"
+          [System.IO.File]::WriteAllText($tmp, $body + "`n", (New-Object System.Text.UTF8Encoding($false)))
+          Move-Item -Force -Path $tmp -Destination $out
+
+    - name: Register sw-reboot-required scheduled task (boot + 1 min cadence)
+      ansible.windows.win_shell: |
+        $taskName = '{{ sw_reboot_task }}'
+        $script = '{{ sw_reboot_script }}'
+        $action = New-ScheduledTaskAction -Execute 'powershell.exe' `
+          -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$script`""
+        $boot = New-ScheduledTaskTrigger -AtStartup
+        $boot.Delay = 'PT30S'
+        $repeat = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) `
+          -RepetitionInterval (New-TimeSpan -Minutes 1)
+        $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -RunLevel Highest -LogonType ServiceAccount
+        $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
+        Register-ScheduledTask -TaskName $taskName -Action $action `
+          -Trigger @($boot, $repeat) -Principal $principal -Settings $settings -Force | Out-Null
+        Start-ScheduledTask -TaskName $taskName
+      changed_when: true
+
+    - name: Run the reboot-required collector once so the metric exists immediately
+      ansible.windows.win_shell: |
+        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File '{{ sw_reboot_script }}'
+      changed_when: false
+
     - name: Override windows_exporter binPath to bind 127.0.0.1:9182 and enable extra collectors (via WMI)
       ansible.windows.win_shell: |
         $svc = Get-CimInstance -ClassName Win32_Service -Filter "Name='windows_exporter'"
@@ -35,7 +90,7 @@
           Write-Error "windows_exporter binary path not resolved (PathName=$($svc.PathName))"
           exit 1
         }
-        $newPath = '"' + $exe + '" --web.listen-address=127.0.0.1:9182 --collectors.enabled=[defaults],memory,tcp'
+        $newPath = '"' + $exe + '" --web.listen-address=127.0.0.1:9182 --collectors.enabled=[defaults],memory,tcp,textfile --collector.textfile.directory={{ sw_textfile_dir }}'
         $result = Invoke-CimMethod -InputObject $svc -MethodName Change -Arguments @{ PathName = $newPath }
         if ($result.ReturnValue -ne 0) {
           Write-Error "Win32_Service.Change failed: ReturnValue=$($result.ReturnValue)"

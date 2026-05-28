@@ -99,6 +99,15 @@ type System struct {
 	// self-sufficient (no N+1 fetch per row). Empty when no labels are
 	// set or the hook is not wired (tests).
 	Labels []labels.Label `json:"labels,omitempty"`
+	// RebootRequiredAt is the UTC timestamp of the most recent apply
+	// that emitted SW_REBOOT_REQUIRED:1 — nil when the host is not
+	// known to need a reboot. Cleared by the next inspect/check/apply
+	// that completes structurally-successful without re-emitting the
+	// marker. Independent of the steady-state sw_reboot_required
+	// metric the textfile collector pipeline provides on dnf and
+	// Windows; the SPA may merge the two signals for display but the
+	// column is the fast-path "we know right now" answer.
+	RebootRequiredAt *time.Time `json:"rebootRequiredAt,omitempty"`
 }
 
 // PendingPackage is the systems-package mirror of the updaters
