@@ -1,0 +1,29 @@
+# Trufflehog verifying secret scan. Complements the pre-commit
+# `gitleaks` hook by re-running every push and PR with --only-verified,
+# which tests detected credentials against their live APIs to cut down
+# the false-positive noise gitleaks ships with.
+
+name: trufflehog
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    name: Verified secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run trufflehog
+        uses: trufflesecurity/trufflehog@main
+        with:
+          path: ./
+          extra_args: --only-verified --fail
