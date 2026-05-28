@@ -22,7 +22,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Run trivy on the working tree
-        uses: aquasecurity/trivy-action@0.24.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: fs
           scan-ref: .
@@ -66,7 +66,7 @@ jobs:
             .
 
       - name: Run trivy on the built image
-        uses: aquasecurity/trivy-action@0.24.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: system-wrangler:ci
           format: table
