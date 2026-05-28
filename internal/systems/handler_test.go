@@ -444,6 +444,106 @@ func TestHandlerSetPlatform403Locked(t *testing.T) {
 	}
 }
 
+func TestHandlerBulkEvent(t *testing.T) {
+	type call struct {
+		action, selector string
+		ids              []string
+		skipped          []BulkSkipped
+	}
+	captured := &call{}
+	h := NewHandler(newTestStore())
+	h.BulkAudit = func(
+		_ context.Context,
+		action, selector string,
+		ids []string,
+		skipped []BulkSkipped,
+	) {
+		captured.action = action
+		captured.selector = selector
+		captured.ids = ids
+		captured.skipped = skipped
+	}
+	mux := http.NewServeMux()
+	h.Register(mux, nil)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	body := strings.NewReader(`{
+		"action": "check",
+		"selector": "env=prod",
+		"systemIds": ["a", "b"],
+		"skipped": [{"systemId": "c", "reason": "unreachable"}]
+	}`)
+	resp, err := http.Post(srv.URL+"/api/systems/bulk-event", "application/json", body) //nolint:noctx,gosec
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", resp.StatusCode)
+	}
+	if captured.action != "check" || captured.selector != "env=prod" {
+		t.Errorf("captured = %+v", captured)
+	}
+	if len(captured.ids) != 2 || len(captured.skipped) != 1 {
+		t.Errorf("captured ids/skipped = %+v", captured)
+	}
+}
+
+func TestHandlerBulkEvent_RejectsUnknownAction(t *testing.T) {
+	h := NewHandler(newTestStore())
+	mux := http.NewServeMux()
+	h.Register(mux, nil)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	resp, err := http.Post(srv.URL+"/api/systems/bulk-event", "application/json",
+		strings.NewReader(`{"action":"delete","systemIds":["a"]}`)) //nolint:noctx,gosec
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", resp.StatusCode)
+	}
+}
+
+func TestHandlerBulkEvent_RejectsEmptySystemIDs(t *testing.T) {
+	h := NewHandler(newTestStore())
+	mux := http.NewServeMux()
+	h.Register(mux, nil)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	resp, err := http.Post(srv.URL+"/api/systems/bulk-event", "application/json",
+		strings.NewReader(`{"action":"check","systemIds":[]}`)) //nolint:noctx,gosec
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", resp.StatusCode)
+	}
+}
+
+func TestHandlerBulkEvent_NoAuditHookStill204(t *testing.T) {
+	h := NewHandler(newTestStore())
+	mux := http.NewServeMux()
+	h.Register(mux, nil)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	resp, err := http.Post(srv.URL+"/api/systems/bulk-event", "application/json",
+		strings.NewReader(`{"action":"apply","systemIds":["a"]}`)) //nolint:noctx,gosec
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Errorf("status = %d, want 204", resp.StatusCode)
+	}
+}
+
 // Verifies internal errors from the store surface as 500. Uses a stub store
 // since MemStore can't be made to fail List/Get/Delete naturally.
 func TestHandlerStoreErrors(t *testing.T) {

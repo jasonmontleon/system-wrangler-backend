@@ -863,6 +863,49 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
 
+  /api/systems/bulk-event:
+    post:
+      tags: [systems]
+      summary: Record a bulk operate-on-selector intent in the audit log.
+      description: |
+        Writes one parent audit row capturing the operator's intent to
+        fan an action out across N systems. The actual updater runs
+        still happen through the per-system endpoints — this is the
+        record the audit reader uses to spot fleet-wide events without
+        scanning every child row. No RBAC gate beyond authentication;
+        each per-system action still enforces its own permissions.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [action, systemIds]
+              properties:
+                action:
+                  type: string
+                  enum: [check, apply]
+                selector:
+                  type: string
+                  description: Optional `?labels=` selector text that produced the target set.
+                systemIds:
+                  type: array
+                  items: { type: string }
+                  description: System IDs the SPA is about to fan against.
+                skipped:
+                  type: array
+                  description: Systems excluded client-side with the reason (no operator permission, marked unreachable, ...).
+                  items:
+                    type: object
+                    required: [systemId, reason]
+                    properties:
+                      systemId: { type: string }
+                      reason: { type: string }
+      responses:
+        "204": { description: Audit row written. }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
   /api/systems/{id}/platform:
     put:
       tags: [systems]

@@ -22,6 +22,26 @@ import (
 // edge here would cycle the audit test build).
 type AuditEmitter func(ctx context.Context, tx *sql.Tx, action string, sys System, detail map[string]any) error
 
+// BulkSkipped is one element of the optional `skipped` array on a
+// bulk-event request body — used so the audit row records hosts the
+// SPA did not POST against (no operator permission, marked
+// unreachable, etc.) alongside the ones it did.
+type BulkSkipped struct {
+	SystemID string `json:"systemId"`
+	Reason   string `json:"reason"`
+}
+
+// BulkAuditEmitter writes the single parent audit row for a bulk
+// action triggered from the SPA. main.go wires it against
+// audit.Store.Log; nil disables the audit write but leaves the
+// endpoint reachable (idempotent best-effort log).
+type BulkAuditEmitter func(
+	ctx context.Context,
+	action, selector string,
+	systemIDs []string,
+	skipped []BulkSkipped,
+)
+
 // Handler bundles the HTTP endpoints for systems.
 type Handler struct {
 	Store Store
@@ -77,6 +97,11 @@ type Handler struct {
 	// SystemStats: a failure is logged and rows go out without the
 	// Labels field rather than the handler 500'ing.
 	SystemLabels func(ids []string) (map[string][]labels.Label, error)
+	// BulkAudit, if non-nil, fires once per /api/systems/bulk-event
+	// call to record the operator's intent before the SPA fans out
+	// individual updater actions. Best-effort: a nil hook just
+	// short-circuits the audit write — the endpoint still 204s.
+	BulkAudit BulkAuditEmitter
 }
 
 // NewHandler constructs a Handler bound to the given Store. The optional
@@ -92,9 +117,46 @@ func (h *Handler) Register(mux router.Mux, mw func(http.Handler) http.Handler) {
 	}
 	mux.Handle("GET /api/systems", mw(http.HandlerFunc(h.list)))
 	mux.Handle("POST /api/systems", mw(http.HandlerFunc(h.create)))
+	mux.Handle("POST /api/systems/bulk-event", mw(http.HandlerFunc(h.bulkEvent)))
 	mux.Handle("GET /api/systems/{id}", mw(http.HandlerFunc(h.get)))
 	mux.Handle("DELETE /api/systems/{id}", mw(http.HandlerFunc(h.delete)))
 	mux.Handle("PUT /api/systems/{id}/platform", mw(http.HandlerFunc(h.setPlatform)))
+}
+
+// bulkEvent records the operator's intent to fan an action out across
+// a set of systems. The actual updater runs still flow through the
+// per-system endpoints; this row is the parent the audit reader uses
+// to recognise a fleet-wide event without scanning every child row.
+// No RBAC gate beyond authentication — the per-system endpoints
+// enforce who can actually operate each host.
+func (h *Handler) bulkEvent(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Action    string        `json:"action"`
+		Selector  string        `json:"selector"`
+		SystemIDs []string      `json:"systemIds"`
+		Skipped   []BulkSkipped `json:"skipped"`
+	}
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+	switch body.Action {
+	case "check", "apply":
+		// ok
+	default:
+		writeError(w, http.StatusBadRequest, "action must be one of: check, apply")
+		return
+	}
+	if len(body.SystemIDs) == 0 {
+		writeError(w, http.StatusBadRequest, "systemIds is required")
+		return
+	}
+	if h.BulkAudit != nil {
+		h.BulkAudit(r.Context(), body.Action, body.Selector, body.SystemIDs, body.Skipped)
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (h *Handler) list(w http.ResponseWriter, r *http.Request) {

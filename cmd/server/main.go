@@ -382,6 +382,39 @@ func populateMux(mux router.Mux, db *sql.DB, store systems.Store, groupStore gro
 	sysHandler.SystemLabels = func(ids []string) (map[string][]labels.Label, error) {
 		return labelStore.ForSystems(ids)
 	}
+	if auditStore != nil {
+		sysHandler.BulkAudit = func(
+			ctx context.Context,
+			action, selector string,
+			systemIDs []string,
+			skipped []systems.BulkSkipped,
+		) {
+			d := audit.NewDetail()
+			_ = d.SetSafe("system_count", len(systemIDs))
+			_ = d.SetSafe("system_ids", systemIDs)
+			if selector != "" {
+				_ = d.SetSafe("selector", selector)
+			}
+			if len(skipped) > 0 {
+				_ = d.SetSafe("skipped", skipped)
+				_ = d.SetSafe("skipped_count", len(skipped))
+			}
+			label := fmt.Sprintf("%d systems", len(systemIDs))
+			if selector != "" {
+				label = selector
+			}
+			err := auditStore.Log(ctx, audit.Event{
+				Action:      "systems.bulk." + action,
+				Outcome:     audit.Success,
+				TargetKind:  "systems.bulk",
+				TargetLabel: label,
+				Detail:      d,
+			})
+			if err != nil {
+				slog.Error("systems bulk audit log", "err", err, "action", action)
+			}
+		}
+	}
 	sysHandler.Register(mux, requireUser)
 	labelHandler := labels.NewHandler(labelStore)
 	labelHandler.Styles = labelStyleStore
