@@ -884,7 +884,7 @@ paths:
               properties:
                 action:
                   type: string
-                  enum: [check, apply]
+                  enum: [check, apply, label.set, label.delete]
                 selector:
                   type: string
                   description: Optional `?labels=` selector text that produced the target set.

@@ -143,10 +143,10 @@ func (h *Handler) bulkEvent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch body.Action {
-	case "check", "apply":
+	case "check", "apply", "label.set", "label.delete":
 		// ok
 	default:
-		writeError(w, http.StatusBadRequest, "action must be one of: check, apply")
+		writeError(w, http.StatusBadRequest, "action must be one of: check, apply, label.set, label.delete")
 		return
 	}
 	if len(body.SystemIDs) == 0 {
