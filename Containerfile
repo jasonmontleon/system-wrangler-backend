@@ -11,7 +11,7 @@ COPY --from=frontend . .
 RUN npm run build
 
 FROM quay.io/centos/centos:stream10 AS backend-build
-ARG GO_VERSION=1.25.0
+ARG GO_VERSION=1.25.10
 RUN dnf update -y \
  && dnf install -y --setopt=install_weak_deps=False tar gzip curl-minimal \
  && dnf clean all && rm -rf /var/cache/dnf \
