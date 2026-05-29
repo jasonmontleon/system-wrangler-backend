@@ -63,3 +63,47 @@ func TestSQLiteCascadeOnSystemDelete(t *testing.T) {
 		t.Errorf("after system delete got labels = %+v, want none", labels)
 	}
 }
+
+func TestLabelStoresClosedDBSurfacesErrors(t *testing.T) {
+	dsn := "file:" + filepath.Join(t.TempDir(), "labels-closed.db")
+	db, err := database.Open(dsn)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if _, err := systems.NewSQLiteStore(db); err != nil {
+		t.Fatalf("systems: %v", err)
+	}
+	ls, err := labels.NewSQLiteStore(db)
+	if err != nil {
+		t.Fatalf("labels: %v", err)
+	}
+	ss, err := labels.NewSQLiteStyleStore(db)
+	if err != nil {
+		t.Fatalf("styles: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	val := "v"
+	type call struct {
+		name string
+		fn   func() error
+	}
+	calls := []call{
+		{"Set", func() error { _, err := ls.Set("s", "k", &val, false); return err }},
+		{"Delete", func() error { return ls.Delete("s", "k") }},
+		{"ForSystem", func() error { _, err := ls.ForSystem("s"); return err }},
+		{"ForSystems", func() error { _, err := ls.ForSystems([]string{"s"}); return err }},
+		{"Summary", func() error { _, err := ls.Summary(); return err }},
+		{"Styles.All", func() error { _, err := ss.All(); return err }},
+		{"Styles.Set", func() error { return ss.Set("k", "blue") }},
+		{"Styles.Delete", func() error { return ss.Delete("k") }},
+	}
+	for _, c := range calls {
+		t.Run(c.name, func(t *testing.T) {
+			if err := c.fn(); err == nil {
+				t.Errorf("%s on closed DB returned nil error", c.name)
+			}
+		})
+	}
+}

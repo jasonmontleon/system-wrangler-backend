@@ -383,3 +383,30 @@ func TestUpsertValidationRejects(t *testing.T) {
 		})
 	}
 }
+
+func TestStoreClosedDBSurfacesErrors(t *testing.T) {
+	store, _, _, db := newStoreWithSiblings(t)
+	if err := db.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	type call struct {
+		name string
+		fn   func() error
+	}
+	calls := []call{
+		{"GetByScope", func() error { _, err := store.GetByScope(ScopeGlobal, ""); return err }},
+		{"List", func() error { _, err := store.List(); return err }},
+		{"Upsert", func() error {
+			_, err := store.Upsert(Slot{ScopeKind: ScopeGlobal, AnsibleUser: "u"})
+			return err
+		}},
+		{"Delete", func() error { return store.Delete(ScopeGlobal, "") }},
+	}
+	for _, c := range calls {
+		t.Run(c.name, func(t *testing.T) {
+			if err := c.fn(); err == nil {
+				t.Errorf("%s on closed DB returned nil error", c.name)
+			}
+		})
+	}
+}

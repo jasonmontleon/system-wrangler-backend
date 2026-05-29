@@ -554,3 +554,65 @@ func TestCascadeWipesOnHostDelete(t *testing.T) {
 		t.Errorf("lock survived host delete: %q", holder)
 	}
 }
+
+// TestSQLiteStoreClosedDBSurfacesErrors closes the underlying *sql.DB
+// and calls every public store method, asserting each returns a
+// non-nil error. Covers the db.Exec / db.Query failure branch per
+// method in one sweep.
+func TestSQLiteStoreClosedDBSurfacesErrors(t *testing.T) {
+	store, _, _, db := newStoreWithSiblings(t)
+	if err := db.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	type call struct {
+		name string
+		fn   func() error
+	}
+	calls := []call{
+		{"ListCustom", func() error { _, err := store.ListCustom(); return err }},
+		{"GetCustom", func() error { _, err := store.GetCustom("x"); return err }},
+		{"CreateCustom", func() error {
+			_, err := store.CreateCustom(Definition{
+				ID: "custom.x", Source: SourceCustom, DisplayName: "x",
+
+				CheckPlaybook: []byte("- hosts: all\n  tasks: []\n"),
+				ApplyPlaybook: []byte("- hosts: all\n  tasks: []\n"),
+			})
+			return err
+		}},
+		{"UpdateCustom", func() error {
+			_, err := store.UpdateCustom(Definition{
+				ID: "custom.x", Source: SourceCustom, DisplayName: "x",
+
+				CheckPlaybook: []byte("- hosts: all\n  tasks: []\n"),
+				ApplyPlaybook: []byte("- hosts: all\n  tasks: []\n"),
+			})
+			return err
+		}},
+		{"DeleteCustom", func() error { return store.DeleteCustom("custom.x", time.Now()) }},
+		{"UpsertAvailability", func() error { return store.UpsertAvailability("s", "u", time.Now()) }},
+		{"SetEnabled", func() error { return store.SetEnabled("s", "u", false) }},
+		{"RemoveAvailability", func() error { return store.RemoveAvailability("s", "u") }},
+		{"AvailabilityFor", func() error { _, err := store.AvailabilityFor("s"); return err }},
+		{"SetPendingPackages", func() error { return store.SetPendingPackages("s", "u", nil) }},
+		{"InsertRun", func() error {
+			return store.InsertRun(Run{
+				ID: "r", SystemID: "s", UpdaterID: "u", Kind: RunKindCheck, StartedAt: time.Now(),
+			})
+		}},
+		{"TrimRunsForSystem", func() error { return store.TrimRunsForSystem("s", 1) }},
+		{"FinishRun", func() error { return store.FinishRun("r", time.Now(), 0, 0, "") }},
+		{"SystemStatsAll", func() error { _, err := store.SystemStatsAll(); return err }},
+		{"ListRuns", func() error { _, err := store.ListRuns("s", 10); return err }},
+		{"AcquireLock", func() error { return store.AcquireLock("s", "r", time.Now()) }},
+		{"ReleaseLock", func() error { return store.ReleaseLock("s", "r") }},
+		{"ConflictingRun", func() error { _, err := store.ConflictingRun("s"); return err }},
+	}
+	for _, c := range calls {
+		t.Run(c.name, func(t *testing.T) {
+			if err := c.fn(); err == nil {
+				t.Errorf("%s on closed DB returned nil error", c.name)
+			}
+		})
+	}
+}

@@ -565,3 +565,43 @@ func TestSQLiteStoreSetRebootRequiredMissing(t *testing.T) {
 		t.Errorf("ClearRebootRequired on missing: err = %v, want ErrNotFound", err)
 	}
 }
+
+// TestSQLiteStoreClosedDBSurfacesErrors closes the DB then calls every
+// store method, asserting each returns a non-nil error. Bulk-covers
+// the db.Exec / db.Query failure branches across the whole API.
+func TestSQLiteStoreClosedDBSurfacesErrors(t *testing.T) {
+	s := newTestSQLiteStore(t)
+	if err := s.db.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	type call struct {
+		name string
+		fn   func() error
+	}
+	calls := []call{
+		{"Create", func() error { _, err := s.Create(SystemInput{Name: "x", Hostname: "y"}); return err }},
+		{"CreateTx-nil", func() error {
+			_, err := s.CreateTx(nil, SystemInput{Name: "x", Hostname: "y"})
+			return err
+		}},
+		{"Get", func() error { _, err := s.Get("x"); return err }},
+		{"List", func() error { _, err := s.List(); return err }},
+		{"Delete", func() error { return s.Delete("x") }},
+		{"DeleteTx-nil", func() error { return s.DeleteTx(nil, "x") }},
+		{"SetGroup", func() error { return s.SetGroup("x", nil) }},
+		{"ClearGroup", func() error { return s.ClearGroup("g") }},
+		{"UpdateProbe", func() error { return s.UpdateProbe("x", true, time.Now()) }},
+		{"SetPlatform", func() error { return s.SetPlatform("x", true) }},
+		{"SetPlatformTx-nil", func() error { return s.SetPlatformTx(nil, "x", true) }},
+		{"SetRebootRequired", func() error { return s.SetRebootRequired("x", time.Now()) }},
+		{"ClearRebootRequired", func() error { return s.ClearRebootRequired("x") }},
+		{"SetPlatformInfo", func() error { return s.SetPlatformInfo("x", "Linux", "Fedora", "") }},
+	}
+	for _, c := range calls {
+		t.Run(c.name, func(t *testing.T) {
+			if err := c.fn(); err == nil {
+				t.Errorf("%s on closed DB returned nil error", c.name)
+			}
+		})
+	}
+}
