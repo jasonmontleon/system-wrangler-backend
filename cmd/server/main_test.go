@@ -3,6 +3,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -477,5 +478,40 @@ func TestCSRFMiddlewareInProductionChain(t *testing.T) {
 	}
 	if got, _ := recs[0].Detail["reason"].(string); got != "origin_mismatch" {
 		t.Errorf("audit reason = %q, want origin_mismatch", got)
+	}
+}
+
+func TestTriggerProbeNonBlocking(t *testing.T) {
+	p := &systems.Probe{Trigger: make(chan struct{}, 1)}
+	fn := triggerProbe(p)
+	fn()
+	// Channel buffered to 1; first send fills it.
+	select {
+	case <-p.Trigger:
+	default:
+		t.Fatal("first triggerProbe call did not enqueue")
+	}
+	// Second call with full buffer must not block.
+	p.Trigger <- struct{}{}
+	fn()
+	select {
+	case <-p.Trigger:
+	default:
+		t.Fatal("trigger channel unexpectedly drained")
+	}
+}
+
+func TestHandleAPINotFound(t *testing.T) {
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/whatever", nil)
+	handleAPINotFound(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Errorf("code = %d", w.Code)
+	}
+	if got := w.Header().Get("Content-Type"); got != "application/json" {
+		t.Errorf("Content-Type = %q", got)
+	}
+	if !bytes.Contains(w.Body.Bytes(), []byte(`"error":"not found"`)) {
+		t.Errorf("body = %q", w.Body.Bytes())
 	}
 }

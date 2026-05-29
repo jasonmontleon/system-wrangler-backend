@@ -91,3 +91,30 @@ func TestHandlerTestConnectionNoRunner(t *testing.T) {
 		t.Errorf("status = %d, want 503", resp.StatusCode)
 	}
 }
+
+// failingSystems returns a non-NotFound error so handler hits the 500
+// lookup path. Distinct from the missing-system test above which hits 404.
+type failingSystems struct{}
+
+func (failingSystems) Get(string) (systems.System, error) {
+	return systems.System{}, errStub
+}
+
+var errStub = stubErr("db down")
+
+type stubErr string
+
+func (s stubErr) Error() string { return string(s) }
+
+func TestHandlerTestConnectionLookupError500(t *testing.T) {
+	h, srv, _ := newHandlerFixture(t)
+	h.Systems = failingSystems{}
+	resp, err := http.Post(srv.URL+"/api/systems/x/test-connection", "application/json", nil)
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", resp.StatusCode)
+	}
+}

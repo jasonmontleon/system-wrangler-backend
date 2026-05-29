@@ -6,13 +6,18 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"database/sql"
 	"errors"
 	"net"
+	"strings"
 	"testing"
+	"time"
 
 	"golang.org/x/crypto/ssh"
 
+	"system-wrangler-backend/internal/credentials"
 	"system-wrangler-backend/internal/hostkeys"
+	"system-wrangler-backend/internal/systems"
 )
 
 // TestAcceptedKeysCallbackPasses verifies the callback admits a key
@@ -77,6 +82,81 @@ func TestProxyDefaults(t *testing.T) {
 	if p.sshPort() != 22 {
 		t.Errorf("sshPort = %d, want 22", p.sshPort())
 	}
+}
+
+type stubSystems struct {
+	sys systems.System
+	err error
+}
+
+func (s stubSystems) Get(string) (systems.System, error) {
+	return s.sys, s.err
+}
+
+func (s stubSystems) List() ([]systems.System, error) { return nil, nil }
+func (s stubSystems) Create(systems.SystemInput) (systems.System, error) {
+	return systems.System{}, nil
+}
+func (s stubSystems) CreateTx(*sql.Tx, systems.SystemInput) (systems.System, error) {
+	return systems.System{}, nil
+}
+func (s stubSystems) Delete(string) error                                  { return nil }
+func (s stubSystems) DeleteTx(*sql.Tx, string) error                       { return nil }
+func (s stubSystems) UpdateProbe(string, bool, time.Time) error            { return nil }
+func (s stubSystems) SetGroup(string, *string) error                       { return nil }
+func (s stubSystems) ClearGroup(string) error                              { return nil }
+func (s stubSystems) SetPlatform(string, bool) error                       { return nil }
+func (s stubSystems) SetPlatformTx(*sql.Tx, string, bool) error            { return nil }
+func (s stubSystems) SetPlatformInfo(string, string, string, string) error { return nil }
+func (s stubSystems) SetRebootRequired(string, time.Time) error            { return nil }
+func (s stubSystems) ClearRebootRequired(string) error                     { return nil }
+
+type stubCreds struct {
+	slot credentials.Slot
+	err  error
+}
+
+func (s stubCreds) GetByScope(credentials.ScopeKind, string) (credentials.Slot, error) {
+	return s.slot, s.err
+}
+func (s stubCreds) Upsert(credentials.Slot) (credentials.Slot, error) {
+	return credentials.Slot{}, nil
+}
+func (s stubCreds) Delete(credentials.ScopeKind, string) error { return nil }
+func (s stubCreds) List() ([]credentials.Slot, error)          { return nil, nil }
+
+func TestFetchOverTunnelLookupSystemError(t *testing.T) {
+	p := &Proxy{Systems: stubSystems{err: errors.New("db down")}}
+	_, err := p.FetchOverTunnel(context.Background(), "x", "127.0.0.1", 9100, "/metrics")
+	if err == nil || !errContains(err, "lookup system") {
+		t.Errorf("err = %v, want lookup wrap", err)
+	}
+}
+
+func TestFetchOverTunnelNoCredentials(t *testing.T) {
+	p := &Proxy{
+		Systems:     stubSystems{sys: systems.System{ID: "x"}},
+		Credentials: stubCreds{err: credentials.ErrNotFound},
+	}
+	_, err := p.FetchOverTunnel(context.Background(), "x", "127.0.0.1", 9100, "/metrics")
+	if !errors.Is(err, ErrNoCredentials) {
+		t.Errorf("err = %v, want ErrNoCredentials", err)
+	}
+}
+
+func TestFetchOverTunnelCredentialsResolveError(t *testing.T) {
+	p := &Proxy{
+		Systems:     stubSystems{sys: systems.System{ID: "x"}},
+		Credentials: stubCreds{err: errors.New("scopes down")},
+	}
+	_, err := p.FetchOverTunnel(context.Background(), "x", "127.0.0.1", 9100, "/metrics")
+	if err == nil || !errContains(err, "resolve credentials") {
+		t.Errorf("err = %v, want resolve credentials wrap", err)
+	}
+}
+
+func errContains(err error, substr string) bool {
+	return err != nil && strings.Contains(err.Error(), substr)
 }
 
 func TestIsTimeout(t *testing.T) {

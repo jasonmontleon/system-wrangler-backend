@@ -17,6 +17,10 @@ const keepaliveInterval = 20 * time.Second
 // The connection terminates when the request context is cancelled
 // (browser disconnect or server shutdown).
 func SSEHandler(hub *Hub) http.Handler {
+	return sseHandler(hub, keepaliveInterval)
+}
+
+func sseHandler(hub *Hub, ka time.Duration) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		flusher, ok := w.(http.Flusher)
 		if !ok {
@@ -35,7 +39,7 @@ func SSEHandler(hub *Hub) http.Handler {
 		sub := hub.Subscribe()
 		defer hub.Unsubscribe(sub)
 
-		keepalive := time.NewTicker(keepaliveInterval)
+		keepalive := time.NewTicker(ka)
 		defer keepalive.Stop()
 
 		ctx := r.Context()
