@@ -470,6 +470,7 @@ func (s *Service) issueChallengeCookie(w http.ResponseWriter, userID string) err
 	if err != nil {
 		return err
 	}
+	//nolint:gosec // G124: Secure is set from s.SecureCookie (runtime TLS config); gosec only recognises a literal true.
 	http.SetCookie(w, &http.Cookie{
 		Name:     TOTPChallengeCookie,
 		Value:    tok,
@@ -487,6 +488,7 @@ func (s *Service) issueChallengeCookie(w http.ResponseWriter, userID string) err
 // failed verify so a poisoned cookie can't wedge the user, and on success
 // once the real session cookie has been issued.
 func (s *Service) clearChallengeCookie(w http.ResponseWriter) {
+	//nolint:gosec // G124: Secure is set from s.SecureCookie (runtime TLS config); gosec only recognises a literal true.
 	http.SetCookie(w, &http.Cookie{
 		Name:     TOTPChallengeCookie,
 		Value:    "",

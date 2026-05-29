@@ -262,7 +262,7 @@ func TestRequireUserAllowsValidCookie(t *testing.T) {
 	mw := RequireUser(testSecret, store, func() time.Time { return now })
 
 	req := httptest.NewRequest(http.MethodGet, "/protected", nil)
-	req.AddCookie(&http.Cookie{Name: CookieName, Value: tok})
+	req.AddCookie(&http.Cookie{Name: CookieName, Value: tok}) //nolint:gosec // G124: test cookie sent in a request; server-side attributes don't apply.
 	w := httptest.NewRecorder()
 	mw(next).ServeHTTP(w, req)
 
@@ -296,7 +296,7 @@ func TestRequireUserRejectsExpired(t *testing.T) {
 
 	mw := RequireUser(testSecret, store, func() time.Time { return now })
 	req := httptest.NewRequest(http.MethodGet, "/x", nil)
-	req.AddCookie(&http.Cookie{Name: CookieName, Value: tok})
+	req.AddCookie(&http.Cookie{Name: CookieName, Value: tok}) //nolint:gosec // G124: test cookie sent in a request; server-side attributes don't apply.
 	w := httptest.NewRecorder()
 	mw(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		t.Error("inner handler called")
@@ -314,7 +314,7 @@ func TestRequireUserRejectsDeletedUser(t *testing.T) {
 
 	mw := RequireUser(testSecret, store, func() time.Time { return now })
 	req := httptest.NewRequest(http.MethodGet, "/x", nil)
-	req.AddCookie(&http.Cookie{Name: CookieName, Value: tok})
+	req.AddCookie(&http.Cookie{Name: CookieName, Value: tok}) //nolint:gosec // G124: test cookie sent in a request; server-side attributes don't apply.
 	w := httptest.NewRecorder()
 	mw(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		t.Error("inner handler called")
@@ -335,7 +335,7 @@ func TestRequireUserStoreError(t *testing.T) {
 
 	mw := RequireUser(testSecret, store, func() time.Time { return now })
 	req := httptest.NewRequest(http.MethodGet, "/x", nil)
-	req.AddCookie(&http.Cookie{Name: CookieName, Value: tok})
+	req.AddCookie(&http.Cookie{Name: CookieName, Value: tok}) //nolint:gosec // G124: test cookie sent in a request; server-side attributes don't apply.
 	w := httptest.NewRecorder()
 	mw(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		t.Error("inner handler called")
