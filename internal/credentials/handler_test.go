@@ -620,6 +620,101 @@ func TestPutUserSuppliedRequiresPEM(t *testing.T) {
 	}
 }
 
+type failingStore struct{ err error }
+
+func (f failingStore) GetByScope(ScopeKind, string) (Slot, error) { return Slot{}, f.err }
+func (f failingStore) List() ([]Slot, error)                      { return nil, f.err }
+func (f failingStore) Upsert(Slot) (Slot, error)                  { return Slot{}, f.err }
+func (f failingStore) Delete(ScopeKind, string) error             { return f.err }
+
+func TestListStoreError500(t *testing.T) {
+	f := newFixture(t)
+	h := &Handler{
+		Store:           failingStore{err: errStub("db down")},
+		Vault:           f.vault,
+		Systems:         f.systems,
+		Groups:          f.groups,
+		Audit:           f.audit,
+		CanManageGlobal: func(context.Context) bool { return true },
+	}
+	mux := http.NewServeMux()
+	h.Register(mux, nil)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	resp, _ := http.Get(srv.URL + "/api/admin/ansible-credentials")
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", resp.StatusCode)
+	}
+}
+
+func TestGetGlobalStoreError500(t *testing.T) {
+	f := newFixture(t)
+	h := &Handler{
+		Store:           failingStore{err: errStub("db down")},
+		Vault:           f.vault,
+		Systems:         f.systems,
+		Groups:          f.groups,
+		Audit:           f.audit,
+		CanManageGlobal: func(context.Context) bool { return true },
+	}
+	mux := http.NewServeMux()
+	h.Register(mux, nil)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	resp, _ := http.Get(srv.URL + "/api/admin/ansible-credentials/global")
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", resp.StatusCode)
+	}
+}
+
+func TestPutGlobalUpsertError500(t *testing.T) {
+	f := newFixture(t)
+	h := &Handler{
+		Store:           failingStore{err: errStub("upsert down")},
+		Vault:           f.vault,
+		Systems:         f.systems,
+		Groups:          f.groups,
+		Audit:           f.audit,
+		CanManageGlobal: func(context.Context) bool { return true },
+	}
+	mux := http.NewServeMux()
+	h.Register(mux, nil)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	req, _ := http.NewRequest(http.MethodPut, srv.URL+"/api/admin/ansible-credentials/global",
+		strings.NewReader(`{"ansibleUser":"x"}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp, _ := http.DefaultClient.Do(req)
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", resp.StatusCode)
+	}
+}
+
+func TestDeleteGlobalStoreError500(t *testing.T) {
+	f := newFixture(t)
+	h := &Handler{
+		Store:           failingStore{err: errStub("delete down")},
+		Vault:           f.vault,
+		Systems:         f.systems,
+		Groups:          f.groups,
+		Audit:           f.audit,
+		CanManageGlobal: func(context.Context) bool { return true },
+	}
+	mux := http.NewServeMux()
+	h.Register(mux, nil)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/api/admin/ansible-credentials/global", nil)
+	resp, _ := http.DefaultClient.Do(req)
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", resp.StatusCode)
+	}
+}
+
 type failingGroups struct{ err error }
 
 func (f failingGroups) Get(string) (groups.Group, error) {

@@ -520,6 +520,48 @@ func (erroringStore) ResolveEffectiveForSystem(string, string) ([]Exclusion, err
 	return nil, errStoreBoom
 }
 
+func TestHandlerDeleteWithGuardStoreError500(t *testing.T) {
+	f := newHandlerFixture(t)
+	resp := f.do(t, http.MethodDelete, "/api/admin/package-exclusions/x", "")
+	defer func() { _ = resp.Body.Close() }()
+	// Real store will return ErrNotFound; rebuild handler with erroringStore.
+	h := &Handler{
+		Store:           erroringStore{},
+		CanManageGlobal: func(context.Context) bool { return true },
+	}
+	mux := http.NewServeMux()
+	h.Register(mux, func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ctx := audit.WithActor(r.Context(), audit.Actor{Kind: audit.ActorUser, ID: "u", Label: "u"})
+			next.ServeHTTP(w, r.WithContext(ctx))
+		})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/api/admin/package-exclusions/x", nil)
+	resp2, _ := http.DefaultClient.Do(req)
+	defer func() { _ = resp2.Body.Close() }()
+	if resp2.StatusCode != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", resp2.StatusCode)
+	}
+}
+
+func TestHandlerListSystemForbidden(t *testing.T) {
+	h := &Handler{
+		Store:         noopStore{},
+		CanReadSystem: func(context.Context, string) bool { return false },
+	}
+	mux := http.NewServeMux()
+	h.Register(mux, nil)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	resp, _ := http.Get(srv.URL + "/api/systems/s/package-exclusions")
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", resp.StatusCode)
+	}
+}
+
 func TestHandlerDeleteGlobalForbiddenWithoutManage(t *testing.T) {
 	f := newHandlerFixture(t)
 	// Plant a row first as global admin would.
