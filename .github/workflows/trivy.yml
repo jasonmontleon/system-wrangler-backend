@@ -2,6 +2,12 @@
 # Runs on push to main and on every pull request. Works on both GitHub
 # Actions and Gitea Actions; Gitea reads workflows from .github/workflows/
 # as well as .gitea/workflows/.
+#
+# The official aquasecurity/trivy-action does its own actions/checkout of
+# the upstream trivy repo on github.com to fetch an install script, which
+# fails on Gitea runners that have no github.com credentials. To stay
+# portable we install the trivy binary ourselves and invoke it directly,
+# matching the trufflehog.yml approach.
 
 name: trivy
 
@@ -21,18 +27,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install trivy
+        run: |
+          mkdir -p "$HOME/bin"
+          curl -sSfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
+            | sh -s -- -b "$HOME/bin"
+          "$HOME/bin/trivy" --version
+
       - name: Run trivy on the working tree
-        uses: aquasecurity/trivy-action@v0.36.0
-        with:
-          scan-type: fs
-          scan-ref: .
-          format: table
-          severity: HIGH,CRITICAL
-          ignore-unfixed: true
-          exit-code: '1'
-          # Skip Trivy DB cache between runs so we always pick up the
-          # latest CVE feed. Comment out if cache misses become slow.
-          skip-dirs: web/dist
+        run: |
+          "$HOME/bin/trivy" fs . \
+            --severity HIGH,CRITICAL \
+            --ignore-unfixed \
+            --exit-code 1 \
+            --skip-dirs web/dist
 
   image-scan:
     name: Container image scan
@@ -53,8 +61,12 @@ jobs:
           ref: main
           token: ${{ secrets.FRONTEND_TOKEN }}
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      - name: Install trivy
+        run: |
+          mkdir -p "$HOME/bin"
+          curl -sSfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
+            | sh -s -- -b "$HOME/bin"
+          "$HOME/bin/trivy" --version
 
       - name: Build container image
         run: |
@@ -66,11 +78,9 @@ jobs:
             .
 
       - name: Run trivy on the built image
-        uses: aquasecurity/trivy-action@v0.36.0
-        with:
-          image-ref: system-wrangler:ci
-          format: table
-          severity: HIGH,CRITICAL
-          ignore-unfixed: true
-          exit-code: '1'
-          vuln-type: os,library
+        run: |
+          "$HOME/bin/trivy" image system-wrangler:ci \
+            --severity HIGH,CRITICAL \
+            --ignore-unfixed \
+            --exit-code 1 \
+            --vuln-type os,library
