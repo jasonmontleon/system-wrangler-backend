@@ -1,0 +1,49 @@
+# Whole-repo statement coverage gate. Runs `go test ./... -cover` with
+# a coverprofile and fails if the total statement coverage drops below
+# the threshold. The threshold lives inline so it can be ratcheted up
+# as coverage improves without code changes.
+#
+# Go's coverprofile is statement-based (line-based coverage isn't a
+# first-class concept the way it is for v8). `go tool cover -func` ends
+# with a `total:` row whose percentage is what we read.
+
+name: coverage
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  THRESHOLD: '90'
+
+jobs:
+  gate:
+    name: 90% statement coverage gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run tests with coverage
+        run: go test ./... -coverprofile=cover.out
+
+      - name: Enforce ≥${{ env.THRESHOLD }}% statement coverage
+        run: |
+          set -euo pipefail
+          pct=$(go tool cover -func=cover.out | awk '/^total:/ {sub("%","",$3); print $3}')
+          echo "statement coverage: ${pct}%, threshold: ${THRESHOLD}%"
+          ok=$(awk -v p="$pct" -v t="$THRESHOLD" 'BEGIN { print (p+0 >= t+0) ? "true" : "false" }')
+          if [ "$ok" != "true" ]; then
+            echo "::error::Whole-repo statement coverage ${pct}% is below the ${THRESHOLD}% gate." >&2
+            exit 1
+          fi
