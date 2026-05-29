@@ -633,6 +633,33 @@ func TestRunNowAndNewIDDefaults(t *testing.T) {
 	}
 }
 
+func TestRunWithOmitAuditSkipsCompletionAudit(t *testing.T) {
+	f := newFixture(t)
+	f.seedCredentials()
+	f.seedAcceptedHostKey()
+	f.exec.queue(AnsibleAdHocBinary, fakeResp{
+		stdout: `host | SUCCESS => {}`,
+		exit:   0,
+	})
+	_, err := f.runner.Run(context.Background(), Request{
+		SystemID:     f.system.ID,
+		PlaybookPath: f.playbookPath,
+		OmitAudit:    true,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	// With OmitAudit, the runner skips logStart and logComplete; no
+	// auth.* audit rows should land beyond the seeded credential write.
+	rows, _, err := f.audit.ListQuery(audit.Query{Action: "ansible.run.complete", Limit: 5})
+	if err != nil {
+		t.Fatalf("audit list: %v", err)
+	}
+	if len(rows) != 0 {
+		t.Errorf("found %d ansible.run.complete rows under OmitAudit; want 0", len(rows))
+	}
+}
+
 func TestPingRefusesUnwiredRunner(t *testing.T) {
 	r := &Runner{}
 	_, err := r.Ping(context.Background(), "x")
