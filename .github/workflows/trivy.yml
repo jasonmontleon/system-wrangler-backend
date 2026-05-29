@@ -86,3 +86,28 @@ jobs:
             --ignore-unfixed \
             --exit-code 1 \
             --vuln-type os,library
+
+      # Multi-stage builds discard intermediate stages from the final
+      # image, so the final-image scan above doesn't see the npm-build
+      # environment (CentOS base + nodejs + npm + node_modules). Build
+      # the frontend-build stage as its own image and scan it too — that
+      # surfaces build-time supply-chain risks (base-image CVEs, a
+      # compromised node package, etc.) that the runtime scan misses.
+      - name: Build frontend-build stage
+        run: |
+          docker buildx build \
+            --build-context frontend=_frontend \
+            --target frontend-build \
+            --tag system-wrangler-frontend-build:ci \
+            --load \
+            --file Containerfile \
+            .
+
+      - name: Run trivy on the frontend-build stage
+        run: |
+          "$HOME/bin/trivy" image system-wrangler-frontend-build:ci \
+            --scanners vuln,secret \
+            --severity HIGH,CRITICAL \
+            --ignore-unfixed \
+            --exit-code 1 \
+            --vuln-type os,library
