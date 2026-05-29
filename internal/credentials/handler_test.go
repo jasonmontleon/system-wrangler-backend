@@ -620,6 +620,104 @@ func TestPutUserSuppliedRequiresPEM(t *testing.T) {
 	}
 }
 
+type failingGroups struct{ err error }
+
+func (f failingGroups) Get(string) (groups.Group, error) {
+	return groups.Group{}, f.err
+}
+
+type failingSystems struct{ err error }
+
+func (f failingSystems) Get(string) (systems.System, error) {
+	return systems.System{}, f.err
+}
+
+func newHandlerWith(t *testing.T, sys SystemLookup, grp GroupLookup) (*Handler, *httptest.Server) {
+	t.Helper()
+	f := newFixture(t)
+	h := &Handler{
+		Store:           f.store,
+		Vault:           f.vault,
+		Systems:         sys,
+		Groups:          grp,
+		Audit:           f.audit,
+		CanManageGlobal: func(context.Context) bool { return true },
+		CanManageGroup:  func(context.Context, string) bool { return true },
+		CanManageSystem: func(context.Context, systems.System) bool { return true },
+		CanReadSystem:   func(context.Context, systems.System) bool { return true },
+	}
+	mux := http.NewServeMux()
+	h.Register(mux, nil)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return h, srv
+}
+
+func TestGetGroupLookupError500(t *testing.T) {
+	_, srv := newHandlerWith(t, nil, failingGroups{err: errStub("db down")})
+	resp, _ := http.Get(srv.URL + "/api/groups/g/ansible-credential")
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", resp.StatusCode)
+	}
+}
+
+func TestPutGroupLookupError500(t *testing.T) {
+	_, srv := newHandlerWith(t, nil, failingGroups{err: errStub("db down")})
+	req, _ := http.NewRequest(http.MethodPut, srv.URL+"/api/groups/g/ansible-credential",
+		strings.NewReader(`{"ansibleUser":"x"}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp, _ := http.DefaultClient.Do(req)
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", resp.StatusCode)
+	}
+}
+
+func TestGetSystemLookupError500(t *testing.T) {
+	_, srv := newHandlerWith(t, failingSystems{err: errStub("db down")}, nil)
+	resp, _ := http.Get(srv.URL + "/api/systems/s/ansible-credential")
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", resp.StatusCode)
+	}
+}
+
+func TestPutSystemLookupError500(t *testing.T) {
+	_, srv := newHandlerWith(t, failingSystems{err: errStub("db down")}, nil)
+	req, _ := http.NewRequest(http.MethodPut, srv.URL+"/api/systems/s/ansible-credential",
+		strings.NewReader(`{"ansibleUser":"x"}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp, _ := http.DefaultClient.Do(req)
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", resp.StatusCode)
+	}
+}
+
+func TestDeleteSystemLookupError500(t *testing.T) {
+	_, srv := newHandlerWith(t, failingSystems{err: errStub("db down")}, nil)
+	req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/api/systems/s/ansible-credential", nil)
+	resp, _ := http.DefaultClient.Do(req)
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", resp.StatusCode)
+	}
+}
+
+func TestEffectiveLookupError500(t *testing.T) {
+	_, srv := newHandlerWith(t, failingSystems{err: errStub("db down")}, nil)
+	resp, _ := http.Get(srv.URL + "/api/systems/s/effective-credential")
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", resp.StatusCode)
+	}
+}
+
+type errStub string
+
+func (e errStub) Error() string { return string(e) }
+
 func TestGetGroupMissingGroup(t *testing.T) {
 	f := newFixture(t)
 	resp := f.do(t, http.MethodGet, "/api/groups/ghost/ansible-credential", nil)

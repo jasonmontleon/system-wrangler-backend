@@ -202,6 +202,54 @@ func TestSystemsReachableAfterSetup(t *testing.T) {
 	}
 }
 
+// TestPopulatedEndpointsRespondAfterSetup hits the variety of wired
+// endpoints so populateMux's per-handler closures (VisibleSystem,
+// CanCreate, scope gates, stats injectors) get exercised. Each
+// request just needs to reach the handler and return any 2xx/3xx/4xx
+// — we're proving wiring, not behavior.
+func TestPopulatedEndpointsRespondAfterSetup(t *testing.T) {
+	srv := httptest.NewServer(withLogging(newTestMux(t)))
+	defer srv.Close()
+
+	jar, _ := cookiejar.New(nil)
+	client := &http.Client{Jar: jar}
+	resp, err := client.Post(srv.URL+"/api/auth/setup", "application/json",
+		strings.NewReader(`{"username":"admin","password":"correctpassword"}`))
+	if err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	_ = resp.Body.Close()
+
+	endpoints := []string{
+		"/api/groups",
+		"/api/admin/users",
+		"/api/admin/settings",
+		"/api/admin/ansible-credentials",
+		"/api/admin/ansible-credentials/global",
+		"/api/admin/exporter-definitions",
+		"/api/admin/package-exclusions",
+		"/api/admin/updater-definitions",
+		"/api/admin/audit",
+		"/api/admin/role-assignments",
+		"/api/admin/secrets/undecryptable",
+		"/api/labels",
+		"/api/label-styles",
+		"/api/auth/status",
+		"/api/auth/devices",
+		"/api/docs",
+	}
+	for _, p := range endpoints {
+		r, err := client.Get(srv.URL + p)
+		if err != nil {
+			t.Errorf("GET %s: %v", p, err)
+			continue
+		}
+		// Drain + close. Status doesn't matter — we only care that the
+		// route is wired and the handler responds.
+		_ = r.Body.Close()
+	}
+}
+
 func TestUnknownAPIReturnsJSON404(t *testing.T) {
 	srv := httptest.NewServer(withLogging(newTestMux(t)))
 	defer srv.Close()
