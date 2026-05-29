@@ -272,6 +272,58 @@ func TestConflictWhenLockHeld(t *testing.T) {
 	}
 }
 
+// failOnStore wraps a real Store and fails on the specified method.
+type failOnStore struct {
+	Store
+	method string
+	err    error
+}
+
+func (f *failOnStore) InsertRun(r Run) error {
+	if f.method == "InsertRun" {
+		return f.err
+	}
+	return f.Store.InsertRun(r)
+}
+
+func (f *failOnStore) UpsertSystemExporter(row SystemExporter) error {
+	if f.method == "UpsertSystemExporter" {
+		return f.err
+	}
+	return f.Store.UpsertSystemExporter(row)
+}
+
+func (f *failOnStore) FinishRun(id string, finishedAt time.Time, exit int, logTail string) error {
+	if f.method == "FinishRun" {
+		return f.err
+	}
+	return f.Store.FinishRun(id, finishedAt, exit, logTail)
+}
+
+func TestInstallInsertRunErrorReturns(t *testing.T) {
+	f := newRunnerFixture(t)
+	f.runner.Store = &failOnStore{Store: f.store, method: "InsertRun", err: errors.New("insert boom")}
+	_, err := f.runner.Install(context.Background(), f.systemID, "builtin.dnf.exporter")
+	if err == nil {
+		t.Fatal("err = nil, want propagated InsertRun error")
+	}
+}
+
+func TestInstallUpsertRowErrorIsLoggedNotReturned(t *testing.T) {
+	f := newRunnerFixture(t)
+	f.queue(ansible.Run{Status: ansible.RunSuccess, ExitCode: 0,
+		Stdout: []byte(`"msg": "SW_EXPORTER_PORT: 9100"`),
+	}, nil)
+	f.runner.Store = &failOnStore{Store: f.store, method: "UpsertSystemExporter", err: errors.New("upsert boom")}
+	res, err := f.runner.Install(context.Background(), f.systemID, "builtin.dnf.exporter")
+	if err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	if res.Status != ansible.RunSuccess {
+		t.Errorf("status = %q, want success (upsert error is non-fatal)", res.Status)
+	}
+}
+
 // errLocker fails AcquireLock with a non-conflict error so the runner
 // takes the "lock acquisition failed" branch.
 type errLocker struct {
