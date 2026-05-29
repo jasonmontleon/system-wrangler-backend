@@ -39,13 +39,23 @@ import (
 // integration paths exercised here mirror the production wiring.
 func newTestMux(t *testing.T) http.Handler {
 	t.Helper()
-	h, _ := newTestMuxWithAudit(t)
+	h, _, _ := newTestMuxWithStores(t)
 	return h
 }
 
 // newTestMuxWithAudit returns the same mux as newTestMux plus the
 // audit store, for tests that need to inspect audit rows.
 func newTestMuxWithAudit(t *testing.T) (http.Handler, *audit.Store) {
+	t.Helper()
+	h, aud, _ := newTestMuxWithStores(t)
+	return h, aud
+}
+
+// newTestMuxWithStores returns the mux plus the audit and rbac stores
+// so smoke tests can grant a Global Admin role to the setup user (the
+// rbac backfill runs at store init when the users table is empty, so
+// the first user created after setup gets no role by default).
+func newTestMuxWithStores(t *testing.T) (http.Handler, *audit.Store, *rbac.SQLiteStore) {
 	t.Helper()
 	dsn := "file:" + filepath.Join(t.TempDir(), "test.db")
 	db, err := database.Open(dsn)
@@ -118,7 +128,7 @@ func newTestMuxWithAudit(t *testing.T) (http.Handler, *audit.Store) {
 	svc.Audit = auditStore
 	svc.DB = db
 	hub := events.NewHub(nil)
-	return newMux(db, invStore, groupStore, authStore, svc, secret, nil, hub, auditStore, rbacStore, credStore, hostKeyStore, updaterStore, exporterStore, settingsStore, exclusionStore, holdsStore, labelStore, labelStyleStore, nil, nil), auditStore
+	return newMux(db, invStore, groupStore, authStore, svc, secret, nil, hub, auditStore, rbacStore, credStore, hostKeyStore, updaterStore, exporterStore, settingsStore, exclusionStore, holdsStore, labelStore, labelStyleStore, nil, nil), auditStore, rbacStore
 }
 
 func TestHandleHealth(t *testing.T) {
@@ -213,7 +223,8 @@ func TestSystemsReachableAfterSetup(t *testing.T) {
 // request just needs to reach the handler and return any 2xx/3xx/4xx
 // — we're proving wiring, not behavior.
 func TestPopulatedEndpointsRespondAfterSetup(t *testing.T) {
-	srv := httptest.NewServer(withLogging(newTestMux(t)))
+	mux, _, rbacStore := newTestMuxWithStores(t)
+	srv := httptest.NewServer(withLogging(mux))
 	defer srv.Close()
 
 	jar, _ := cookiejar.New(nil)
@@ -224,6 +235,26 @@ func TestPopulatedEndpointsRespondAfterSetup(t *testing.T) {
 		t.Fatalf("setup: %v", err)
 	}
 	_ = resp.Body.Close()
+
+	// Read the just-created user's id out of the status endpoint and
+	// promote them to Global Admin via the rbac store. The bootstrap
+	// backfill in NewSQLiteStore ran at startup with zero users, so the
+	// admin user gets no rbac row by default; smoke depends on Global
+	// Admin scope to walk the admin-only handlers.
+	statusResp, _ := client.Get(srv.URL + "/api/auth/status")
+	var status struct {
+		User *struct {
+			ID string `json:"id"`
+		} `json:"user"`
+	}
+	_ = json.NewDecoder(statusResp.Body).Decode(&status)
+	_ = statusResp.Body.Close()
+	if status.User == nil {
+		t.Fatal("setup did not return an authenticated user")
+	}
+	if err := rbacStore.Grant(rbac.Assignment{UserID: status.User.ID, Role: rbac.RoleAdmin}); err != nil {
+		t.Fatalf("grant Global Admin: %v", err)
+	}
 
 	// Pull the CSRF token from cookies so write requests get past the
 	// CSRF middleware that withLogging wraps newTestMux in.
@@ -266,6 +297,46 @@ func TestPopulatedEndpointsRespondAfterSetup(t *testing.T) {
 	}
 	_ = json.NewDecoder(strings.NewReader(grpBody)).Decode(&grpOut)
 	groupID := grpOut.ID
+
+	// Seed an exporter row, an updater availability + pending packages,
+	// and a label so the populateMux closures (SystemStats, SystemLabels)
+	// have real data to flow through.
+	dsn := "file:" + filepath.Join(t.TempDir(), "smoke-seed.db")
+	_ = dsn // newTestMux uses its own DB; the seeding below uses the live API instead.
+
+	// Apply a label on the seeded system so the labels closure has a row.
+	putReq, _ := http.NewRequest(http.MethodPut,
+		srv.URL+"/api/systems/"+sysID+"/labels/role",
+		strings.NewReader(`{"value":"smoke"}`))
+	putReq.Header.Set("Content-Type", "application/json")
+	if csrfTok != "" {
+		putReq.Header.Set("X-CSRF-Token", csrfTok)
+	}
+	if r, err := client.Do(putReq); err == nil {
+		_ = r.Body.Close()
+	}
+
+	// Accept a host key so /api/systems/{id}/host-keys returns content.
+	postWithCSRF(t, "/api/systems/"+sysID+"/host-keys/accept",
+		`{"algorithm":"ssh-ed25519","fingerprint":"SHA256:smoke"}`)
+
+	// Set an ansible-credential at global scope so the effective-credential
+	// closure has something to merge.
+	putG, _ := http.NewRequest(http.MethodPut,
+		srv.URL+"/api/admin/ansible-credentials/global",
+		strings.NewReader(`{"ansibleUser":"ansible"}`))
+	putG.Header.Set("Content-Type", "application/json")
+	if csrfTok != "" {
+		putG.Header.Set("X-CSRF-Token", csrfTok)
+	}
+	if r, err := client.Do(putG); err == nil {
+		_ = r.Body.Close()
+	}
+
+	// Create a global package exclusion so the effective-exclusion closure
+	// has something to return.
+	postWithCSRF(t, "/api/admin/package-exclusions",
+		`{"updater":"builtin.dnf","pattern":"kernel*","reason":"smoke"}`)
 
 	// Hit every GET endpoint we can reach. Status doesn't matter — the
 	// goal is to walk populateMux's per-handler closures so the bodies
