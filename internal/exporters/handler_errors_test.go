@@ -139,6 +139,117 @@ func (l *listErrStore) ListSystemExporters(string) ([]SystemExporter, error) {
 	return nil, l.err
 }
 
+type listRunsErrStore struct {
+	Store
+	err error
+}
+
+func (l *listRunsErrStore) ListRuns(string, int) ([]Run, error) { return nil, l.err }
+
+type setScrapeModeErrStore struct {
+	Store
+	err error
+}
+
+func (s *setScrapeModeErrStore) SetScrapeMode(string, ScrapeMode) error { return s.err }
+
+type registryErrStore struct {
+	Store
+	err error
+}
+
+// All() on Registry calls Store.ListCustom; we fail that.
+func (r *registryErrStore) ListCustom() ([]Definition, error) { return nil, r.err }
+
+func TestHandlerListRunsStoreError500(t *testing.T) {
+	rf := newRunnerFixture(t)
+	h := &Handler{
+		Runner:           rf.runner,
+		Store:            &listRunsErrStore{Store: rf.store, err: errors.New("list runs boom")},
+		Systems:          lookupFn(func(string) (systems.System, error) { return systems.System{ID: rf.systemID}, nil }),
+		CanReadSystem:    func(context.Context, systems.System) bool { return true },
+		CanOperateSystem: func(context.Context, systems.System) bool { return true },
+	}
+	mux := http.NewServeMux()
+	h.Register(mux, nil)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	resp, _ := http.Get(srv.URL + "/api/systems/" + rf.systemID + "/exporter-runs")
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", resp.StatusCode)
+	}
+}
+
+func TestHandlerSetScrapeModeStoreError500(t *testing.T) {
+	rf := newRunnerFixture(t)
+	h := &Handler{
+		Runner:           rf.runner,
+		Store:            &setScrapeModeErrStore{Store: rf.store, err: errors.New("setmode boom")},
+		Systems:          lookupFn(func(string) (systems.System, error) { return systems.System{ID: rf.systemID}, nil }),
+		CanReadSystem:    func(context.Context, systems.System) bool { return true },
+		CanOperateSystem: func(context.Context, systems.System) bool { return true },
+	}
+	mux := http.NewServeMux()
+	h.Register(mux, nil)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	req, _ := http.NewRequest(http.MethodPut,
+		srv.URL+"/api/systems/"+rf.systemID+"/exporter-settings",
+		bytes.NewBufferString(`{"scrapeMode":"localhost"}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp, _ := http.DefaultClient.Do(req)
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", resp.StatusCode)
+	}
+}
+
+func TestHandlerSetScrapeModeInvalid400(t *testing.T) {
+	rf := newRunnerFixture(t)
+	h := &Handler{
+		Runner:           rf.runner,
+		Store:            &setScrapeModeErrStore{Store: rf.store, err: ErrInvalid},
+		Systems:          lookupFn(func(string) (systems.System, error) { return systems.System{ID: rf.systemID}, nil }),
+		CanReadSystem:    func(context.Context, systems.System) bool { return true },
+		CanOperateSystem: func(context.Context, systems.System) bool { return true },
+	}
+	mux := http.NewServeMux()
+	h.Register(mux, nil)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	req, _ := http.NewRequest(http.MethodPut,
+		srv.URL+"/api/systems/"+rf.systemID+"/exporter-settings",
+		bytes.NewBufferString(`{"scrapeMode":"localhost"}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp, _ := http.DefaultClient.Do(req)
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", resp.StatusCode)
+	}
+}
+
+func TestHandlerListRegistryError500(t *testing.T) {
+	rf := newRunnerFixture(t)
+	rf.runner.Registry = NewRegistry(&registryErrStore{Store: rf.store, err: errors.New("reg boom")})
+	h := &Handler{
+		Runner:           rf.runner,
+		Store:            rf.store,
+		Systems:          lookupFn(func(string) (systems.System, error) { return systems.System{ID: rf.systemID}, nil }),
+		CanReadSystem:    func(context.Context, systems.System) bool { return true },
+		CanOperateSystem: func(context.Context, systems.System) bool { return true },
+	}
+	mux := http.NewServeMux()
+	h.Register(mux, nil)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	resp, _ := http.Get(srv.URL + "/api/systems/" + rf.systemID + "/exporters")
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", resp.StatusCode)
+	}
+}
+
 type settingsErrStore struct {
 	Store
 	err error
