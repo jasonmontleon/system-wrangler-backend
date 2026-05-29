@@ -5,10 +5,18 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"io"
+	"math/big"
+	"net"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
@@ -897,6 +905,80 @@ func TestRunWithTargetsFile(t *testing.T) {
 	if _, err := os.Stat(targets); err != nil {
 		t.Errorf("targets.json not written: %v", err)
 	}
+}
+
+func TestRunWithTLSCert(t *testing.T) {
+	t.Setenv("SW_MASTER_KEY_FILE", masterKeyFile(t))
+	dir := t.TempDir()
+	certPath := filepath.Join(dir, "cert.pem")
+	keyPath := filepath.Join(dir, "key.pem")
+	writeSelfSignedCert(t, certPath, keyPath)
+	tmpDB := filepath.Join(t.TempDir(), "tls.db")
+	getenv := func(k string) string {
+		switch k {
+		case "DB_PATH":
+			return tmpDB
+		case "PORT":
+			return "0"
+		case "TLS_CERT_PATH":
+			return certPath
+		case "TLS_KEY_PATH":
+			return keyPath
+		case "SW_MASTER_KEY_FILE":
+			return os.Getenv(k)
+		}
+		return ""
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(250 * time.Millisecond)
+		cancel()
+	}()
+	if err := run(ctx, []string{}, getenv); err != nil {
+		t.Errorf("run with TLS = %v, want nil", err)
+	}
+}
+
+func writeSelfSignedCert(t *testing.T, certPath, keyPath string) {
+	t.Helper()
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("genkey: %v", err)
+	}
+	tmpl := x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "localhost"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		DNSNames:     []string{"localhost"},
+		IPAddresses:  []net.IP{net.ParseIP("127.0.0.1")},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, &tmpl, &tmpl, &priv.PublicKey, priv)
+	if err != nil {
+		t.Fatalf("cert: %v", err)
+	}
+	certOut, err := os.Create(certPath) //nolint:gosec // test-controlled path
+	if err != nil {
+		t.Fatalf("cert file: %v", err)
+	}
+	if err := pem.Encode(certOut, &pem.Block{Type: "CERTIFICATE", Bytes: der}); err != nil {
+		t.Fatalf("encode cert: %v", err)
+	}
+	_ = certOut.Close()
+	keyOut, err := os.Create(keyPath) //nolint:gosec // test-controlled path
+	if err != nil {
+		t.Fatalf("key file: %v", err)
+	}
+	pkBytes, err := x509.MarshalECPrivateKey(priv)
+	if err != nil {
+		t.Fatalf("marshal key: %v", err)
+	}
+	if err := pem.Encode(keyOut, &pem.Block{Type: "EC PRIVATE KEY", Bytes: pkBytes}); err != nil {
+		t.Fatalf("encode key: %v", err)
+	}
+	_ = keyOut.Close()
 }
 
 func TestRunTLSConfigError(t *testing.T) {
