@@ -80,7 +80,8 @@ jobs:
 
       - name: Run trivy on the built image
         run: |
-          "$HOME/bin/trivy" image system-wrangler:ci \
+          docker save system-wrangler:ci -o /tmp/image.tar
+          "$HOME/bin/trivy" image --input /tmp/image.tar \
             --scanners vuln,secret \
             --severity HIGH,CRITICAL \
             --ignore-unfixed \
@@ -105,7 +106,8 @@ jobs:
 
       - name: Run trivy on the frontend-build stage
         run: |
-          "$HOME/bin/trivy" image system-wrangler-frontend-build:ci \
+          docker save system-wrangler-frontend-build:ci -o /tmp/frontend-build.tar
+          "$HOME/bin/trivy" image --input /tmp/frontend-build.tar \
             --scanners vuln,secret \
             --severity HIGH,CRITICAL \
             --ignore-unfixed \
