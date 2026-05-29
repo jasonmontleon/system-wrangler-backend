@@ -4,14 +4,18 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"system-wrangler-backend/internal/audit"
 	"system-wrangler-backend/internal/auth"
@@ -527,6 +531,150 @@ func TestCSRFMiddlewareInProductionChain(t *testing.T) {
 	if got, _ := recs[0].Detail["reason"].(string); got != "origin_mismatch" {
 		t.Errorf("audit reason = %q, want origin_mismatch", got)
 	}
+}
+
+// TestRunStartsAndShutsDown invokes run() with a fast-cancel context and
+// a getenv that points it at an unused port and a temp DB. Verifies the
+// happy path (DB open → all stores init → server listen → ctx cancel →
+// clean shutdown) returns nil.
+func TestRunStartsAndShutsDown(t *testing.T) {
+	t.Setenv("SW_MASTER_KEY_FILE", masterKeyFile(t))
+	tmpDB := filepath.Join(t.TempDir(), "run.db")
+	getenv := func(k string) string {
+		switch k {
+		case "DB_PATH":
+			return tmpDB
+		case "PORT":
+			return "0"
+		case "SW_MASTER_KEY_FILE":
+			return os.Getenv("SW_MASTER_KEY_FILE")
+		}
+		return ""
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(200 * time.Millisecond)
+		cancel()
+	}()
+	if err := run(ctx, []string{}, getenv); err != nil {
+		t.Errorf("run() = %v, want nil", err)
+	}
+}
+
+func TestRunBadDBPath(t *testing.T) {
+	t.Setenv("SW_MASTER_KEY_FILE", masterKeyFile(t))
+	getenv := func(k string) string {
+		switch k {
+		case "DB_PATH":
+			return "/nonexistent-dir-runtest/db.sqlite"
+		case "SW_MASTER_KEY_FILE":
+			return os.Getenv("SW_MASTER_KEY_FILE")
+		}
+		return ""
+	}
+	if err := run(context.Background(), []string{}, getenv); err == nil {
+		t.Error("run with bad DB_PATH = nil, want error")
+	}
+}
+
+func TestRunBadFlag(t *testing.T) {
+	if err := run(context.Background(), []string{"--bogus"}, func(string) string { return "" }); err == nil {
+		t.Error("run with unknown flag = nil, want error")
+	}
+}
+
+func TestRunRotateKeysShortCircuits(t *testing.T) {
+	t.Setenv("SW_MASTER_KEY_FILE", masterKeyFile(t))
+	t.Setenv("SW_MASTER_KEY_FILE_PREVIOUS", masterKeyFileSeeded(t, 99))
+	tmpDB := filepath.Join(t.TempDir(), "rotate.db")
+	getenv := func(k string) string {
+		switch k {
+		case "DB_PATH":
+			return tmpDB
+		case "SW_MASTER_KEY_FILE", "SW_MASTER_KEY_FILE_PREVIOUS":
+			return os.Getenv(k)
+		}
+		return ""
+	}
+	// --rotate-keys exits run() after the rotate call, without starting
+	// the server. Should return nil if rotate succeeds (no rows to
+	// re-seal in a fresh DB).
+	if err := run(context.Background(), []string{"--rotate-keys"}, getenv); err != nil {
+		t.Errorf("run --rotate-keys = %v, want nil", err)
+	}
+}
+
+func masterKeyFileSeeded(t *testing.T, seed byte) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "master.key")
+	keyBytes := make([]byte, 32)
+	for i := range keyBytes {
+		keyBytes[i] = seed ^ byte(i)
+	}
+	if err := os.WriteFile(path, []byte(base64.StdEncoding.EncodeToString(keyBytes)), 0o600); err != nil {
+		t.Fatalf("write key: %v", err)
+	}
+	return path
+}
+
+func TestRunWithTargetsFile(t *testing.T) {
+	t.Setenv("SW_MASTER_KEY_FILE", masterKeyFile(t))
+	tmpDB := filepath.Join(t.TempDir(), "targets.db")
+	targets := filepath.Join(t.TempDir(), "targets.json")
+	getenv := func(k string) string {
+		switch k {
+		case "DB_PATH":
+			return tmpDB
+		case "PORT":
+			return "0"
+		case "SW_TARGETS_FILE":
+			return targets
+		case "SW_MASTER_KEY_FILE":
+			return os.Getenv(k)
+		}
+		return ""
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(250 * time.Millisecond)
+		cancel()
+	}()
+	if err := run(ctx, []string{}, getenv); err != nil {
+		t.Errorf("run with SW_TARGETS_FILE = %v, want nil", err)
+	}
+	if _, err := os.Stat(targets); err != nil {
+		t.Errorf("targets.json not written: %v", err)
+	}
+}
+
+func TestRunTLSConfigError(t *testing.T) {
+	t.Setenv("SW_MASTER_KEY_FILE", masterKeyFile(t))
+	getenv := func(k string) string {
+		switch k {
+		// Only one of cert/key set → tlsConfig returns an error.
+		case "TLS_CERT_PATH":
+			return "/tmp/cert.pem"
+		case "SW_MASTER_KEY_FILE":
+			return os.Getenv(k)
+		}
+		return ""
+	}
+	if err := run(context.Background(), []string{}, getenv); err == nil || !strings.Contains(err.Error(), "tls config") {
+		t.Errorf("run with half-TLS env = %v, want tls config error", err)
+	}
+}
+
+func masterKeyFile(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "master.key")
+	keyBytes := make([]byte, 32)
+	for i := range keyBytes {
+		keyBytes[i] = byte(i)
+	}
+	if err := os.WriteFile(path, []byte(base64.StdEncoding.EncodeToString(keyBytes)), 0o600); err != nil {
+		t.Fatalf("write key: %v", err)
+	}
+	return path
 }
 
 func TestTriggerProbeNonBlocking(t *testing.T) {

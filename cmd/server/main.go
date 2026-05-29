@@ -52,24 +52,43 @@ import (
 )
 
 func main() {
-	rotateKeys := flag.Bool("rotate-keys", false,
+	if err := run(context.Background(), os.Args[1:], os.Getenv); err != nil {
+		slog.Error("run", "err", err)
+		os.Exit(1)
+	}
+}
+
+// run is the testable body of main. It returns nil on a clean shutdown and an
+// error otherwise. ctx controls the server lifetime — main passes a signal-
+// wired context; tests pass a context they can cancel to drive a deterministic
+// shutdown without sending SIGINT.
+func run(ctx context.Context, args []string, getenv func(string) string) error {
+	fs := flag.NewFlagSet("server", flag.ContinueOnError)
+	rotateKeys := fs.Bool("rotate-keys", false,
 		"re-seal every encrypted secret under SW_MASTER_KEY_FILE and exit; SW_MASTER_KEY_FILE_PREVIOUS must point at the outgoing key")
-	flag.Parse()
+	if err := fs.Parse(args); err != nil {
+		return fmt.Errorf("flag parse: %w", err)
+	}
 
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
 
-	addr := ":" + envOr("PORT", "8080")
-	certPath, keyPath, useTLS, err := tlsConfig(os.Getenv)
-	if err != nil {
-		slog.Error("tls config", "err", err)
-		os.Exit(1)
+	envOrFn := func(key, fallback string) string {
+		if v := getenv(key); v != "" {
+			return v
+		}
+		return fallback
 	}
 
-	dbPath := envOr("DB_PATH", "system-wrangler.db")
+	addr := ":" + envOrFn("PORT", "8080")
+	certPath, keyPath, useTLS, err := tlsConfig(getenv)
+	if err != nil {
+		return fmt.Errorf("tls config: %w", err)
+	}
+
+	dbPath := envOrFn("DB_PATH", "system-wrangler.db")
 	db, err := database.Open("file:" + dbPath)
 	if err != nil {
-		slog.Error("open db", "path", dbPath, "err", err)
-		os.Exit(1)
+		return fmt.Errorf("open db %s: %w", dbPath, err)
 	}
 	defer func() {
 		if err := db.Close(); err != nil {
@@ -78,50 +97,40 @@ func main() {
 	}()
 	store, err := systems.NewSQLiteStore(db)
 	if err != nil {
-		slog.Error("init systems store", "err", err)
-		os.Exit(1)
+		return fmt.Errorf("init systems store: %w", err)
 	}
 	groupStore, err := groups.NewSQLiteStore(db)
 	if err != nil {
-		slog.Error("init groups store", "err", err)
-		os.Exit(1)
+		return fmt.Errorf("init groups store: %w", err)
 	}
 	authStore, err := auth.NewSQLiteAuthStore(db)
 	if err != nil {
-		slog.Error("init auth store", "err", err)
-		os.Exit(1)
+		return fmt.Errorf("init auth store: %w", err)
 	}
 	secret, err := auth.LoadOrInitSecret(authStore)
 	if err != nil {
-		slog.Error("load session secret", "err", err)
-		os.Exit(1)
+		return fmt.Errorf("load session secret: %w", err)
 	}
 	vault, err := secrets.NewVault()
 	if err != nil {
-		fmt.Fprintln(os.Stderr, secrets.FatalMessage())
-		slog.Error("load master key", "err", err)
-		os.Exit(1)
+		return fmt.Errorf("load master key: %w (%s)", err, secrets.FatalMessage())
 	}
 	if err := authStore.MigrateLegacyTOTPSecrets(vault); err != nil {
-		slog.Error("migrate legacy totp", "err", err)
-		os.Exit(1)
+		return fmt.Errorf("migrate legacy totp: %w", err)
 	}
 	auditStore, err := audit.NewSQLiteStore(db)
 	if err != nil {
-		slog.Error("init audit store", "err", err)
-		os.Exit(1)
+		return fmt.Errorf("init audit store: %w", err)
 	}
 	if *rotateKeys {
 		if _, err := authStore.RotateKeys(vault, auditStore); err != nil {
-			slog.Error("rotate keys", "err", err)
-			os.Exit(1)
+			return fmt.Errorf("rotate keys: %w", err)
 		}
-		return
+		return nil
 	}
 	rbacStore, err := rbac.NewSQLiteStore(db)
 	if err != nil {
-		slog.Error("init rbac store", "err", err)
-		os.Exit(1)
+		return fmt.Errorf("init rbac store: %w", err)
 	}
 	authStore.PostDelete = func(tx *sql.Tx, _ string) error {
 		if err := rbac.EnsureGlobalAdminRemains(tx); err != nil {
@@ -134,48 +143,39 @@ func main() {
 	}
 	credStore, err := credentials.NewSQLiteStore(db)
 	if err != nil {
-		slog.Error("init credentials store", "err", err)
-		os.Exit(1)
+		return fmt.Errorf("init credentials store: %w", err)
 	}
 	hostKeyStore, err := hostkeys.NewSQLiteStore(db)
 	if err != nil {
-		slog.Error("init hostkeys store", "err", err)
-		os.Exit(1)
+		return fmt.Errorf("init hostkeys store: %w", err)
 	}
 	updaterStore, err := updaters.NewSQLiteStore(db)
 	if err != nil {
-		slog.Error("init updaters store", "err", err)
-		os.Exit(1)
+		return fmt.Errorf("init updaters store: %w", err)
 	}
 	exporterStore, err := exporters.NewSQLiteStore(db)
 	if err != nil {
-		slog.Error("init exporters store", "err", err)
-		os.Exit(1)
+		return fmt.Errorf("init exporters store: %w", err)
 	}
 	settingsStore, err := settings.NewSQLiteStore(db)
 	if err != nil {
-		slog.Error("init settings store", "err", err)
-		os.Exit(1)
+		return fmt.Errorf("init settings store: %w", err)
 	}
 	exclusionStore, err := exclusions.NewSQLiteStore(db)
 	if err != nil {
-		slog.Error("init exclusions store", "err", err)
-		os.Exit(1)
+		return fmt.Errorf("init exclusions store: %w", err)
 	}
 	holdsStore, err := holds.NewSQLiteStore(db)
 	if err != nil {
-		slog.Error("init holds store", "err", err)
-		os.Exit(1)
+		return fmt.Errorf("init holds store: %w", err)
 	}
 	labelStore, err := labels.NewSQLiteStore(db)
 	if err != nil {
-		slog.Error("init labels store", "err", err)
-		os.Exit(1)
+		return fmt.Errorf("init labels store: %w", err)
 	}
 	labelStyleStore, err := labels.NewSQLiteStyleStore(db)
 	if err != nil {
-		slog.Error("init label styles store", "err", err)
-		os.Exit(1)
+		return fmt.Errorf("init label styles store: %w", err)
 	}
 	authSvc := auth.NewService(authStore, secret, useTLS)
 	authSvc.TOTPStore = authStore
@@ -218,12 +218,12 @@ func main() {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	runCtx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
 	probeDone := make(chan struct{})
 	go func() {
-		probe.Run(ctx)
+		probe.Run(runCtx)
 		close(probeDone)
 	}()
 
@@ -232,14 +232,14 @@ func main() {
 	// be writeable garbage. Subscribes to the hub for inventory
 	// changes; debounces internally.
 	targetsStop := func() {}
-	if targetsFile := os.Getenv("SW_TARGETS_FILE"); targetsFile != "" {
+	if targetsFile := getenv("SW_TARGETS_FILE"); targetsFile != "" {
 		tw := &promtargets.Writer{
 			Path:          targetsFile,
-			BackendTarget: envOr("SW_BACKEND_TARGET", promtargets.DefaultBackendTarget),
+			BackendTarget: envOrFn("SW_BACKEND_TARGET", promtargets.DefaultBackendTarget),
 			Systems:       store,
 			Exporters:     exporterStore,
 		}
-		targetsStop = tw.Run(ctx, func(handler func(string)) func() {
+		targetsStop = tw.Run(runCtx, func(handler func(string)) func() {
 			sub := hub.Subscribe()
 			ready := make(chan struct{})
 			go func() {
@@ -253,6 +253,7 @@ func main() {
 		})
 	}
 
+	serveDone := make(chan error, 1)
 	go func() {
 		var serveErr error
 		if useTLS {
@@ -263,12 +264,19 @@ func main() {
 			serveErr = srv.ListenAndServe()
 		}
 		if serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
-			slog.Error("server failed", "err", serveErr)
-			os.Exit(1)
+			serveDone <- serveErr
+			return
 		}
+		serveDone <- nil
 	}()
 
-	<-ctx.Done()
+	select {
+	case <-runCtx.Done():
+	case err := <-serveDone:
+		if err != nil {
+			return fmt.Errorf("server failed: %w", err)
+		}
+	}
 	slog.Info("shutdown signal received")
 	// Stop the targets writer first — once the hub closes its
 	// subscriber channel, the writer's goroutine returns; targetsStop
@@ -287,6 +295,7 @@ func main() {
 		}
 	}
 	<-probeDone
+	return nil
 }
 
 func newMux(db *sql.DB, store systems.Store, groupStore groups.Store, authStore *auth.SQLiteAuthStore, authSvc *auth.Service, secret []byte, vault *secrets.Vault, hub *events.Hub, auditStore *audit.Store, rbacStore rbac.Store, credStore credentials.Store, hostKeyStore hostkeys.Store, updaterStore updaters.Store, exporterStore exporters.Store, settingsStore settings.Store, exclusionStore exclusions.Store, holdsStore holds.Store, labelStore labels.Store, labelStyleStore labels.StyleStore, onSystemCreate, onSystemDelete func()) *http.ServeMux {

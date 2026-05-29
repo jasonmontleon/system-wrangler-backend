@@ -1,0 +1,110 @@
+name: quality-gates
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-vet-fmt:
+    name: Build, vet, gofmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - run: go build ./...
+      - run: go vet ./...
+      - name: gofmt
+        run: |
+          set -euo pipefail
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "::error::gofmt: the following files need formatting"
+            echo "$unformatted"
+            exit 1
+          fi
+
+  test-race:
+    name: go test -race
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - run: go test ./... -race
+
+  golangci-lint:
+    name: golangci-lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install golangci-lint
+        run: |
+          mkdir -p "$HOME/bin"
+          curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh \
+            | sh -s -- -b "$HOME/bin"
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+
+      - run: golangci-lint run
+
+  govulncheck:
+    name: govulncheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+
+      - run: govulncheck ./...
+
+  dco:
+    name: DCO sign-off on every commit
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify Signed-off-by
+        run: |
+          set -euo pipefail
+          base="${{ github.event.pull_request.base.sha }}"
+          head="${{ github.event.pull_request.head.sha }}"
+          missing=0
+          for sha in $(git rev-list "$base..$head"); do
+            if ! git log -1 --format=%B "$sha" | grep -qE '^Signed-off-by: .+'; then
+              echo "::error::commit $sha is missing a Signed-off-by line (use 'git commit -s')"
+              missing=1
+            fi
+          done
+          exit $missing

@@ -1,0 +1,267 @@
+name: publish
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-vet-fmt:
+    name: Build, vet, gofmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go build ./...
+      - run: go vet ./...
+      - name: gofmt
+        run: |
+          set -euo pipefail
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "::error::gofmt: $unformatted"
+            exit 1
+          fi
+
+  test-race:
+    name: go test -race
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go test ./... -race
+
+  coverage-gate:
+    name: 90% statement coverage gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go test ./... -coverprofile=cover.out
+      - name: Enforce ≥90% coverage
+        run: |
+          set -euo pipefail
+          pct=$(go tool cover -func=cover.out | awk '/^total:/ {sub("%","",$3); print $3}')
+          echo "coverage: ${pct}%"
+          ok=$(awk -v p="$pct" 'BEGIN { print (p+0 >= 90) ? "true" : "false" }')
+          if [ "$ok" != "true" ]; then
+            echo "::error::coverage ${pct}% < 90%"
+            exit 1
+          fi
+
+  golangci-lint:
+    name: golangci-lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Install golangci-lint
+        run: |
+          mkdir -p "$HOME/bin"
+          curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh \
+            | sh -s -- -b "$HOME/bin"
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+      - run: golangci-lint run
+
+  govulncheck:
+    name: govulncheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go install golang.org/x/vuln/cmd/govulncheck@latest
+      - run: govulncheck ./...
+
+  trufflehog:
+    name: trufflehog (verified secrets)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install trufflehog
+        run: |
+          mkdir -p "$HOME/bin"
+          curl -sSfL https://raw.githubusercontent.com/trufflesecurity/trufflehog/main/scripts/install.sh \
+            | sh -s -- -b "$HOME/bin"
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+      - run: trufflehog filesystem . --only-verified --fail
+
+  trivy-fs:
+    name: Trivy filesystem scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install trivy
+        run: |
+          mkdir -p "$HOME/bin"
+          curl -sSfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
+            | sh -s -- -b "$HOME/bin"
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+      - run: |
+          trivy fs . \
+            --scanners vuln,secret,misconfig \
+            --severity HIGH,CRITICAL \
+            --ignore-unfixed \
+            --exit-code 1 \
+            --skip-dirs web/dist
+
+  trivy-image:
+    name: Trivy container image scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/system-wrangler-frontend
+          path: _frontend
+          ref: main
+          token: ${{ secrets.FRONTEND_TOKEN }}
+      - name: Install trivy
+        run: |
+          mkdir -p "$HOME/bin"
+          curl -sSfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
+            | sh -s -- -b "$HOME/bin"
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+      - name: Build image for scan
+        run: |
+          docker buildx build \
+            --build-context frontend=_frontend \
+            --tag system-wrangler:ci \
+            --load \
+            --file Containerfile \
+            .
+      - name: Scan final image
+        run: |
+          trivy image system-wrangler:ci \
+            --scanners vuln,secret \
+            --severity HIGH,CRITICAL \
+            --ignore-unfixed \
+            --exit-code 1 \
+            --vuln-type os,library
+      - name: Build frontend-build stage
+        run: |
+          docker buildx build \
+            --build-context frontend=_frontend \
+            --target frontend-build \
+            --tag system-wrangler-frontend-build:ci \
+            --load \
+            --file Containerfile \
+            .
+      - name: Scan frontend-build stage
+        run: |
+          trivy image system-wrangler-frontend-build:ci \
+            --scanners vuln,secret \
+            --severity HIGH,CRITICAL \
+            --ignore-unfixed \
+            --exit-code 1 \
+            --vuln-type os,library
+
+  publish:
+    name: Build and push image
+    runs-on: ubuntu-latest
+    needs:
+      - build-vet-fmt
+      - test-race
+      - coverage-gate
+      - golangci-lint
+      - govulncheck
+      - trufflehog
+      - trivy-fs
+      - trivy-image
+    env:
+      IMAGE_NAME: ${{ vars.IMAGE_NAME }}
+      FRONTEND_TOKEN: ${{ secrets.FRONTEND_TOKEN }}
+      REGISTRY: ${{ vars.REGISTRY }}
+      REGISTRY_USER: ${{ secrets.REGISTRY_USER }}
+      REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+    steps:
+      - name: Refuse to publish without IMAGE_NAME configured
+        run: |
+          if [ -z "${IMAGE_NAME}" ]; then
+            echo "::error::vars.IMAGE_NAME is not set on this repository; refusing to publish."
+            echo "Set IMAGE_NAME (e.g. registry.example.com/system-wrangler/backend) in the repo Variables."
+            exit 1
+          fi
+
+      - name: Checkout backend
+        uses: actions/checkout@v4
+
+      - name: Checkout frontend
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/system-wrangler-frontend
+          path: _frontend
+          ref: main
+          token: ${{ env.FRONTEND_TOKEN }}
+
+      - name: Set up QEMU (multi-arch emulation, GitHub only)
+        if: github.server_url == 'https://github.com'
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64,riscv64,s390x,ppc64le
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Decide build platforms
+        id: platforms
+        run: |
+          set -euo pipefail
+          if [ "${{ github.server_url }}" = "https://github.com" ]; then
+            echo "platforms=linux/amd64,linux/arm64,linux/riscv64,linux/s390x,linux/ppc64le" >> "$GITHUB_OUTPUT"
+          else
+            arch=$(uname -m | sed -e 's/x86_64/amd64/' -e 's/aarch64/arm64/')
+            echo "platforms=linux/${arch}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Compute image tags
+        id: tags
+        run: |
+          set -euo pipefail
+          short_sha=$(git rev-parse --short HEAD)
+          ref_name="${GITHUB_REF_NAME:-main}"
+          tags="${IMAGE_NAME}:${short_sha}"
+          if [ "${ref_name}" = "main" ]; then
+            tags="${tags},${IMAGE_NAME}:latest"
+          fi
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            tags="${tags},${IMAGE_NAME}:${ref_name}"
+          fi
+          echo "tags=${tags}" >> "$GITHUB_OUTPUT"
+
+      - name: Registry login
+        if: env.REGISTRY_USER != '' && env.REGISTRY_TOKEN != ''
+        run: |
+          echo "${REGISTRY_TOKEN}" | docker login "${REGISTRY:-${IMAGE_NAME%%/*}}" -u "${REGISTRY_USER}" --password-stdin
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: Containerfile
+          build-contexts: |
+            frontend=_frontend
+          platforms: ${{ steps.platforms.outputs.platforms }}
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+          provenance: false
