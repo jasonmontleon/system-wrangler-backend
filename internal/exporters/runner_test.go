@@ -272,6 +272,29 @@ func TestConflictWhenLockHeld(t *testing.T) {
 	}
 }
 
+// errLocker fails AcquireLock with a non-conflict error so the runner
+// takes the "lock acquisition failed" branch.
+type errLocker struct {
+	*memLocker
+	acquireErr error
+}
+
+func (e *errLocker) AcquireLock(systemID, runID string, at time.Time) error {
+	if e.acquireErr != nil {
+		return e.acquireErr
+	}
+	return e.memLocker.AcquireLock(systemID, runID, at)
+}
+
+func TestInstallAcquireLockNonConflictError(t *testing.T) {
+	f := newRunnerFixture(t)
+	f.runner.Locker = &errLocker{memLocker: f.locker, acquireErr: errors.New("locker io")}
+	_, err := f.runner.Install(context.Background(), f.systemID, "builtin.dnf.exporter")
+	if err == nil || errors.Is(err, ErrConflict) {
+		t.Errorf("err = %v, want non-conflict error", err)
+	}
+}
+
 func TestRunnerNowDefaultsToTimeNow(t *testing.T) {
 	r := &Runner{}
 	got := r.now()

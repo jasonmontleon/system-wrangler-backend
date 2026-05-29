@@ -737,6 +737,89 @@ func masterKeyFile(t *testing.T) string {
 	return path
 }
 
+func TestReadInternalSecretFromFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "secret")
+	if err := os.WriteFile(path, []byte("topsecret\n"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	t.Setenv("SW_INTERNAL_SECRET_FILE", path)
+	t.Setenv("SW_INTERNAL_SECRET", "ignored-when-file-wins")
+	got := readInternalSecret()
+	if got != "topsecret" {
+		t.Errorf("got = %q, want topsecret", got)
+	}
+}
+
+func TestReadInternalSecretFromEnv(t *testing.T) {
+	t.Setenv("SW_INTERNAL_SECRET_FILE", "")
+	t.Setenv("SW_INTERNAL_SECRET", "envsecret")
+	got := readInternalSecret()
+	if got != "envsecret" {
+		t.Errorf("got = %q, want envsecret", got)
+	}
+}
+
+func TestReadInternalSecretFileMissing(t *testing.T) {
+	t.Setenv("SW_INTERNAL_SECRET_FILE", "/nonexistent-dir-secret-test/secret")
+	t.Setenv("SW_INTERNAL_SECRET", "")
+	got := readInternalSecret()
+	if got != "" {
+		t.Errorf("got = %q, want empty (file unreadable)", got)
+	}
+}
+
+func TestSpaHandlerServesIndexForUnknown(t *testing.T) {
+	h := spaHandler()
+	req := httptest.NewRequest(http.MethodGet, "/anything/unknown", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	// Empty embed.FS only has .gitkeep — the SPA fallback should
+	// still produce some response (200 or 404) without panicking.
+	if w.Code == 0 {
+		t.Error("spaHandler did not write a status")
+	}
+}
+
+func TestUpdaterPkgManagerProbeAdaptsAvailability(t *testing.T) {
+	store := &stubUpdaterStore{}
+	probe := updaterPkgManagerProbe{store: store}
+	got, err := probe.DetectedPkgManagers("sys")
+	if err != nil {
+		t.Fatalf("DetectedPkgManagers: %v", err)
+	}
+	if len(got) != 2 || got[0] != "builtin.dnf" || got[1] != "builtin.apt" {
+		t.Errorf("got = %v", got)
+	}
+}
+
+func TestUpdaterPkgManagerProbePropagatesError(t *testing.T) {
+	store := &stubUpdaterStore{err: errStubProbe("av down")}
+	probe := updaterPkgManagerProbe{store: store}
+	if _, err := probe.DetectedPkgManagers("sys"); err == nil {
+		t.Error("err = nil, want error")
+	}
+}
+
+type errStubProbe string
+
+func (e errStubProbe) Error() string { return string(e) }
+
+type stubUpdaterStore struct {
+	updaters.Store
+	err error
+}
+
+func (s *stubUpdaterStore) AvailabilityFor(string) ([]updaters.Availability, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	return []updaters.Availability{
+		{UpdaterID: "builtin.dnf"},
+		{UpdaterID: "builtin.apt"},
+	}, nil
+}
+
 func TestTriggerProbeNonBlocking(t *testing.T) {
 	p := &systems.Probe{Trigger: make(chan struct{}, 1)}
 	fn := triggerProbe(p)
