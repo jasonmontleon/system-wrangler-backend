@@ -278,3 +278,49 @@ func TestStateIsValid(t *testing.T) {
 		t.Error("bogus reported valid")
 	}
 }
+
+// TestStoreClosedDBSurfacesErrors closes the DB and asserts every store
+// method returns a non-nil error. Bulk-covers the per-method
+// "db.Exec/Query failed" branches.
+func TestStoreClosedDBSurfacesErrors(t *testing.T) {
+	dsn := "file:" + filepath.Join(t.TempDir(), "hk-closed.db")
+	db, err := database.Open(dsn)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if _, err := systems.NewSQLiteStore(db); err != nil {
+		t.Fatalf("systems: %v", err)
+	}
+	store, err := NewSQLiteStore(db)
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	type call struct {
+		name string
+		fn   func() error
+	}
+	calls := []call{
+		{"List", func() error { _, err := store.List("s"); return err }},
+		{"AcceptedFor", func() error { _, err := store.AcceptedFor("s"); return err }},
+		{"Get", func() error { _, err := store.Get("k"); return err }},
+		{"RecordPending", func() error {
+			_, err := store.RecordPending("s", "ssh-ed25519", "AAAA", "SHA256:x")
+			return err
+		}},
+		{"Accept", func() error {
+			_, _, err := store.Accept("s", "ssh-ed25519", "SHA256:x", "u")
+			return err
+		}},
+		{"Delete", func() error { return store.Delete("k") }},
+	}
+	for _, c := range calls {
+		t.Run(c.name, func(t *testing.T) {
+			if err := c.fn(); err == nil {
+				t.Errorf("%s on closed DB returned nil error", c.name)
+			}
+		})
+	}
+}

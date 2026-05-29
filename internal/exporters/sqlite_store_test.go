@@ -516,3 +516,69 @@ func TestScrapeEnabledMigratesLegacyDB(t *testing.T) {
 		t.Errorf("second migration call must be a no-op: %v", err)
 	}
 }
+
+// TestSQLiteStoreClosedDBSurfacesErrors closes the underlying *sql.DB
+// then calls every store method asserting each returns a non-nil
+// error. Bulk-covers the "if err := db.{Exec,Query,QueryRow}(...);
+// err != nil { return fmt.Errorf(...) }" branch per method without
+// duplicating per-method fixtures.
+func TestSQLiteStoreClosedDBSurfacesErrors(t *testing.T) {
+	store, _, db := newStoreWithSystems(t)
+	if err := db.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	type call struct {
+		name string
+		fn   func() error
+	}
+	calls := []call{
+		{"ListCustom", func() error { _, err := store.ListCustom(); return err }},
+		{"GetCustom", func() error { _, err := store.GetCustom("x"); return err }},
+		{"CreateCustom", func() error {
+			_, err := store.CreateCustom(Definition{
+				ID: "custom.x", Source: SourceCustom, DisplayName: "x",
+				AppliesToPkgManager: "builtin.apt", ExporterKind: KindNodeExporter,
+				BindPort:        9100,
+				InstallPlaybook: []byte("- hosts: all\n  tasks: []\n"),
+				StatusPlaybook:  []byte("- hosts: all\n  tasks: []\n"),
+			})
+			return err
+		}},
+		{"UpdateCustom", func() error {
+			_, err := store.UpdateCustom(Definition{
+				ID: "custom.x", Source: SourceCustom, DisplayName: "x",
+				AppliesToPkgManager: "builtin.apt", ExporterKind: KindNodeExporter,
+				BindPort:        9100,
+				InstallPlaybook: []byte("- hosts: all\n  tasks: []\n"),
+				StatusPlaybook:  []byte("- hosts: all\n  tasks: []\n"),
+			})
+			return err
+		}},
+		{"DeleteCustom", func() error { return store.DeleteCustom("custom.x", time.Now()) }},
+		{"UpsertSystemExporter", func() error {
+			return store.UpsertSystemExporter(SystemExporter{
+				SystemID: "s", ExporterID: "x", State: StateRunning, Port: 9100,
+			})
+		}},
+		{"GetSystemExporter", func() error { _, err := store.GetSystemExporter("s", "x"); return err }},
+		{"ListSystemExporters", func() error { _, err := store.ListSystemExporters("s"); return err }},
+		{"SetScrapeEnabled", func() error { _, err := store.SetScrapeEnabled("s", "x", true); return err }},
+		{"MarkRemoved", func() error { return store.MarkRemoved("s", "x", time.Now(), "r") }},
+		{"GetSettings", func() error { _, err := store.GetSettings("s"); return err }},
+		{"SetScrapeMode", func() error { return store.SetScrapeMode("s", ScrapeLocalhost) }},
+		{"InsertRun", func() error {
+			return store.InsertRun(Run{ID: "r", SystemID: "s", ExporterID: "x", Kind: RunKindStatus, StartedAt: time.Now()})
+		}},
+		{"FinishRun", func() error { return store.FinishRun("r", time.Now(), 0, "") }},
+		{"ListRuns", func() error { _, err := store.ListRuns("s", 10); return err }},
+		{"TrimRunsForSystem", func() error { return store.TrimRunsForSystem("s", 1) }},
+	}
+	for _, c := range calls {
+		t.Run(c.name, func(t *testing.T) {
+			if err := c.fn(); err == nil {
+				t.Errorf("%s on closed DB returned nil error, expected failure", c.name)
+			}
+		})
+	}
+}
