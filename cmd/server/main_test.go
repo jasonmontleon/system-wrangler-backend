@@ -5,6 +5,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"io"
@@ -977,6 +978,47 @@ func (s *stubUpdaterStore) AvailabilityFor(string) ([]updaters.Availability, err
 		{UpdaterID: "builtin.apt"},
 	}, nil
 }
+
+func TestInitStoreReturnsValueOnSuccess(t *testing.T) {
+	dsn := "file:" + filepath.Join(t.TempDir(), "init.db")
+	db, err := database.Open(dsn)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	got, err := initStore(db, "systems", systems.NewSQLiteStore)
+	if err != nil {
+		t.Fatalf("initStore: %v", err)
+	}
+	if got == nil {
+		t.Error("got = nil, want a non-nil store")
+	}
+}
+
+func TestInitStoreWrapsError(t *testing.T) {
+	dsn := "file:" + filepath.Join(t.TempDir(), "init-fail.db")
+	db, err := database.Open(dsn)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	// Pass a constructor that always fails. The helper must wrap the
+	// underlying error with "init <label> store:" so the operator can
+	// see which subsystem actually broke on startup.
+	_, err = initStore(db, "fake", func(*sql.DB) (*int, error) {
+		return nil, errAdminStub("ctor failed")
+	})
+	if err == nil {
+		t.Fatal("err = nil, want wrap")
+	}
+	if !strings.Contains(err.Error(), "init fake store") {
+		t.Errorf("err = %q, want it to contain 'init fake store'", err.Error())
+	}
+}
+
+type errAdminStub string
+
+func (e errAdminStub) Error() string { return string(e) }
 
 func TestTriggerProbeNonBlocking(t *testing.T) {
 	p := &systems.Probe{Trigger: make(chan struct{}, 1)}

@@ -95,17 +95,17 @@ func run(ctx context.Context, args []string, getenv func(string) string) error {
 			slog.Error("close db", "err", err)
 		}
 	}()
-	store, err := systems.NewSQLiteStore(db)
+	store, err := initStore(db, "systems", systems.NewSQLiteStore)
 	if err != nil {
-		return fmt.Errorf("init systems store: %w", err)
+		return err
 	}
-	groupStore, err := groups.NewSQLiteStore(db)
+	groupStore, err := initStore(db, "groups", groups.NewSQLiteStore)
 	if err != nil {
-		return fmt.Errorf("init groups store: %w", err)
+		return err
 	}
-	authStore, err := auth.NewSQLiteAuthStore(db)
+	authStore, err := initStore(db, "auth", auth.NewSQLiteAuthStore)
 	if err != nil {
-		return fmt.Errorf("init auth store: %w", err)
+		return err
 	}
 	secret, err := auth.LoadOrInitSecret(authStore)
 	if err != nil {
@@ -118,9 +118,9 @@ func run(ctx context.Context, args []string, getenv func(string) string) error {
 	if err := authStore.MigrateLegacyTOTPSecrets(vault); err != nil {
 		return fmt.Errorf("migrate legacy totp: %w", err)
 	}
-	auditStore, err := audit.NewSQLiteStore(db)
+	auditStore, err := initStore(db, "audit", audit.NewSQLiteStore)
 	if err != nil {
-		return fmt.Errorf("init audit store: %w", err)
+		return err
 	}
 	if *rotateKeys {
 		if _, err := authStore.RotateKeys(vault, auditStore); err != nil {
@@ -128,9 +128,9 @@ func run(ctx context.Context, args []string, getenv func(string) string) error {
 		}
 		return nil
 	}
-	rbacStore, err := rbac.NewSQLiteStore(db)
+	rbacStore, err := initStore(db, "rbac", rbac.NewSQLiteStore)
 	if err != nil {
-		return fmt.Errorf("init rbac store: %w", err)
+		return err
 	}
 	authStore.PostDelete = func(tx *sql.Tx, _ string) error {
 		if err := rbac.EnsureGlobalAdminRemains(tx); err != nil {
@@ -141,41 +141,41 @@ func run(ctx context.Context, args []string, getenv func(string) string) error {
 		}
 		return nil
 	}
-	credStore, err := credentials.NewSQLiteStore(db)
+	credStore, err := initStore(db, "credentials", credentials.NewSQLiteStore)
 	if err != nil {
-		return fmt.Errorf("init credentials store: %w", err)
+		return err
 	}
-	hostKeyStore, err := hostkeys.NewSQLiteStore(db)
+	hostKeyStore, err := initStore(db, "hostkeys", hostkeys.NewSQLiteStore)
 	if err != nil {
-		return fmt.Errorf("init hostkeys store: %w", err)
+		return err
 	}
-	updaterStore, err := updaters.NewSQLiteStore(db)
+	updaterStore, err := initStore(db, "updaters", updaters.NewSQLiteStore)
 	if err != nil {
-		return fmt.Errorf("init updaters store: %w", err)
+		return err
 	}
-	exporterStore, err := exporters.NewSQLiteStore(db)
+	exporterStore, err := initStore(db, "exporters", exporters.NewSQLiteStore)
 	if err != nil {
-		return fmt.Errorf("init exporters store: %w", err)
+		return err
 	}
-	settingsStore, err := settings.NewSQLiteStore(db)
+	settingsStore, err := initStore(db, "settings", settings.NewSQLiteStore)
 	if err != nil {
-		return fmt.Errorf("init settings store: %w", err)
+		return err
 	}
-	exclusionStore, err := exclusions.NewSQLiteStore(db)
+	exclusionStore, err := initStore(db, "exclusions", exclusions.NewSQLiteStore)
 	if err != nil {
-		return fmt.Errorf("init exclusions store: %w", err)
+		return err
 	}
-	holdsStore, err := holds.NewSQLiteStore(db)
+	holdsStore, err := initStore(db, "holds", holds.NewSQLiteStore)
 	if err != nil {
-		return fmt.Errorf("init holds store: %w", err)
+		return err
 	}
-	labelStore, err := labels.NewSQLiteStore(db)
+	labelStore, err := initStore(db, "labels", labels.NewSQLiteStore)
 	if err != nil {
-		return fmt.Errorf("init labels store: %w", err)
+		return err
 	}
-	labelStyleStore, err := labels.NewSQLiteStyleStore(db)
+	labelStyleStore, err := initStore(db, "labelStyles", labels.NewSQLiteStyleStore)
 	if err != nil {
-		return fmt.Errorf("init label styles store: %w", err)
+		return err
 	}
 	authSvc := auth.NewService(authStore, secret, useTLS)
 	authSvc.TOTPStore = authStore
@@ -875,6 +875,19 @@ func handleAPINotFound(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusNotFound)
 	_, _ = w.Write([]byte(`{"error":"not found"}`))
+}
+
+// initStore is the shared store-constructor wrapper used by run(). Each
+// production store's New*Store function is called via this helper so a
+// single error-wrapping site replaces 17 identical `if err != nil {
+// return fmt.Errorf("init X store: %w", err) }` blocks. The error path
+// is testable end-to-end via TestInitStoreWrapsError.
+func initStore[T any](db *sql.DB, label string, ctor func(*sql.DB) (T, error)) (T, error) {
+	v, err := ctor(db)
+	if err != nil {
+		return v, fmt.Errorf("init %s store: %w", label, err)
+	}
+	return v, nil
 }
 
 func spaHandler() http.Handler {
