@@ -37,6 +37,7 @@ jobs:
       - name: Run trivy on the working tree
         run: |
           "$HOME/bin/trivy" fs . \
+            --scanners vuln,secret,misconfig \
             --severity HIGH,CRITICAL \
             --ignore-unfixed \
             --exit-code 1 \
@@ -80,6 +81,7 @@ jobs:
       - name: Run trivy on the built image
         run: |
           "$HOME/bin/trivy" image system-wrangler:ci \
+            --scanners vuln,secret \
             --severity HIGH,CRITICAL \
             --ignore-unfixed \
             --exit-code 1 \
