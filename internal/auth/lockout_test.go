@@ -109,6 +109,36 @@ func TestLoginLockedRevealsOnCorrectPassword(t *testing.T) {
 	}
 }
 
+func TestLoginLockedWrongPasswordTicksIPThrottle(t *testing.T) {
+	store := &stubUserStore{}
+	svc := NewService(store, testSecret, false)
+	now := time.Date(2026, 5, 13, 12, 0, 0, 0, time.UTC)
+	svc.Now = func() time.Time { return now }
+	svc.LoginThrottle = NewThrottle(time.Minute, 10, func() time.Time { return now })
+
+	u := seedLockoutUser(t, store, "alice")
+	until := time.Date(2026, 5, 13, 12, 1, 0, 0, time.UTC)
+	got, _ := store.get(u.ID)
+	got.LockedUntil = &until
+	got.FailedAttempts = LockoutThreshold
+	store.put(got)
+
+	mux := http.NewServeMux()
+	svc.Register(mux)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	resp, err := http.Post(srv.URL+"/api/auth/login", "application/json",
+		strings.NewReader(`{"username":"alice","password":"wrongpassword"}`))
+	if err != nil {
+		t.Fatalf("login: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("status = %d, want 401", resp.StatusCode)
+	}
+}
+
 func TestLoginLockedHidesOnWrongPassword(t *testing.T) {
 	srv, _, store := newLockoutTestServer(t)
 	u := seedLockoutUser(t, store, "alice")
