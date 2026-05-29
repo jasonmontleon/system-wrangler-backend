@@ -3,6 +3,7 @@
 package auth
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"net/http/cookiejar"
@@ -734,6 +735,76 @@ func loggedInClientWith(t *testing.T, srv *httptest.Server, username string, sec
 	parsedURL, _ := url.Parse(srv.URL)
 	jar.SetCookies(parsedURL, []*http.Cookie{{Name: CookieName, Value: tok}}) //nolint:gosec // G124: test cookie attached to a jar; server-side attributes don't apply.
 	return &http.Client{Jar: jar}
+}
+
+func TestHandleTOTPSetupUnauthorized(t *testing.T) {
+	svc := NewService(&stubUserStore{}, testSecret, false)
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/api/auth/totp/setup", nil)
+	svc.handleTOTPSetup(w, r)
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("code = %d, want 401", w.Code)
+	}
+}
+
+func TestHandleTOTPConfirmUnauthorized(t *testing.T) {
+	svc := NewService(&stubUserStore{}, testSecret, false)
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/api/auth/totp/confirm",
+		strings.NewReader(`{"code":"123456"}`))
+	svc.handleTOTPConfirm(w, r)
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("code = %d, want 401", w.Code)
+	}
+}
+
+func TestHandleTOTPSetupNotConfigured(t *testing.T) {
+	store := &stubUserStore{}
+	svc := NewService(store, testSecret, false)
+	u := seedUser(t, store, "alice")
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/api/auth/totp/setup", nil).
+		WithContext(withUserCtx(t, u))
+	svc.handleTOTPSetup(w, r)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("code = %d, want 503", w.Code)
+	}
+}
+
+func TestHandleTOTPConfirmBadJSON(t *testing.T) {
+	store := &stubUserStore{}
+	svc := NewService(store, testSecret, false)
+	svc.Vault = fixedVault(t)
+	svc.TOTPStore = newStubTOTPStore()
+	svc.RecoveryStore = newStubRecoveryStore()
+	u := seedUser(t, store, "alice")
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/api/auth/totp/confirm",
+		strings.NewReader("not json")).WithContext(withUserCtx(t, u))
+	svc.handleTOTPConfirm(w, r)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("code = %d, want 400", w.Code)
+	}
+}
+
+func TestHandleTOTPConfirmEmptyCode(t *testing.T) {
+	store := &stubUserStore{}
+	svc := NewService(store, testSecret, false)
+	svc.Vault = fixedVault(t)
+	svc.TOTPStore = newStubTOTPStore()
+	svc.RecoveryStore = newStubRecoveryStore()
+	u := seedUser(t, store, "alice")
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/api/auth/totp/confirm",
+		strings.NewReader(`{"code":""}`)).WithContext(withUserCtx(t, u))
+	svc.handleTOTPConfirm(w, r)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("code = %d, want 400", w.Code)
+	}
+}
+
+func withUserCtx(_ *testing.T, u User) context.Context {
+	return WithUser(context.Background(), u)
 }
 
 func TestHandleLoginBadJSON(t *testing.T) {
