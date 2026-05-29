@@ -84,6 +84,27 @@ jobs:
 
       - run: govulncheck ./...
 
+  gitleaks:
+    name: gitleaks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install gitleaks
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/bin"
+          tmp=$(mktemp -d)
+          curl -sSfL https://api.github.com/repos/gitleaks/gitleaks/releases/latest \
+            | grep "browser_download_url.*linux_x64.tar.gz" \
+            | cut -d '"' -f 4 \
+            | xargs curl -sSfL -o "$tmp/gitleaks.tar.gz"
+          tar -xzf "$tmp/gitleaks.tar.gz" -C "$tmp"
+          install -m 0755 "$tmp/gitleaks" "$HOME/bin/gitleaks"
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+      - run: gitleaks detect --redact --verbose
+
   dco:
     name: DCO sign-off on every commit
     runs-on: ubuntu-latest
