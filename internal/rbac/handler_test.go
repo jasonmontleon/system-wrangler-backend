@@ -130,6 +130,87 @@ func doReq(t *testing.T, req *http.Request) *http.Response {
 	return resp
 }
 
+type failStore struct {
+	Store
+	listByGroupErr error
+	revokeErr      error
+}
+
+func (f *failStore) ListByGroup(string) ([]Assignment, error) {
+	if f.listByGroupErr != nil {
+		return nil, f.listByGroupErr
+	}
+	return f.Store.ListByGroup("")
+}
+
+func (f *failStore) Revoke(a Assignment) error {
+	if f.revokeErr != nil {
+		return f.revokeErr
+	}
+	return f.Store.Revoke(a)
+}
+
+func TestListGroupStoreError500(t *testing.T) {
+	f := newHandlerFixture(t)
+	g, err := f.grp.Create(groups.GroupInput{Name: "g"})
+	if err != nil {
+		t.Fatalf("group: %v", err)
+	}
+	// Swap in a failStore that always errors ListByGroup.
+	h := NewHandler(&failStore{listByGroupErr: errStubRBAC("rows boom"), Store: f.store}, f.auth, f.grp)
+	h.Audit = f.audit
+	mux := http.NewServeMux()
+	mw := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ctx := WithScope(r.Context(), NewScope("u", []Assignment{{UserID: "u", Role: RoleAdmin}}))
+			next.ServeHTTP(w, r.WithContext(ctx))
+		})
+	}
+	h.Register(mux, mw)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	resp, _ := http.Get(srv.URL + "/api/groups/" + g.ID + "/role-assignments")
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", resp.StatusCode)
+	}
+}
+
+func TestRevokeGroupStoreError500(t *testing.T) {
+	f := newHandlerFixture(t)
+	g, err := f.grp.Create(groups.GroupInput{Name: "g"})
+	if err != nil {
+		t.Fatalf("group: %v", err)
+	}
+	u, err := f.auth.Create("alice", "hash")
+	if err != nil {
+		t.Fatalf("user: %v", err)
+	}
+	h := NewHandler(&failStore{revokeErr: errStubRBAC("revoke boom"), Store: f.store}, f.auth, f.grp)
+	h.Audit = f.audit
+	mux := http.NewServeMux()
+	mw := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ctx := WithScope(r.Context(), NewScope("u", []Assignment{{UserID: "u", Role: RoleAdmin}}))
+			next.ServeHTTP(w, r.WithContext(ctx))
+		})
+	}
+	h.Register(mux, mw)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	req, _ := http.NewRequest(http.MethodDelete,
+		srv.URL+"/api/groups/"+g.ID+"/role-assignments/"+u.ID+"/admin", nil)
+	resp, _ := http.DefaultClient.Do(req)
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", resp.StatusCode)
+	}
+}
+
+type errStubRBAC string
+
+func (e errStubRBAC) Error() string { return string(e) }
+
 func TestGrantGroupAsGlobalAdmin(t *testing.T) {
 	f := newHandlerFixture(t)
 	target := f.mustUser(t, "alice")
