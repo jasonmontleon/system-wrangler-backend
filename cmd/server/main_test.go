@@ -469,12 +469,31 @@ func TestPopulatedEndpointsRespondAfterSetup(t *testing.T) {
 		t.Fatalf("group-admin login status = %d", loginResp.StatusCode)
 	}
 
+	// Assign the smoke system into the group so the group admin can
+	// see it; this also walks more per-system closures via group-admin
+	// scope.
+	putAssign, _ := http.NewRequest(http.MethodPut, srv.URL+"/api/systems/"+sysID+"/group",
+		strings.NewReader(`{"groupId":"`+groupID+`"}`))
+	putAssign.Header.Set("Content-Type", "application/json")
+	if csrfTok != "" {
+		putAssign.Header.Set("X-CSRF-Token", csrfTok)
+	}
+	if r, err := client.Do(putAssign); err == nil {
+		_ = r.Body.Close()
+	}
+
 	// Hit endpoints that flow through CanManageSystem / CanReadSystem
 	// closures so the !IsGlobalAdmin → RoleOnGroup branch executes.
 	gaEndpoints := []string{
 		"/api/systems",
+		"/api/systems/" + sysID,
+		"/api/systems/" + sysID + "/exporters",
+		"/api/systems/" + sysID + "/host-keys",
+		"/api/systems/" + sysID + "/ansible-credential",
+		"/api/systems/" + sysID + "/package-exclusions",
 		"/api/groups",
 		"/api/groups/" + groupID,
+		"/api/groups/" + groupID + "/package-exclusions",
 		"/api/auth/status",
 	}
 	for _, p := range gaEndpoints {
