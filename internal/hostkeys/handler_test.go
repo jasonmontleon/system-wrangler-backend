@@ -468,6 +468,67 @@ func (l *listErrStore) List(string) ([]HostKey, error) {
 	return nil, l.err
 }
 
+type acceptErrStore struct {
+	Store
+	err error
+}
+
+func (a *acceptErrStore) Accept(string, string, string, string) (HostKey, bool, error) {
+	return HostKey{}, false, a.err
+}
+
+func (a *acceptErrStore) AcceptedFor(string) ([]HostKey, error) {
+	return nil, nil
+}
+
+func TestAcceptMissingFields(t *testing.T) {
+	f := newFixture(t)
+	sys := f.addSystem(t, "accept-bad")
+	resp := f.do(t, http.MethodPost, "/api/systems/"+sys.ID+"/host-keys/accept", map[string]any{
+		"algorithm": "ssh-ed25519",
+		// no fingerprint
+	})
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", resp.StatusCode)
+	}
+}
+
+func TestAcceptStoreInternalError(t *testing.T) {
+	f := newFixture(t)
+	sys := f.addSystem(t, "accept-err")
+	h := &Handler{
+		Store:           &acceptErrStore{Store: f.store, err: errors.New("accept boom")},
+		Systems:         f.systems,
+		Audit:           f.audit,
+		CanManageSystem: func(context.Context, systems.System) bool { return true },
+	}
+	mux := http.NewServeMux()
+	h.Register(mux, nil)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	req, _ := http.NewRequest(http.MethodPost,
+		srv.URL+"/api/systems/"+sys.ID+"/host-keys/accept",
+		bytes.NewBufferString(`{"algorithm":"ssh-ed25519","fingerprint":"SHA256:x"}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp, _ := http.DefaultClient.Do(req)
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", resp.StatusCode)
+	}
+}
+
+func TestScanMissingSystemForbidden(t *testing.T) {
+	f := newFixture(t)
+	sys := f.addSystem(t, "scan-forb")
+	f.allow = func(context.Context, systems.System) bool { return false }
+	resp := f.do(t, http.MethodPost, "/api/systems/"+sys.ID+"/host-keys/scan", nil)
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("status = %d, want 403", resp.StatusCode)
+	}
+}
+
 type getErrStore struct {
 	Store
 	err error

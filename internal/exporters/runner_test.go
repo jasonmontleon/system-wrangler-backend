@@ -272,6 +272,58 @@ func TestConflictWhenLockHeld(t *testing.T) {
 	}
 }
 
+func TestRunnerNowDefaultsToTimeNow(t *testing.T) {
+	r := &Runner{}
+	got := r.now()
+	if got.IsZero() {
+		t.Error("now() = zero time, want time.Now()")
+	}
+}
+
+func TestRunnerNewIDDefaultsToUUID(t *testing.T) {
+	r := &Runner{}
+	got := r.newID()
+	if got == "" {
+		t.Error("newID() = empty, want a generated UUID")
+	}
+}
+
+func TestRunnerLogStartWithoutAuditIsNoop(_ *testing.T) {
+	r := &Runner{} // nil Audit
+	// Should not panic.
+	r.logStart(context.Background(), audit.Event{Action: "test"})
+}
+
+func TestRunnerLogCompleteWithoutAuditIsNoop(_ *testing.T) {
+	r := &Runner{} // nil Audit
+	// Should not panic.
+	r.logComplete(context.Background(), "test", audit.Success, "sys", "parent", time.Now(), audit.Detail{})
+}
+
+func TestRunOneRejectsDeletedExporter(t *testing.T) {
+	f := newRunnerFixture(t)
+	d := Definition{
+		ID:                  "custom.delme",
+		Source:              SourceCustom,
+		DisplayName:         "delme",
+		AppliesToPkgManager: "builtin.apt",
+		ExporterKind:        KindNodeExporter,
+		BindPort:            9100,
+		InstallPlaybook:     []byte("- hosts: all\n  tasks: []\n"),
+		StatusPlaybook:      []byte("- hosts: all\n  tasks: []\n"),
+	}
+	if _, err := f.store.CreateCustom(d); err != nil {
+		t.Fatalf("CreateCustom: %v", err)
+	}
+	if err := f.store.DeleteCustom("custom.delme", time.Now().UTC()); err != nil {
+		t.Fatalf("DeleteCustom: %v", err)
+	}
+	_, err := f.runner.Install(context.Background(), f.systemID, "custom.delme")
+	if !errors.Is(err, ErrNotFound) {
+		t.Errorf("err = %v, want ErrNotFound (deleted)", err)
+	}
+}
+
 func TestRunnerRejectsMissingID(t *testing.T) {
 	f := newRunnerFixture(t)
 	if _, err := f.runner.Install(context.Background(), "", "builtin.dnf.exporter"); !errors.Is(err, ErrInvalid) {

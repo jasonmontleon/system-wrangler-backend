@@ -590,6 +590,69 @@ func TestHandlerStoreErrors(t *testing.T) {
 	}
 }
 
+func TestHandlerBulkEventBadJSON(t *testing.T) {
+	h := NewHandler(newTestStore())
+	mux := http.NewServeMux()
+	h.Register(mux, nil)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	resp, err := http.Post(srv.URL+"/api/systems/bulk-event", "application/json",
+		strings.NewReader("not json"))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", resp.StatusCode)
+	}
+}
+
+func TestHandlerEnrichLabelsAbsorbsError(t *testing.T) {
+	store := newTestStore()
+	if _, err := store.Create(SystemInput{Name: "x", Hostname: "y"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	h := NewHandler(store)
+	h.SystemLabels = func([]string) (map[string][]labels.Label, error) {
+		return nil, errors.New("labels boom")
+	}
+	mux := http.NewServeMux()
+	h.Register(mux, nil)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	resp, err := http.Get(srv.URL + "/api/systems")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want 200 (labels error must not 500)", resp.StatusCode)
+	}
+}
+
+func TestHandlerEnrichStatsAbsorbsError(t *testing.T) {
+	store := newTestStore()
+	if _, err := store.Create(SystemInput{Name: "x", Hostname: "y"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	h := NewHandler(store)
+	h.SystemStats = func() (map[string]Stats, error) {
+		return nil, errors.New("stats boom")
+	}
+	mux := http.NewServeMux()
+	h.Register(mux, nil)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	resp, err := http.Get(srv.URL + "/api/systems")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want 200 (stats error must not 500)", resp.StatusCode)
+	}
+}
+
 type stubStore struct{ err error }
 
 func (s *stubStore) Create(SystemInput) (System, error)            { return System{}, s.err }
