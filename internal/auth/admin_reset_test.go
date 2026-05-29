@@ -5,7 +5,9 @@ package auth
 import (
 	"io"
 	"net/http"
+	"net/http/cookiejar"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -595,6 +597,143 @@ func TestSQLiteAuthStoreClosedDBSurfacesErrors(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestHandleUpdateProfileUnauthorized(t *testing.T) {
+	svc := NewService(&stubUserStore{}, testSecret, false)
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPut, "/api/auth/profile",
+		strings.NewReader(`{"email":"e","theme":"light"}`))
+	svc.handleUpdateProfile(w, r)
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("code = %d, want 401", w.Code)
+	}
+}
+
+func TestHandleUpdateProfileBadJSON(t *testing.T) {
+	store := &stubUserStore{}
+	svc := NewService(store, testSecret, false)
+	mux := http.NewServeMux()
+	svc.RegisterProtected(mux, RequireUser(testSecret, store, svc.Now))
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	user := seedUser(t, store, "alice")
+	_ = user
+	client := loggedInClientWith(t, srv, "alice", testSecret, store, svc.Now)
+	req, _ := http.NewRequest(http.MethodPatch, srv.URL+"/api/auth/profile",
+		strings.NewReader("not json"))
+	req.Header.Set("Content-Type", "application/json")
+	resp, _ := client.Do(req)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", resp.StatusCode)
+	}
+}
+
+func TestHandleUpdateProfileInvalidTheme(t *testing.T) {
+	store := &stubUserStore{}
+	svc := NewService(store, testSecret, false)
+	mux := http.NewServeMux()
+	svc.RegisterProtected(mux, RequireUser(testSecret, store, svc.Now))
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	seedUser(t, store, "alice")
+	client := loggedInClientWith(t, srv, "alice", testSecret, store, svc.Now)
+	req, _ := http.NewRequest(http.MethodPatch, srv.URL+"/api/auth/profile",
+		strings.NewReader(`{"email":"","theme":"neon-pink"}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp, _ := client.Do(req)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", resp.StatusCode)
+	}
+}
+
+func TestHandleUpdateProfileStoreUserNotFound(t *testing.T) {
+	store := &stubUserStore{failOn: "UpdateProfile", err: ErrUserNotFound}
+	svc := NewService(store, testSecret, false)
+	mux := http.NewServeMux()
+	svc.RegisterProtected(mux, RequireUser(testSecret, store, svc.Now))
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	seedUser(t, store, "alice")
+	client := loggedInClientWith(t, srv, "alice", testSecret, store, svc.Now)
+	req, _ := http.NewRequest(http.MethodPatch, srv.URL+"/api/auth/profile",
+		strings.NewReader(`{"email":"a@b","theme":"light"}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp, _ := client.Do(req)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", resp.StatusCode)
+	}
+}
+
+func TestHandleChangePasswordUnauthorized(t *testing.T) {
+	svc := NewService(&stubUserStore{}, testSecret, false)
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPut, "/api/auth/password",
+		strings.NewReader(`{"currentPassword":"a","newPassword":"b"}`))
+	svc.handleChangePassword(w, r)
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("code = %d, want 401", w.Code)
+	}
+}
+
+func TestHandleChangePasswordBadJSON(t *testing.T) {
+	store := &stubUserStore{}
+	svc := NewService(store, testSecret, false)
+	mux := http.NewServeMux()
+	svc.RegisterProtected(mux, RequireUser(testSecret, store, svc.Now))
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	seedUser(t, store, "alice")
+	client := loggedInClientWith(t, srv, "alice", testSecret, store, svc.Now)
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/auth/password",
+		strings.NewReader("not json"))
+	req.Header.Set("Content-Type", "application/json")
+	resp, _ := client.Do(req)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", resp.StatusCode)
+	}
+}
+
+func TestHandleChangePasswordEmptyFields(t *testing.T) {
+	store := &stubUserStore{}
+	svc := NewService(store, testSecret, false)
+	mux := http.NewServeMux()
+	svc.RegisterProtected(mux, RequireUser(testSecret, store, svc.Now))
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	seedUser(t, store, "alice")
+	client := loggedInClientWith(t, srv, "alice", testSecret, store, svc.Now)
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/auth/password",
+		strings.NewReader(`{"currentPassword":"","newPassword":""}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp, _ := client.Do(req)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", resp.StatusCode)
+	}
+}
+
+// loggedInClientWith builds a cookie-jar client whose session cookie is
+// pre-signed for username — bypassing the login round-trip for tests
+// that only care about the post-login handlers.
+func loggedInClientWith(t *testing.T, srv *httptest.Server, username string, secret []byte, store UserStore, now func() time.Time) *http.Client {
+	t.Helper()
+	u, _, err := store.GetByUsername(username)
+	if err != nil {
+		t.Fatalf("GetByUsername(%s): %v", username, err)
+	}
+	tok, err := SignSession(secret, u.ID, now().Add(time.Hour))
+	if err != nil {
+		t.Fatalf("SignSession: %v", err)
+	}
+	jar, _ := cookiejar.New(nil)
+	parsedURL, _ := url.Parse(srv.URL)
+	jar.SetCookies(parsedURL, []*http.Cookie{{Name: CookieName, Value: tok}})
+	return &http.Client{Jar: jar}
 }
 
 func TestHandleLoginBadJSON(t *testing.T) {
