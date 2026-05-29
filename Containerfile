@@ -3,7 +3,8 @@
 FROM quay.io/centos/centos:stream10 AS frontend-build
 RUN dnf update -y \
  && dnf install -y --setopt=install_weak_deps=False nodejs npm \
- && dnf clean all && rm -rf /var/cache/dnf
+ && dnf clean all && rm -rf /var/cache/dnf \
+ && rm -f /usr/lib/sysimage/rpm/rpmdb.sqlite-shm /usr/lib/sysimage/rpm/rpmdb.sqlite-wal
 WORKDIR /app
 COPY --from=frontend package.json package-lock.json* ./
 RUN npm ci
@@ -41,6 +42,7 @@ RUN dnf update -y \
         openssh-clients \
         ansible-core \
  && dnf clean all && rm -rf /var/cache/dnf \
+ && rm -f /usr/lib/sysimage/rpm/rpmdb.sqlite-shm /usr/lib/sysimage/rpm/rpmdb.sqlite-wal \
  && ansible-galaxy collection install --collections-path /usr/share/ansible/collections ansible.windows \
  && useradd --uid 65532 --user-group --create-home --shell /sbin/nologin app
 COPY --from=backend-build /out/server /usr/local/bin/server
