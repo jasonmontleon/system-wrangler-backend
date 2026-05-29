@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -262,5 +263,44 @@ func TestIsUniqueViolation(t *testing.T) {
 	}
 	if isUniqueViolation(errors.New("some other error")) {
 		t.Error("isUniqueViolation unrelated message: got true")
+	}
+}
+
+func TestInputValidate(t *testing.T) {
+	cases := []struct {
+		name    string
+		in      Input
+		wantErr bool
+	}{
+		{"missing updater", Input{Pattern: "kernel*"}, true},
+		{"bad updater shape", Input{Updater: "no-dot", Pattern: "kernel*"}, true},
+		{"missing pattern", Input{Updater: "builtin.dnf"}, true},
+		{"pattern too long", Input{Updater: "builtin.dnf", Pattern: strings.Repeat("a", MaxPatternLen+1)}, true},
+		{"reason too long", Input{Updater: "builtin.dnf", Pattern: "x*", Reason: strings.Repeat("b", MaxReasonLen+1)}, true},
+		{"star updater accepted", Input{Updater: "*", Pattern: "x*"}, false},
+		{"custom updater accepted", Input{Updater: "custom.my", Pattern: "x*"}, false},
+		{"ok with reason", Input{Updater: "builtin.dnf", Pattern: "kernel*", Reason: "pinned"}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.in.Validate()
+			if tc.wantErr && err == nil {
+				t.Error("Validate = nil, want error")
+			}
+			if !tc.wantErr && err != nil {
+				t.Errorf("Validate = %v, want nil", err)
+			}
+		})
+	}
+}
+
+func TestScopeIsValid(t *testing.T) {
+	for _, s := range []Scope{ScopeGlobal, ScopeGroup, ScopeSystem} {
+		if !s.IsValid() {
+			t.Errorf("Scope(%q).IsValid() = false", s)
+		}
+	}
+	if Scope("nonsense").IsValid() {
+		t.Error("Scope('nonsense').IsValid() = true")
 	}
 }

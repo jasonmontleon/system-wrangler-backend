@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -390,6 +391,90 @@ func TestDeleteMissingKey(t *testing.T) {
 	if resp.StatusCode != http.StatusNotFound {
 		t.Errorf("status = %d, want 404", resp.StatusCode)
 	}
+}
+
+func TestListStoreError500(t *testing.T) {
+	f := newFixture(t)
+	sys := f.addSystem(t, "list-err")
+	h := &Handler{
+		Store:           &listErrStore{Store: f.store, err: errors.New("rows boom")},
+		Systems:         f.systems,
+		Audit:           f.audit,
+		CanManageSystem: func(context.Context, systems.System) bool { return true },
+	}
+	mux := http.NewServeMux()
+	h.Register(mux, nil)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	resp, _ := http.Get(srv.URL + "/api/systems/" + sys.ID + "/host-keys")
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", resp.StatusCode)
+	}
+}
+
+func TestAcceptBadJSON(t *testing.T) {
+	f := newFixture(t)
+	sys := f.addSystem(t, "bad-json")
+	req, _ := http.NewRequest(http.MethodPost,
+		f.srv.URL+"/api/systems/"+sys.ID+"/host-keys/accept",
+		bytes.NewBufferString("not json"))
+	req.Header.Set("Content-Type", "application/json")
+	resp, _ := http.DefaultClient.Do(req)
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", resp.StatusCode)
+	}
+}
+
+func TestDeleteForbidden(t *testing.T) {
+	f := newFixture(t)
+	sys := f.addSystem(t, "del-forb")
+	f.allow = func(context.Context, systems.System) bool { return false }
+	resp := f.do(t, http.MethodDelete, "/api/systems/"+sys.ID+"/host-keys/anything", nil)
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("status = %d, want 403", resp.StatusCode)
+	}
+}
+
+func TestDeleteStoreErrorOnLookup(t *testing.T) {
+	f := newFixture(t)
+	sys := f.addSystem(t, "del-err")
+	h := &Handler{
+		Store:           &getErrStore{Store: f.store, err: errors.New("get boom")},
+		Systems:         f.systems,
+		Audit:           f.audit,
+		CanManageSystem: func(context.Context, systems.System) bool { return true },
+	}
+	mux := http.NewServeMux()
+	h.Register(mux, nil)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/api/systems/"+sys.ID+"/host-keys/x", nil)
+	resp, _ := http.DefaultClient.Do(req)
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", resp.StatusCode)
+	}
+}
+
+type listErrStore struct {
+	Store
+	err error
+}
+
+func (l *listErrStore) List(string) ([]HostKey, error) {
+	return nil, l.err
+}
+
+type getErrStore struct {
+	Store
+	err error
+}
+
+func (g *getErrStore) Get(string) (HostKey, error) {
+	return HostKey{}, g.err
 }
 
 func TestAcceptForbidden(t *testing.T) {

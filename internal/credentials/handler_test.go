@@ -620,6 +620,81 @@ func TestPutUserSuppliedRequiresPEM(t *testing.T) {
 	}
 }
 
+func TestGetGroupMissingGroup(t *testing.T) {
+	f := newFixture(t)
+	resp := f.do(t, http.MethodGet, "/api/groups/ghost/ansible-credential", nil)
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", resp.StatusCode)
+	}
+}
+
+func TestGetGroupForbidden(t *testing.T) {
+	f := newFixture(t)
+	g, _ := f.groups.Create(groups.GroupInput{Name: "g"})
+	f.allowGroup = func(context.Context, string) bool { return false }
+	resp := f.do(t, http.MethodGet, "/api/groups/"+g.ID+"/ansible-credential", nil)
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("status = %d, want 403", resp.StatusCode)
+	}
+}
+
+func TestPutGroupForbidden(t *testing.T) {
+	f := newFixture(t)
+	g, _ := f.groups.Create(groups.GroupInput{Name: "g-put"})
+	f.allowGroup = func(context.Context, string) bool { return false }
+	resp := f.do(t, http.MethodPut, "/api/groups/"+g.ID+"/ansible-credential", map[string]any{
+		"ansibleUser": "ansible",
+	})
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("status = %d, want 403", resp.StatusCode)
+	}
+}
+
+func TestPutGroupMissingGroupOnPut(t *testing.T) {
+	f := newFixture(t)
+	resp := f.do(t, http.MethodPut, "/api/groups/ghost/ansible-credential", map[string]any{
+		"ansibleUser": "ansible",
+	})
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", resp.StatusCode)
+	}
+}
+
+func TestDeleteGroupForbidden(t *testing.T) {
+	f := newFixture(t)
+	g, _ := f.groups.Create(groups.GroupInput{Name: "g-del"})
+	f.allowGroup = func(context.Context, string) bool { return false }
+	resp := f.do(t, http.MethodDelete, "/api/groups/"+g.ID+"/ansible-credential", nil)
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("status = %d, want 403", resp.StatusCode)
+	}
+}
+
+func TestSystemSlotMissingSystemOnPut(t *testing.T) {
+	f := newFixture(t)
+	resp := f.do(t, http.MethodPut, "/api/systems/ghost/ansible-credential", map[string]any{
+		"ansibleUser": "ansible",
+	})
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", resp.StatusCode)
+	}
+}
+
+func TestSystemSlotMissingSystemOnDelete(t *testing.T) {
+	f := newFixture(t)
+	resp := f.do(t, http.MethodDelete, "/api/systems/ghost/ansible-credential", nil)
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", resp.StatusCode)
+	}
+}
+
 func TestPutGroupMissingThenSet(t *testing.T) {
 	f := newFixture(t)
 	g, _ := f.groups.Create(groups.GroupInput{Name: "g"})

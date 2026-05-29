@@ -234,6 +234,187 @@ func TestAdminUpdateBadID(t *testing.T) {
 	}
 }
 
+func TestAdminCreateBadJSON(t *testing.T) {
+	_, srv, _ := newAdminFixture(t)
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/admin/exporter-definitions",
+		bytes.NewBufferString("not json"))
+	req.Header.Set("Content-Type", "application/json")
+	resp, _ := http.DefaultClient.Do(req)
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", resp.StatusCode)
+	}
+}
+
+func TestAdminCreateEmptyIDRejected(t *testing.T) {
+	_, srv, _ := newAdminFixture(t)
+	resp := postJSON(t, srv.URL+"/api/admin/exporter-definitions", createInputDTO{ID: ""})
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", resp.StatusCode)
+	}
+}
+
+func TestAdminCreateConflictOnDuplicate(t *testing.T) {
+	_, srv, _ := newAdminFixture(t)
+	in := createInputDTO{
+		ID:                  "dup",
+		DisplayName:         "Dup",
+		AppliesToPkgManager: "builtin.apt",
+		ExporterKind:        KindNodeExporter,
+		BindPort:            9100,
+		InstallPlaybook:     "- hosts: all\n  tasks: []\n",
+		StatusPlaybook:      "- hosts: all\n  tasks: []\n",
+	}
+	resp := postJSON(t, srv.URL+"/api/admin/exporter-definitions", in)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("first create status = %d", resp.StatusCode)
+	}
+	resp2 := postJSON(t, srv.URL+"/api/admin/exporter-definitions", in)
+	defer func() { _ = resp2.Body.Close() }()
+	if resp2.StatusCode != http.StatusConflict {
+		t.Errorf("second create status = %d, want 409", resp2.StatusCode)
+	}
+}
+
+func TestAdminUpdateForbidden(t *testing.T) {
+	dsn := "file:" + filepath.Join(t.TempDir(), "admin-u-forbidden.db")
+	db, err := database.Open(dsn)
+	if err != nil {
+		t.Fatalf("db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	_, _ = systems.NewSQLiteStore(db)
+	store, _ := NewSQLiteStore(db)
+	auditStore, _ := audit.NewSQLiteStore(db)
+	h := &AdminHandler{
+		Registry:  NewRegistry(store),
+		Audit:     auditStore,
+		CanManage: func(context.Context) bool { return false },
+	}
+	mux := http.NewServeMux()
+	h.Register(mux, nil)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	resp := patchJSON(t, srv.URL+"/api/admin/exporter-definitions/custom.x", updateInputDTO{})
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("status = %d, want 403", resp.StatusCode)
+	}
+}
+
+func TestAdminUpdateBadJSON(t *testing.T) {
+	_, srv, _ := newAdminFixture(t)
+	req, _ := http.NewRequest(http.MethodPatch, srv.URL+"/api/admin/exporter-definitions/custom.x",
+		bytes.NewBufferString("not json"))
+	req.Header.Set("Content-Type", "application/json")
+	resp, _ := http.DefaultClient.Do(req)
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", resp.StatusCode)
+	}
+}
+
+func TestAdminUpdateUnknown(t *testing.T) {
+	_, srv, _ := newAdminFixture(t)
+	resp := patchJSON(t, srv.URL+"/api/admin/exporter-definitions/custom.nope", updateInputDTO{
+		DisplayName:         "x",
+		AppliesToPkgManager: "builtin.apt",
+		ExporterKind:        KindNodeExporter,
+		BindPort:            9100,
+		InstallPlaybook:     "- hosts: all\n  tasks: []\n",
+		StatusPlaybook:      "- hosts: all\n  tasks: []\n",
+	})
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", resp.StatusCode)
+	}
+}
+
+func TestAdminDeleteForbidden(t *testing.T) {
+	dsn := "file:" + filepath.Join(t.TempDir(), "admin-d-forbidden.db")
+	db, _ := database.Open(dsn)
+	t.Cleanup(func() { _ = db.Close() })
+	_, _ = systems.NewSQLiteStore(db)
+	store, _ := NewSQLiteStore(db)
+	auditStore, _ := audit.NewSQLiteStore(db)
+	h := &AdminHandler{
+		Registry:  NewRegistry(store),
+		Audit:     auditStore,
+		CanManage: func(context.Context) bool { return false },
+	}
+	mux := http.NewServeMux()
+	h.Register(mux, nil)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/api/admin/exporter-definitions/custom.x", nil)
+	resp, _ := http.DefaultClient.Do(req)
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("status = %d, want 403", resp.StatusCode)
+	}
+}
+
+func TestAdminDeleteBadID(t *testing.T) {
+	_, srv, _ := newAdminFixture(t)
+	req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/api/admin/exporter-definitions/builtin.dnf.exporter", nil)
+	resp, _ := http.DefaultClient.Do(req)
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", resp.StatusCode)
+	}
+}
+
+func TestAdminCanManageNilAllowsThrough(t *testing.T) {
+	dsn := "file:" + filepath.Join(t.TempDir(), "admin-nilcanmanage.db")
+	db, _ := database.Open(dsn)
+	t.Cleanup(func() { _ = db.Close() })
+	_, _ = systems.NewSQLiteStore(db)
+	store, _ := NewSQLiteStore(db)
+	auditStore, _ := audit.NewSQLiteStore(db)
+	h := &AdminHandler{
+		Registry: NewRegistry(store),
+		Syntax:   stubSyntax{},
+		Audit:    auditStore,
+	}
+	mux := http.NewServeMux()
+	h.Register(mux, nil)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	resp := postJSON(t, srv.URL+"/api/admin/exporter-definitions", createInputDTO{
+		ID:                  "nilcheck",
+		DisplayName:         "nilcheck",
+		AppliesToPkgManager: "builtin.apt",
+		ExporterKind:        KindNodeExporter,
+		BindPort:            9100,
+		InstallPlaybook:     "- hosts: all\n  tasks: []\n",
+		StatusPlaybook:      "- hosts: all\n  tasks: []\n",
+	})
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusCreated {
+		t.Errorf("status = %d, want 201", resp.StatusCode)
+	}
+}
+
+func TestAdminGuardChecksRemoveCredentials(t *testing.T) {
+	_, srv, _ := newAdminFixture(t)
+	resp := postJSON(t, srv.URL+"/api/admin/exporter-definitions", createInputDTO{
+		ID:                  "rmleak",
+		DisplayName:         "rmleak",
+		AppliesToPkgManager: "builtin.apt",
+		ExporterKind:        KindNodeExporter,
+		BindPort:            9100,
+		InstallPlaybook:     "- hosts: all\n  tasks: []\n",
+		StatusPlaybook:      "- hosts: all\n  tasks: []\n",
+		RemovePlaybook:      "- hosts: all\n  vars:\n    password: leak\n",
+	})
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", resp.StatusCode)
+	}
+}
+
 func TestAdminDeleteUnknown(t *testing.T) {
 	_, srv, _ := newAdminFixture(t)
 	req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/api/admin/exporter-definitions/custom.unknown", nil)

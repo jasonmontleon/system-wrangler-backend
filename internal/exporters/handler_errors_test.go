@@ -5,10 +5,12 @@ package exporters
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"system-wrangler-backend/internal/systems"
 )
@@ -125,6 +127,149 @@ func TestHandlerListRunsScopeBlocked(t *testing.T) {
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusNotFound {
 		t.Errorf("status = %d, want 404", resp.StatusCode)
+	}
+}
+
+type listErrStore struct {
+	Store
+	err error
+}
+
+func (l *listErrStore) ListSystemExporters(string) ([]SystemExporter, error) {
+	return nil, l.err
+}
+
+type settingsErrStore struct {
+	Store
+	err error
+}
+
+func (s *settingsErrStore) GetSettings(string) (SystemSettings, error) {
+	return SystemSettings{}, s.err
+}
+
+func TestHandlerListNoRunnerReturns503(t *testing.T) {
+	rf := newRunnerFixture(t)
+	h := &Handler{
+		Store:            rf.store,
+		Systems:          lookupFn(func(string) (systems.System, error) { return systems.System{ID: rf.systemID}, nil }),
+		CanReadSystem:    func(context.Context, systems.System) bool { return true },
+		CanOperateSystem: func(context.Context, systems.System) bool { return true },
+	}
+	mux := http.NewServeMux()
+	h.Register(mux, nil)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	resp, _ := http.Get(srv.URL + "/api/systems/" + rf.systemID + "/exporters")
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Errorf("status = %d, want 503", resp.StatusCode)
+	}
+}
+
+func TestHandlerListSystemExportersError500(t *testing.T) {
+	rf := newRunnerFixture(t)
+	h := &Handler{
+		Runner:           rf.runner,
+		Store:            &listErrStore{Store: rf.store, err: errors.New("rows boom")},
+		Systems:          lookupFn(func(string) (systems.System, error) { return systems.System{ID: rf.systemID}, nil }),
+		CanReadSystem:    func(context.Context, systems.System) bool { return true },
+		CanOperateSystem: func(context.Context, systems.System) bool { return true },
+		Probe:            stubProbe{managers: []string{"builtin.dnf"}},
+	}
+	mux := http.NewServeMux()
+	h.Register(mux, nil)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	resp, _ := http.Get(srv.URL + "/api/systems/" + rf.systemID + "/exporters")
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", resp.StatusCode)
+	}
+}
+
+func TestHandlerListSettingsError500(t *testing.T) {
+	rf := newRunnerFixture(t)
+	h := &Handler{
+		Runner:           rf.runner,
+		Store:            &settingsErrStore{Store: rf.store, err: errors.New("settings boom")},
+		Systems:          lookupFn(func(string) (systems.System, error) { return systems.System{ID: rf.systemID}, nil }),
+		CanReadSystem:    func(context.Context, systems.System) bool { return true },
+		CanOperateSystem: func(context.Context, systems.System) bool { return true },
+		Probe:            stubProbe{managers: []string{"builtin.dnf"}},
+	}
+	mux := http.NewServeMux()
+	h.Register(mux, nil)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	resp, _ := http.Get(srv.URL + "/api/systems/" + rf.systemID + "/exporters")
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", resp.StatusCode)
+	}
+}
+
+func TestHandlerListIncludesRemovedRow(t *testing.T) {
+	_, srv, rf := newHandlerFixture(t)
+	at := time.Now().UTC()
+	_ = rf.store.UpsertSystemExporter(SystemExporter{
+		SystemID: rf.systemID, ExporterID: "builtin.dnf.exporter",
+		State: StateRemoved, LastStatusAt: &at, LastReason: "uninstalled",
+	})
+	resp, _ := http.Get(srv.URL + "/api/systems/" + rf.systemID + "/exporters")
+	defer func() { _ = resp.Body.Close() }()
+	var body SystemExportersResponseDTO
+	_ = json.NewDecoder(resp.Body).Decode(&body)
+	var dnf *SystemExporterDTO
+	for i := range body.Exporters {
+		if body.Exporters[i].ExporterID == "builtin.dnf.exporter" {
+			dnf = &body.Exporters[i]
+		}
+	}
+	if dnf == nil {
+		t.Fatal("dnf builtin missing")
+	}
+	if dnf.Installed {
+		t.Errorf("Installed = true, want false (removed)")
+	}
+	if dnf.State != StateRemoved {
+		t.Errorf("State = %q, want removed", dnf.State)
+	}
+	if dnf.LastReason != "uninstalled" {
+		t.Errorf("LastReason = %q", dnf.LastReason)
+	}
+}
+
+func TestHandlerSetScrapeBadJSON(t *testing.T) {
+	_, srv, rf := newHandlerFixture(t)
+	req, _ := http.NewRequest(http.MethodPut,
+		srv.URL+"/api/systems/"+rf.systemID+"/exporters/builtin.dnf.exporter/scrape",
+		bytes.NewBufferString("not json"))
+	req.Header.Set("Content-Type", "application/json")
+	resp, _ := http.DefaultClient.Do(req)
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", resp.StatusCode)
+	}
+}
+
+func TestHandlerInstallNoRunnerReturns503(t *testing.T) {
+	rf := newRunnerFixture(t)
+	h := &Handler{
+		Store:            rf.store,
+		Systems:          lookupFn(func(string) (systems.System, error) { return systems.System{ID: rf.systemID}, nil }),
+		CanOperateSystem: func(context.Context, systems.System) bool { return true },
+		CanReadSystem:    func(context.Context, systems.System) bool { return true },
+	}
+	mux := http.NewServeMux()
+	h.Register(mux, nil)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	resp, _ := http.Post(srv.URL+"/api/systems/"+rf.systemID+"/exporters/builtin.dnf.exporter/install",
+		"application/json", nil)
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Errorf("status = %d, want 503", resp.StatusCode)
 	}
 }
 

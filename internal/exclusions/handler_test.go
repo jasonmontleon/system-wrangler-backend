@@ -520,6 +520,162 @@ func (erroringStore) ResolveEffectiveForSystem(string, string) ([]Exclusion, err
 	return nil, errStoreBoom
 }
 
+func TestHandlerDeleteGlobalForbiddenWithoutManage(t *testing.T) {
+	f := newHandlerFixture(t)
+	// Plant a row first as global admin would.
+	created, err := f.store.Create(ScopeGlobal, "", "builtin.dnf", "x*", "r", "u")
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	// Strip manage perms on the handler.
+	h := &Handler{
+		Store:           f.store,
+		CanManageGlobal: func(context.Context) bool { return false },
+	}
+	mux := http.NewServeMux()
+	h.Register(mux, nil)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/api/admin/package-exclusions/"+created.ID, nil)
+	resp, _ := http.DefaultClient.Do(req)
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("status = %d, want 403", resp.StatusCode)
+	}
+}
+
+func TestHandlerCreateGroupForbiddenWithoutManage(t *testing.T) {
+	h := &Handler{
+		Store:          noopStore{},
+		CanManageGroup: func(context.Context, string) bool { return false },
+	}
+	mux := http.NewServeMux()
+	h.Register(mux, nil)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	resp, _ := http.Post(srv.URL+"/api/groups/g1/package-exclusions", "application/json",
+		strings.NewReader(`{"updater":"builtin.dnf","pattern":"x*"}`))
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("status = %d, want 403", resp.StatusCode)
+	}
+}
+
+func TestHandlerDeleteSystemForbiddenWithoutManage(t *testing.T) {
+	h := &Handler{
+		Store:           noopStore{},
+		CanManageSystem: func(context.Context, string) bool { return false },
+	}
+	mux := http.NewServeMux()
+	h.Register(mux, nil)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/api/systems/s1/package-exclusions/x", nil)
+	resp, _ := http.DefaultClient.Do(req)
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("status = %d, want 403", resp.StatusCode)
+	}
+}
+
+func TestHandlerEffectiveSystemForbiddenReturns404(t *testing.T) {
+	h := &Handler{
+		Store:         noopStore{},
+		CanReadSystem: func(context.Context, string) bool { return false },
+	}
+	mux := http.NewServeMux()
+	h.Register(mux, nil)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	resp, _ := http.Get(srv.URL + "/api/systems/s1/package-exclusions/effective?updater=builtin.dnf")
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", resp.StatusCode)
+	}
+}
+
+func TestHandlerCreateScopeRejectsInvalidViaStore(t *testing.T) {
+	h := &Handler{
+		Store:           invalidCreateStore{},
+		CanManageGlobal: func(context.Context) bool { return true },
+	}
+	mux := http.NewServeMux()
+	h.Register(mux, func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ctx := audit.WithActor(r.Context(), audit.Actor{Kind: audit.ActorUser, ID: "u", Label: "u"})
+			next.ServeHTTP(w, r.WithContext(ctx))
+		})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	resp, _ := http.Post(srv.URL+"/api/admin/package-exclusions", "application/json",
+		strings.NewReader(`{"updater":"builtin.dnf","pattern":"x*"}`))
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", resp.StatusCode)
+	}
+}
+
+type invalidCreateStore struct{ noopStore }
+
+func (invalidCreateStore) Create(Scope, string, string, string, string, string) (Exclusion, error) {
+	return Exclusion{}, ErrInvalid
+}
+
+func TestHandlerDeleteWrongScopeIs404(t *testing.T) {
+	f := newHandlerFixture(t)
+	created, err := f.store.Create(ScopeGroup, "g-abc", "builtin.dnf", "x*", "r", "u")
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	resp := f.do(t, http.MethodDelete, "/api/groups/g-DIFFERENT/package-exclusions/"+created.ID, "")
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", resp.StatusCode)
+	}
+}
+
+func TestHandlerGateAllowsWhenGateNil(t *testing.T) {
+	h := &Handler{Store: noopStore{}}
+	mux := http.NewServeMux()
+	h.Register(mux, nil)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	resp, _ := http.Get(srv.URL + "/api/admin/package-exclusions")
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want 200", resp.StatusCode)
+	}
+}
+
+func TestHandlerAuditNilDoesNotPanic(t *testing.T) {
+	dsn := "file:" + filepath.Join(t.TempDir(), "no-audit.db")
+	db, _ := database.Open(dsn)
+	t.Cleanup(func() { _ = db.Close() })
+	_, _ = systems.NewSQLiteStore(db)
+	_, _ = groups.NewSQLiteStore(db)
+	store, _ := NewSQLiteStore(db)
+	h := &Handler{
+		Store:           store,
+		CanManageGlobal: func(context.Context) bool { return true },
+	}
+	mux := http.NewServeMux()
+	h.Register(mux, func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ctx := audit.WithActor(r.Context(), audit.Actor{Kind: audit.ActorUser, ID: "u", Label: "u"})
+			next.ServeHTTP(w, r.WithContext(ctx))
+		})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	resp, _ := http.Post(srv.URL+"/api/admin/package-exclusions", "application/json",
+		strings.NewReader(`{"updater":"builtin.dnf","pattern":"x*"}`))
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusCreated {
+		t.Errorf("status = %d, want 201", resp.StatusCode)
+	}
+}
+
 func TestHandlerStoreErrorsReturn500(t *testing.T) {
 	h := &Handler{
 		Store:           erroringStore{},

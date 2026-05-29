@@ -5,6 +5,7 @@ package settings
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -13,6 +14,33 @@ import (
 	"system-wrangler-backend/internal/audit"
 	"system-wrangler-backend/internal/database"
 )
+
+type errStore struct {
+	Store
+	allErr error
+	setErr error
+}
+
+func (e *errStore) All() (map[string]string, error) {
+	if e.allErr != nil {
+		return nil, e.allErr
+	}
+	if e.Store != nil {
+		return e.Store.All()
+	}
+	return map[string]string{}, nil
+}
+
+func (e *errStore) Set(_, _ string) error {
+	if e.setErr != nil {
+		return e.setErr
+	}
+	return nil
+}
+
+func (e *errStore) Get(string) (string, error) {
+	return "", nil
+}
 
 func newHandlerSrv(t *testing.T, allow bool) (*Handler, *httptest.Server) {
 	t.Helper()
@@ -219,5 +247,127 @@ func TestGateRejectsNonAdmin(t *testing.T) {
 	defer func() { _ = resp2.Body.Close() }()
 	if resp2.StatusCode != http.StatusForbidden {
 		t.Errorf("PUT status = %d, want 403", resp2.StatusCode)
+	}
+}
+
+func TestListNilStoreReturns503(t *testing.T) {
+	h := &Handler{CanManage: func(context.Context) bool { return true }}
+	mux := http.NewServeMux()
+	h.Register(mux, nil)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	resp, _ := http.Get(srv.URL + "/api/admin/settings")
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Errorf("status = %d, want 503", resp.StatusCode)
+	}
+}
+
+func TestListAllError500(t *testing.T) {
+	h := &Handler{
+		Store:     &errStore{allErr: errors.New("db down")},
+		CanManage: func(context.Context) bool { return true },
+	}
+	mux := http.NewServeMux()
+	h.Register(mux, nil)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	resp, _ := http.Get(srv.URL + "/api/admin/settings")
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", resp.StatusCode)
+	}
+}
+
+func TestPutNilStoreReturns503(t *testing.T) {
+	h := &Handler{CanManage: func(context.Context) bool { return true }}
+	mux := http.NewServeMux()
+	h.Register(mux, nil)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	req, _ := http.NewRequest(http.MethodPut,
+		srv.URL+"/api/admin/settings/"+KeyRunHistoryLimit,
+		strings.NewReader(`{"value":"200"}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp, _ := http.DefaultClient.Do(req)
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Errorf("status = %d, want 503", resp.StatusCode)
+	}
+}
+
+func TestPutBadJSON(t *testing.T) {
+	_, srv := newHandlerSrv(t, true)
+	req, _ := http.NewRequest(http.MethodPut,
+		srv.URL+"/api/admin/settings/"+KeyRunHistoryLimit,
+		strings.NewReader("not json"))
+	req.Header.Set("Content-Type", "application/json")
+	resp, _ := http.DefaultClient.Do(req)
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", resp.StatusCode)
+	}
+}
+
+func TestPutUpdateConcurrencyNonInteger(t *testing.T) {
+	_, srv := newHandlerSrv(t, true)
+	req, _ := http.NewRequest(http.MethodPut,
+		srv.URL+"/api/admin/settings/"+KeyUpdateConcurrencyLimit,
+		strings.NewReader(`{"value":"abc"}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp, _ := http.DefaultClient.Do(req)
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", resp.StatusCode)
+	}
+}
+
+func TestPutUpdateConcurrencyOutOfRange(t *testing.T) {
+	_, srv := newHandlerSrv(t, true)
+	req, _ := http.NewRequest(http.MethodPut,
+		srv.URL+"/api/admin/settings/"+KeyUpdateConcurrencyLimit,
+		strings.NewReader(`{"value":"-1"}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp, _ := http.DefaultClient.Do(req)
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", resp.StatusCode)
+	}
+}
+
+func TestPutInternalErrorOnStoreFailure(t *testing.T) {
+	h := &Handler{
+		Store:     &errStore{setErr: errors.New("write failure")},
+		CanManage: func(context.Context) bool { return true },
+	}
+	mux := http.NewServeMux()
+	h.Register(mux, nil)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	req, _ := http.NewRequest(http.MethodPut,
+		srv.URL+"/api/admin/settings/"+KeyRunHistoryLimit,
+		strings.NewReader(`{"value":"100"}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp, _ := http.DefaultClient.Do(req)
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", resp.StatusCode)
+	}
+}
+
+func TestAllowedNilCanManageAllowsThrough(t *testing.T) {
+	dsn := "file:" + t.TempDir() + "/nil.db"
+	db, _ := database.Open(dsn)
+	t.Cleanup(func() { _ = db.Close() })
+	store, _ := NewSQLiteStore(db)
+	h := &Handler{Store: store}
+	mux := http.NewServeMux()
+	h.Register(mux, nil)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	resp, _ := http.Get(srv.URL + "/api/admin/settings")
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want 200 (nil CanManage permits)", resp.StatusCode)
 	}
 }
