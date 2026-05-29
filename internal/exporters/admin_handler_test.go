@@ -234,6 +234,38 @@ func TestAdminUpdateBadID(t *testing.T) {
 	}
 }
 
+func TestAdminListRegistryError500(t *testing.T) {
+	dsn := "file:" + filepath.Join(t.TempDir(), "admin-listerr.db")
+	db, err := database.Open(dsn)
+	if err != nil {
+		t.Fatalf("db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	_, _ = systems.NewSQLiteStore(db)
+	store, _ := NewSQLiteStore(db)
+	auditStore, _ := audit.NewSQLiteStore(db)
+	// Wrap so Registry.All() fails.
+	reg := NewRegistry(&registryErrStore{Store: store, err: errAdminTestStub("reg boom")})
+	h := &AdminHandler{
+		Registry:  reg,
+		Audit:     auditStore,
+		CanManage: func(context.Context) bool { return true },
+	}
+	mux := http.NewServeMux()
+	h.Register(mux, nil)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	resp, _ := http.Get(srv.URL + "/api/admin/exporter-definitions")
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", resp.StatusCode)
+	}
+}
+
+type errAdminTestStub string
+
+func (e errAdminTestStub) Error() string { return string(e) }
+
 func TestAdminCreateBadJSON(t *testing.T) {
 	_, srv, _ := newAdminFixture(t)
 	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/admin/exporter-definitions",

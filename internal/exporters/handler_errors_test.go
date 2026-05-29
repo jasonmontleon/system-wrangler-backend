@@ -229,6 +229,35 @@ func TestHandlerSetScrapeModeInvalid400(t *testing.T) {
 	}
 }
 
+func TestHandlerListIncludesInstalledRowDetails(t *testing.T) {
+	_, srv, rf := newHandlerFixture(t)
+	at := time.Now().UTC()
+	if err := rf.store.UpsertSystemExporter(SystemExporter{
+		SystemID:     rf.systemID,
+		ExporterID:   "builtin.dnf.exporter",
+		State:        StateRunning,
+		Port:         9100,
+		ServiceName:  "node_exporter.service",
+		LastStatusAt: &at,
+		LastReason:   "ok",
+	}); err != nil {
+		t.Fatalf("seed installed row: %v", err)
+	}
+	resp, _ := http.Get(srv.URL + "/api/systems/" + rf.systemID + "/exporters")
+	defer func() { _ = resp.Body.Close() }()
+	var body SystemExportersResponseDTO
+	_ = json.NewDecoder(resp.Body).Decode(&body)
+	var dnf *SystemExporterDTO
+	for i := range body.Exporters {
+		if body.Exporters[i].ExporterID == "builtin.dnf.exporter" {
+			dnf = &body.Exporters[i]
+		}
+	}
+	if dnf == nil || !dnf.Installed || dnf.Port != 9100 || dnf.ServiceName != "node_exporter.service" {
+		t.Errorf("installed row not surfaced: %+v", dnf)
+	}
+}
+
 func TestHandlerListRegistryError500(t *testing.T) {
 	rf := newRunnerFixture(t)
 	rf.runner.Registry = NewRegistry(&registryErrStore{Store: rf.store, err: errors.New("reg boom")})
