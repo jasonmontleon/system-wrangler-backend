@@ -8,6 +8,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
+
+	"system-wrangler-backend/internal/database"
 )
 
 func TestAdminResetPasswordSetsMustChange(t *testing.T) {
@@ -527,6 +530,70 @@ func TestAdminUpdateUserSetDisabledNotFound(t *testing.T) {
 	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound {
 		t.Errorf("status = %d, want 404", resp.StatusCode)
+	}
+}
+
+// TestSQLiteAuthStoreClosedDBSurfacesErrors closes the underlying *sql.DB
+// and then calls every public method on the store, asserting each one
+// returns a non-nil error. This bulk-covers the "if err != nil { return
+// ... }" branch on each db.Exec / db.Query call, which is unreachable
+// against a healthy in-memory DB but lives on the hot path the moment
+// the operator's disk goes read-only or the pool gets torn down mid-
+// request.
+func TestSQLiteAuthStoreClosedDBSurfacesErrors(t *testing.T) {
+	dsn := "file:" + t.TempDir() + "/closed.db"
+	db, err := database.Open(dsn)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	store, err := NewSQLiteAuthStore(db)
+	if err != nil {
+		t.Fatalf("NewSQLiteAuthStore: %v", err)
+	}
+	// Seed a user before closing so the GetBy* methods have a target.
+	u, err := store.Create("ghost", "hashbytes")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	type call struct {
+		name string
+		fn   func() error
+	}
+	calls := []call{
+		{"Count", func() error { _, err := store.Count(); return err }},
+		{"CountEnabled", func() error { _, err := store.CountEnabled(); return err }},
+		{"Create", func() error { _, err := store.Create("a", "h"); return err }},
+		{"GetByUsername", func() error { _, _, err := store.GetByUsername("ghost"); return err }},
+		{"GetByID", func() error { _, err := store.GetByID(u.ID); return err }},
+		{"GetHashByID", func() error { _, err := store.GetHashByID(u.ID); return err }},
+		{"UpdateProfile", func() error { _, err := store.UpdateProfile(u.ID, "e", "dark"); return err }},
+		{"UpdatePassword", func() error { return store.UpdatePassword(u.ID, "newh") }},
+		{"ClearLoginFailures", func() error { return store.ClearLoginFailures(u.ID) }},
+		{"RecordLoginFailure", func() error { _, err := store.RecordLoginFailure(u.ID, nil); return err }},
+		{"SetDisabled", func() error { _, err := store.SetDisabled(u.ID, true, time.Now()); return err }},
+		{"ListUsers", func() error { _, err := store.ListUsers(); return err }},
+		{"Delete", func() error { return store.Delete(u.ID) }},
+		{"AdminSetPassword", func() error { return store.AdminSetPassword(u.ID, "h2") }},
+		{"GetTOTPState", func() error { _, err := store.GetTOTPState(u.ID); return err }},
+		{"SetPendingSecret", func() error {
+			return store.SetPendingSecret(u.ID, Sealed{Ciphertext: []byte{1}, Nonce: []byte{2}})
+		}},
+		{"AdminResetTOTP", func() error { return store.AdminResetTOTP(u.ID) }},
+		{"InsertRecoveryCodes", func() error { return store.InsertRecoveryCodes(u.ID, []string{"h"}) }},
+		{"ConsumeRecoveryCode", func() error {
+			return store.ConsumeRecoveryCode(u.ID, "code", time.Now())
+		}},
+	}
+	for _, c := range calls {
+		t.Run(c.name, func(t *testing.T) {
+			if err := c.fn(); err == nil {
+				t.Errorf("%s on closed DB returned nil error, expected failure", c.name)
+			}
+		})
 	}
 }
 
