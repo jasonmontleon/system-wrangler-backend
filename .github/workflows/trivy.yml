@@ -57,7 +57,7 @@ jobs:
       - name: Checkout frontend
         uses: actions/checkout@v4
         with:
-          repository: jason/system-wrangler-frontend
+          repository: ${{ github.repository_owner }}/system-wrangler-frontend
           path: _frontend
           ref: main
           token: ${{ secrets.FRONTEND_TOKEN }}
