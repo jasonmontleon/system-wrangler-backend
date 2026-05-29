@@ -5,6 +5,7 @@ package exporters
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -336,6 +337,39 @@ func (e *errLocker) AcquireLock(systemID, runID string, at time.Time) error {
 		return e.acquireErr
 	}
 	return e.memLocker.AcquireLock(systemID, runID, at)
+}
+
+func TestIsConflictRecognisesWrappedAndSubstring(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{"unrelated", errors.New("nope"), false},
+		{"local sentinel", ErrConflict, true},
+		{"wrapped sentinel", fmt.Errorf("wrap: %w", ErrConflict), true},
+		{"updaters-style substring", errors.New("locker: another run is in progress for sys"), true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isConflict(tc.err); got != tc.want {
+				t.Errorf("isConflict(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestConflictFromLocker(t *testing.T) {
+	if conflictFromLocker(nil) != nil {
+		t.Error("conflictFromLocker(nil) != nil")
+	}
+	if conflictFromLocker(errors.New("nope")) != nil {
+		t.Error("non-conflict err mapped to conflict")
+	}
+	if conflictFromLocker(ErrConflict) != ErrConflict {
+		t.Error("ErrConflict not preserved")
+	}
 }
 
 func TestInstallAcquireLockNonConflictError(t *testing.T) {
