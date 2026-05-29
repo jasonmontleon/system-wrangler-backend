@@ -338,6 +338,34 @@ func TestPopulatedEndpointsRespondAfterSetup(t *testing.T) {
 	postWithCSRF(t, "/api/admin/package-exclusions",
 		`{"updater":"builtin.dnf","pattern":"kernel*","reason":"smoke"}`)
 
+	// Bulk event so the BulkAudit closure runs.
+	postWithCSRF(t, "/api/systems/bulk-event",
+		`{"action":"check","selector":"role=smoke","systemIds":["`+sysID+`"]}`)
+
+	// Set a label style so labelHandler.StyleAudit closure runs.
+	putStyle, _ := http.NewRequest(http.MethodPut, srv.URL+"/api/label-styles/role",
+		strings.NewReader(`{"color":"blue"}`))
+	putStyle.Header.Set("Content-Type", "application/json")
+	if csrfTok != "" {
+		putStyle.Header.Set("X-CSRF-Token", csrfTok)
+	}
+	if r, err := client.Do(putStyle); err == nil {
+		_ = r.Body.Close()
+	}
+
+	// Grant a role assignment so the rbac handler closures run.
+	postWithCSRF(t, "/api/groups/"+groupID+"/role-assignments",
+		`{"userId":"`+status.User.ID+`","role":"admin"}`)
+
+	// Delete the system to walk the delete-with-audit closure.
+	delReq, _ := http.NewRequest(http.MethodDelete, srv.URL+"/api/systems/"+sysID+"/labels/role", nil)
+	if csrfTok != "" {
+		delReq.Header.Set("X-CSRF-Token", csrfTok)
+	}
+	if r, err := client.Do(delReq); err == nil {
+		_ = r.Body.Close()
+	}
+
 	// Hit every GET endpoint we can reach. Status doesn't matter — the
 	// goal is to walk populateMux's per-handler closures so the bodies
 	// register as covered.

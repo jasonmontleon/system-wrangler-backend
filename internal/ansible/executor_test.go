@@ -53,3 +53,28 @@ func TestExecExecutorRespectsContextCancellation(t *testing.T) {
 		t.Error("expected an error from cancelled context")
 	}
 }
+
+func TestExecExecutorOverridesEnv(t *testing.T) {
+	ex := ExecExecutor{}
+	stdout, _, _, err := ex.Run(context.Background(),
+		"/bin/sh", []string{"-c", "printf %s \"$SW_TEST_ENV\""},
+		[]string{"SW_TEST_ENV=hello-from-env"}, nil)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if string(stdout) != "hello-from-env" {
+		t.Errorf("stdout = %q, want hello-from-env", stdout)
+	}
+}
+
+func TestExecExecutorForwardsStdin(t *testing.T) {
+	ex := ExecExecutor{}
+	stdout, _, _, err := ex.Run(context.Background(),
+		"/bin/cat", nil, nil, []byte("piped-in"))
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if string(stdout) != "piped-in" {
+		t.Errorf("stdout = %q, want piped-in", stdout)
+	}
+}
