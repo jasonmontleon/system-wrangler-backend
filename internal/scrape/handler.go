@@ -56,9 +56,15 @@ const HeaderSecret = "X-Sw-Internal-Secret" //nolint:gosec // header name, not a
 // header against.
 const bearerPrefix = "bearer "
 
+// Fetcher fetches a single path over an SSH tunnel to the system's
+// loopback. *sshproxy.Proxy satisfies this; tests use a fake.
+type Fetcher interface {
+	FetchOverTunnel(ctx context.Context, systemID, addr string, port int, path string) ([]byte, error)
+}
+
 // Handler exposes the scrape endpoint.
 type Handler struct {
-	Proxy     *sshproxy.Proxy
+	Proxy     Fetcher
 	Exporters exporters.Store
 	// Secret is the expected value of the HeaderSecret header. An
 	// empty Secret disables the endpoint entirely (responds 503) so

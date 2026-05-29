@@ -131,6 +131,67 @@ func TestHandlerDeleteEmitsAuditRow(t *testing.T) {
 	}
 }
 
+func TestHandlerSetPlatformEmitsAuditRow(t *testing.T) {
+	h, store, auditStore := fullStack(t)
+	mux := http.NewServeMux()
+	h.Register(mux, nil)
+	sys, err := store.Create(SystemInput{Name: "win1", Hostname: "10.0.0.7"})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPut, "/api/systems/"+sys.ID+"/platform",
+		strings.NewReader(`{"isWindows":true}`))
+	req = req.WithContext(audit.WithActor(req.Context(),
+		audit.Actor{Kind: audit.ActorUser, ID: "u-3", Label: "carol"}))
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", w.Code)
+	}
+
+	rows, _, err := auditStore.ListQuery(audit.Query{Action: "system.platform.set"})
+	if err != nil {
+		t.Fatalf("ListQuery: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("audit rows = %d, want 1", len(rows))
+	}
+	got := rows[0]
+	if got.TargetID != sys.ID || got.TargetLabel != "win1" {
+		t.Errorf("target = (%s, %s), want (%s, win1)", got.TargetID, got.TargetLabel, sys.ID)
+	}
+	if got.Detail["is_windows"] != true {
+		t.Errorf("detail.is_windows = %v, want true", got.Detail["is_windows"])
+	}
+	updated, _ := store.Get(sys.ID)
+	if !updated.IsWindows {
+		t.Error("IsWindows did not persist after committed audit tx")
+	}
+}
+
+func TestHandlerSetPlatformAuditRollsBackOnFailure(t *testing.T) {
+	h, store, auditStore := fullStack(t)
+	auditStore.NewID = func() (string, error) { return "", context.Canceled }
+	sys, err := store.Create(SystemInput{Name: "rollback", Hostname: "10.0.0.8"})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	mux := http.NewServeMux()
+	h.Register(mux, nil)
+	req := httptest.NewRequest(http.MethodPut, "/api/systems/"+sys.ID+"/platform",
+		strings.NewReader(`{"isWindows":true}`))
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", w.Code)
+	}
+	got, _ := store.Get(sys.ID)
+	if got.IsWindows {
+		t.Error("audit failure did not roll back platform flip")
+	}
+}
+
 func TestHandlerCreateAuditRollsBackOnDuplicate(t *testing.T) {
 	// Forcing a write error inside the transaction is awkward without a
 	// shim; instead we use the fact that the audit store would itself

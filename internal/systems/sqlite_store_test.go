@@ -474,6 +474,88 @@ func TestSQLiteStoreRebootRequiredRoundTrip(t *testing.T) {
 	}
 }
 
+func TestSQLiteStoreSetPlatformRoundTrip(t *testing.T) {
+	s := newTestSQLiteStore(t)
+	sys, err := s.Create(SystemInput{Name: "host", Hostname: "10.0.0.1"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if sys.IsWindows {
+		t.Errorf("default IsWindows = true, want false")
+	}
+	if err := s.SetPlatform(sys.ID, true); err != nil {
+		t.Fatalf("SetPlatform: %v", err)
+	}
+	got, _ := s.Get(sys.ID)
+	if !got.IsWindows {
+		t.Errorf("after SetPlatform(true): IsWindows = false")
+	}
+	if err := s.SetPlatform(sys.ID, false); err != nil {
+		t.Fatalf("SetPlatform(false): %v", err)
+	}
+	got, _ = s.Get(sys.ID)
+	if got.IsWindows {
+		t.Errorf("after SetPlatform(false): IsWindows = true")
+	}
+}
+
+func TestSQLiteStoreSetPlatformMissing(t *testing.T) {
+	s := newTestSQLiteStore(t)
+	if err := s.SetPlatform("no-such-system", true); !errors.Is(err, ErrNotFound) {
+		t.Errorf("SetPlatform on missing: err = %v, want ErrNotFound", err)
+	}
+}
+
+func TestSQLiteStoreSetPlatformTxNilFallback(t *testing.T) {
+	s := newTestSQLiteStore(t)
+	sys, err := s.Create(SystemInput{Name: "host", Hostname: "10.0.0.1"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := s.SetPlatformTx(nil, sys.ID, true); err != nil {
+		t.Fatalf("SetPlatformTx(nil): %v", err)
+	}
+	got, _ := s.Get(sys.ID)
+	if !got.IsWindows {
+		t.Errorf("SetPlatformTx(nil) did not persist")
+	}
+}
+
+func TestSQLiteStoreSetPlatformTxCommit(t *testing.T) {
+	s := newTestSQLiteStore(t)
+	sys, err := s.Create(SystemInput{Name: "host", Hostname: "10.0.0.1"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	if err := s.SetPlatformTx(tx, sys.ID, true); err != nil {
+		_ = tx.Rollback()
+		t.Fatalf("SetPlatformTx: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	got, _ := s.Get(sys.ID)
+	if !got.IsWindows {
+		t.Errorf("after committed SetPlatformTx(true): IsWindows = false")
+	}
+}
+
+func TestSQLiteStoreSetPlatformTxMissing(t *testing.T) {
+	s := newTestSQLiteStore(t)
+	tx, err := s.db.Begin()
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := s.SetPlatformTx(tx, "no-such-system", true); !errors.Is(err, ErrNotFound) {
+		t.Errorf("SetPlatformTx on missing: err = %v, want ErrNotFound", err)
+	}
+}
+
 func TestSQLiteStoreSetRebootRequiredMissing(t *testing.T) {
 	s := newTestSQLiteStore(t)
 	if err := s.SetRebootRequired("no-such-system", time.Unix(0, 0).UTC()); !errors.Is(err, ErrNotFound) {

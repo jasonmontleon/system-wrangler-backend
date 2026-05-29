@@ -171,3 +171,60 @@ func TestPostForwardsBody(t *testing.T) {
 // dependency surface (not used here, but kept so the test file stays
 // linked against the canonical store type for future tests).
 var _ systems.Store = (*systems.SQLiteStore)(nil)
+
+func TestForwardInvalidUpstreamURL(t *testing.T) {
+	h := &Handler{
+		UpstreamURL: "http://[::1:invalid", // bracket-mismatched URL fails url.Parse
+		CanRead:     func(context.Context) bool { return true },
+	}
+	mux := http.NewServeMux()
+	h.Register(mux, nil)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	resp, _ := http.Get(srv.URL + "/api/metrics/query?query=up")
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", resp.StatusCode)
+	}
+}
+
+func TestForwardUpstreamConnectionRefused(t *testing.T) {
+	h := &Handler{
+		UpstreamURL: "http://127.0.0.1:1", // nothing listens on TCP/1
+		CanRead:     func(context.Context) bool { return true },
+	}
+	mux := http.NewServeMux()
+	h.Register(mux, nil)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	resp, _ := http.Get(srv.URL + "/api/metrics/query?query=up")
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Errorf("status = %d, want 502", resp.StatusCode)
+	}
+}
+
+func TestForwardUsesCustomClient(t *testing.T) {
+	prom := fakeProm(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"success"}`))
+	})
+	custom := &http.Client{}
+	h := &Handler{
+		UpstreamURL: prom.URL,
+		Client:      custom,
+		CanRead:     func(context.Context) bool { return true },
+	}
+	mux := http.NewServeMux()
+	h.Register(mux, nil)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	resp, err := http.Get(srv.URL + "/api/metrics/query?query=up")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want 200", resp.StatusCode)
+	}
+}
