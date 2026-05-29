@@ -590,6 +590,29 @@ func TestSQLiteAuthStoreClosedDBSurfacesErrors(t *testing.T) {
 		{"ConsumeRecoveryCode", func() error {
 			return store.ConsumeRecoveryCode(u.ID, "code", time.Now())
 		}},
+		{"CountUndecryptableTOTP-nilVault", func() error {
+			_, err := store.CountUndecryptableTOTP(nil)
+			return err
+		}},
+		{"ListUndecryptableTOTP-nilVault", func() error {
+			_, err := store.ListUndecryptableTOTP(nil)
+			return err
+		}},
+		{"CountUndecryptableTOTP", func() error {
+			_, err := store.CountUndecryptableTOTP(fixedVault(t))
+			return err
+		}},
+		{"ListUndecryptableTOTP", func() error {
+			_, err := store.ListUndecryptableTOTP(fixedVault(t))
+			return err
+		}},
+		{"RotateKeys", func() error {
+			_, err := store.RotateKeys(fixedVault(t), nil)
+			return err
+		}},
+		{"MigrateLegacyTOTPSecrets", func() error {
+			return store.MigrateLegacyTOTPSecrets(fixedVault(t))
+		}},
 	}
 	for _, c := range calls {
 		t.Run(c.name, func(t *testing.T) {
@@ -784,6 +807,47 @@ func TestHandleTOTPConfirmBadJSON(t *testing.T) {
 	svc.handleTOTPConfirm(w, r)
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("code = %d, want 400", w.Code)
+	}
+}
+
+func TestHandleTOTPConfirmNotConfigured(t *testing.T) {
+	store := &stubUserStore{}
+	svc := NewService(store, testSecret, false)
+	u := seedUser(t, store, "alice")
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/api/auth/totp/confirm",
+		strings.NewReader(`{"code":"123456"}`)).WithContext(withUserCtx(t, u))
+	svc.handleTOTPConfirm(w, r)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("code = %d, want 503", w.Code)
+	}
+}
+
+func TestHandleTOTPConfirmNoPending(t *testing.T) {
+	store := &stubUserStore{}
+	svc := NewService(store, testSecret, false)
+	svc.Vault = fixedVault(t)
+	svc.TOTPStore = newStubTOTPStore()
+	svc.RecoveryStore = newStubRecoveryStore()
+	u := seedUser(t, store, "alice")
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/api/auth/totp/confirm",
+		strings.NewReader(`{"code":"123456"}`)).WithContext(withUserCtx(t, u))
+	svc.handleTOTPConfirm(w, r)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("code = %d, want 400 (no pending)", w.Code)
+	}
+}
+
+func TestHandleTOTPVerifyNotConfigured(t *testing.T) {
+	store := &stubUserStore{}
+	svc := NewService(store, testSecret, false)
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/api/auth/totp/verify",
+		strings.NewReader(`{"code":"123456"}`))
+	svc.handleTOTPVerify(w, r)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("code = %d, want 503", w.Code)
 	}
 }
 
