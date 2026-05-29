@@ -301,6 +301,13 @@ func (f *failOnStore) FinishRun(id string, finishedAt time.Time, exit int, logTa
 	return f.Store.FinishRun(id, finishedAt, exit, logTail)
 }
 
+func (f *failOnStore) TrimRunsForSystem(systemID string, keep int) error {
+	if f.method == "TrimRunsForSystem" {
+		return f.err
+	}
+	return f.Store.TrimRunsForSystem(systemID, keep)
+}
+
 func TestInstallInsertRunErrorReturns(t *testing.T) {
 	f := newRunnerFixture(t)
 	f.runner.Store = &failOnStore{Store: f.store, method: "InsertRun", err: errors.New("insert boom")}
@@ -407,6 +414,37 @@ func TestRunnerLogCompleteWithoutAuditIsNoop(_ *testing.T) {
 	r := &Runner{} // nil Audit
 	// Should not panic.
 	r.logComplete(context.Background(), "test", audit.Success, "sys", "parent", time.Now(), audit.Detail{})
+}
+
+func TestRunnerTrimHistoryErrorIsLogged(t *testing.T) {
+	f := newRunnerFixture(t)
+	f.runner.Store = &failOnStore{Store: f.store, method: "TrimRunsForSystem", err: errors.New("trim boom")}
+	f.runner.RunHistoryLimit = func() int { return 5 }
+	// trimHistory is called from inside Install but the error is only
+	// logged, not returned. So the call should succeed; we're proving
+	// the helper doesn't panic on a store error.
+	f.queue(ansible.Run{Status: ansible.RunSuccess, ExitCode: 0}, nil)
+	_, err := f.runner.Install(context.Background(), f.systemID, "builtin.dnf.exporter")
+	if err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+}
+
+func TestRunnerLogStartAuditError(t *testing.T) {
+	// Audit.Log will fail under a closed DB.
+	dsn := "file:" + filepath.Join(t.TempDir(), "logstart.db")
+	db, err := database.Open(dsn)
+	if err != nil {
+		t.Fatalf("db: %v", err)
+	}
+	auditStore, err := audit.NewSQLiteStore(db)
+	if err != nil {
+		t.Fatalf("audit: %v", err)
+	}
+	_ = db.Close()
+	r := &Runner{Audit: auditStore}
+	// Should log + swallow the error rather than crashing.
+	r.logStart(context.Background(), audit.Event{Action: "test"})
 }
 
 func TestRunOneRejectsDeletedExporter(t *testing.T) {
