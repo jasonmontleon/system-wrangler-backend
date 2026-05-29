@@ -481,6 +481,93 @@ func (a *acceptErrStore) AcceptedFor(string) ([]HostKey, error) {
 	return nil, nil
 }
 
+type deleteErrStore struct {
+	Store
+	getKey HostKey
+	delErr error
+}
+
+func (d *deleteErrStore) Get(string) (HostKey, error) {
+	return d.getKey, nil
+}
+
+func (d *deleteErrStore) Delete(string) error {
+	return d.delErr
+}
+
+func TestDeleteStoreErrorOnDelete(t *testing.T) {
+	f := newFixture(t)
+	sys := f.addSystem(t, "del-store-err")
+	h := &Handler{
+		Store: &deleteErrStore{
+			Store:  f.store,
+			getKey: HostKey{SystemID: sys.ID, Algorithm: "ssh-ed25519"},
+			delErr: errors.New("del boom"),
+		},
+		Systems:         f.systems,
+		Audit:           f.audit,
+		CanManageSystem: func(context.Context, systems.System) bool { return true },
+	}
+	mux := http.NewServeMux()
+	h.Register(mux, nil)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/api/systems/"+sys.ID+"/host-keys/anykey", nil)
+	resp, _ := http.DefaultClient.Do(req)
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", resp.StatusCode)
+	}
+}
+
+func TestAcceptStaleFingerprint409(t *testing.T) {
+	f := newFixture(t)
+	sys := f.addSystem(t, "stale-fp")
+	h := &Handler{
+		Store:           &acceptErrStore{Store: f.store, err: ErrFingerprintStale},
+		Systems:         f.systems,
+		Audit:           f.audit,
+		CanManageSystem: func(context.Context, systems.System) bool { return true },
+	}
+	mux := http.NewServeMux()
+	h.Register(mux, nil)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	req, _ := http.NewRequest(http.MethodPost,
+		srv.URL+"/api/systems/"+sys.ID+"/host-keys/accept",
+		bytes.NewBufferString(`{"algorithm":"ssh-ed25519","fingerprint":"SHA256:stale"}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp, _ := http.DefaultClient.Do(req)
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusConflict {
+		t.Errorf("status = %d, want 409", resp.StatusCode)
+	}
+}
+
+func TestAcceptInvalid400(t *testing.T) {
+	f := newFixture(t)
+	sys := f.addSystem(t, "inv-fp")
+	h := &Handler{
+		Store:           &acceptErrStore{Store: f.store, err: ErrInvalid},
+		Systems:         f.systems,
+		Audit:           f.audit,
+		CanManageSystem: func(context.Context, systems.System) bool { return true },
+	}
+	mux := http.NewServeMux()
+	h.Register(mux, nil)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	req, _ := http.NewRequest(http.MethodPost,
+		srv.URL+"/api/systems/"+sys.ID+"/host-keys/accept",
+		bytes.NewBufferString(`{"algorithm":"ssh-ed25519","fingerprint":"SHA256:x"}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp, _ := http.DefaultClient.Do(req)
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", resp.StatusCode)
+	}
+}
+
 func TestAcceptMissingFields(t *testing.T) {
 	f := newFixture(t)
 	sys := f.addSystem(t, "accept-bad")
