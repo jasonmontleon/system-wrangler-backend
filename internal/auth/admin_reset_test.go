@@ -732,7 +732,7 @@ func loggedInClientWith(t *testing.T, srv *httptest.Server, username string, sec
 	}
 	jar, _ := cookiejar.New(nil)
 	parsedURL, _ := url.Parse(srv.URL)
-	jar.SetCookies(parsedURL, []*http.Cookie{{Name: CookieName, Value: tok}})
+	jar.SetCookies(parsedURL, []*http.Cookie{{Name: CookieName, Value: tok}}) //nolint:gosec // G124: test cookie attached to a jar; server-side attributes don't apply.
 	return &http.Client{Jar: jar}
 }
 
