@@ -361,6 +361,11 @@ func TestPopulatedEndpointsRespondAfterSetup(t *testing.T) {
 	postWithCSRF(t, "/api/admin/package-exclusions",
 		`{"updater":"builtin.dnf","pattern":"kernel*","reason":"smoke"}`)
 
+	// Hit metrics endpoint so its CanRead closure runs.
+	if r, err := client.Get(srv.URL + "/api/metrics/query?query=up"); err == nil {
+		_ = r.Body.Close()
+	}
+
 	// Bulk event so the BulkAudit closure runs.
 	postWithCSRF(t, "/api/systems/bulk-event",
 		`{"action":"check","selector":"role=smoke","systemIds":["`+sysID+`"]}`)
@@ -1134,6 +1139,28 @@ func TestInitStoreWrapsError(t *testing.T) {
 type errAdminStub string
 
 func (e errAdminStub) Error() string { return string(e) }
+
+func TestWithRequestMetaStampsIDAndHeader(t *testing.T) {
+	var seenCtx context.Context
+	inner := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		seenCtx = r.Context()
+	})
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/x", nil)
+	r.RemoteAddr = "1.2.3.4:5678"
+	withRequestMeta(inner).ServeHTTP(w, r)
+
+	got := w.Header().Get("X-Request-ID")
+	if got == "" {
+		t.Error("X-Request-ID header not set")
+	}
+	if id := audit.RequestIDFromContext(seenCtx); id != got {
+		t.Errorf("RequestIDFromContext = %q, want header %q", id, got)
+	}
+	if addr := audit.RemoteAddrFromContext(seenCtx); addr != "1.2.3.4:5678" {
+		t.Errorf("RemoteAddr = %q", addr)
+	}
+}
 
 func TestTriggerProbeNonBlocking(t *testing.T) {
 	p := &systems.Probe{Trigger: make(chan struct{}, 1)}

@@ -760,6 +760,33 @@ func loggedInClientWith(t *testing.T, srv *httptest.Server, username string, sec
 	return &http.Client{Jar: jar}
 }
 
+func TestHonorTrustedDeviceNilStore(t *testing.T) {
+	svc := NewService(&stubUserStore{}, testSecret, false)
+	r := httptest.NewRequest(http.MethodGet, "/x", nil)
+	if svc.honorTrustedDevice(r, "u", 0) {
+		t.Error("nil DeviceStore should return false")
+	}
+}
+
+func TestHonorTrustedDeviceMissingCookie(t *testing.T) {
+	svc := NewService(&stubUserStore{}, testSecret, false)
+	svc.DeviceStore = newStubDeviceStore()
+	r := httptest.NewRequest(http.MethodGet, "/x", nil)
+	if svc.honorTrustedDevice(r, "u", 0) {
+		t.Error("missing cookie should return false")
+	}
+}
+
+func TestHonorTrustedDeviceInvalidToken(t *testing.T) {
+	svc := NewService(&stubUserStore{}, testSecret, false)
+	svc.DeviceStore = newStubDeviceStore()
+	r := httptest.NewRequest(http.MethodGet, "/x", nil)
+	r.AddCookie(&http.Cookie{Name: TrustedDeviceCookie, Value: "garbage.token"}) //nolint:gosec // G124: test cookie
+	if svc.honorTrustedDevice(r, "u", 0) {
+		t.Error("invalid token should return false")
+	}
+}
+
 func TestHandleTOTPSetupUnauthorized(t *testing.T) {
 	svc := NewService(&stubUserStore{}, testSecret, false)
 	w := httptest.NewRecorder()
