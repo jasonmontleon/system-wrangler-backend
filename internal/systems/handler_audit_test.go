@@ -170,6 +170,28 @@ func TestHandlerSetPlatformEmitsAuditRow(t *testing.T) {
 	}
 }
 
+func TestHandlerDeleteAuditRollsBackOnFailure(t *testing.T) {
+	h, store, auditStore := fullStack(t)
+	auditStore.NewID = func() (string, error) { return "", context.Canceled }
+	sys, err := store.Create(SystemInput{Name: "rollback", Hostname: "10.0.0.9"})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	mux := http.NewServeMux()
+	h.Register(mux, nil)
+	req := httptest.NewRequest(http.MethodDelete, "/api/systems/"+sys.ID, nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", w.Code)
+	}
+	// Audit insert failed → tx must roll back → system row still
+	// present.
+	if _, err := store.Get(sys.ID); err != nil {
+		t.Errorf("system removed despite audit failure: %v", err)
+	}
+}
+
 func TestHandlerSetPlatformAuditRollsBackOnFailure(t *testing.T) {
 	h, store, auditStore := fullStack(t)
 	auditStore.NewID = func() (string, error) { return "", context.Canceled }
