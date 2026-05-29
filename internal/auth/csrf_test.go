@@ -32,7 +32,7 @@ func newCSRFFixture(t *testing.T) (*audit.Store, http.Handler, *sql.DB) {
 }
 
 func sessionCookie() *http.Cookie {
-	return &http.Cookie{Name: CookieName, Value: "irrelevant"}
+	return &http.Cookie{Name: CookieName, Value: "irrelevant"} //nolint:gosec // G124: test cookie sent in a request; server-side attributes don't apply.
 }
 
 func TestCSRF_PassesSafeMethods(t *testing.T) {

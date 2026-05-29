@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -224,8 +225,69 @@ func TestPopulatedEndpointsRespondAfterSetup(t *testing.T) {
 	}
 	_ = resp.Body.Close()
 
+	// Pull the CSRF token from cookies so write requests get past the
+	// CSRF middleware that withLogging wraps newTestMux in.
+	var csrfTok string
+	u, _ := url.Parse(srv.URL)
+	for _, c := range jar.Cookies(u) {
+		if c.Name == "sw_csrf" {
+			csrfTok = c.Value
+		}
+	}
+
+	// Seed a group + system so per-system endpoints have a real ID
+	// instead of returning 404 before the closures run.
+	postWithCSRF := func(t *testing.T, path, body string) string {
+		t.Helper()
+		req, _ := http.NewRequest(http.MethodPost, srv.URL+path, strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		if csrfTok != "" {
+			req.Header.Set("X-CSRF-Token", csrfTok)
+		}
+		r, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("POST %s: %v", path, err)
+		}
+		defer func() { _ = r.Body.Close() }()
+		buf, _ := io.ReadAll(r.Body)
+		return string(buf)
+	}
+
+	sysBody := postWithCSRF(t, "/api/systems", `{"name":"smoke","hostname":"smoke.example"}`)
+	var sysOut struct {
+		ID string `json:"id"`
+	}
+	_ = json.NewDecoder(strings.NewReader(sysBody)).Decode(&sysOut)
+	sysID := sysOut.ID
+
+	grpBody := postWithCSRF(t, "/api/groups", `{"name":"smoke-group"}`)
+	var grpOut struct {
+		ID string `json:"id"`
+	}
+	_ = json.NewDecoder(strings.NewReader(grpBody)).Decode(&grpOut)
+	groupID := grpOut.ID
+
+	// Hit every GET endpoint we can reach. Status doesn't matter — the
+	// goal is to walk populateMux's per-handler closures so the bodies
+	// register as covered.
 	endpoints := []string{
+		"/api/systems",
+		"/api/systems/" + sysID,
+		"/api/systems/" + sysID + "/exporters",
+		"/api/systems/" + sysID + "/exporter-runs",
+		"/api/systems/" + sysID + "/updaters",
+		"/api/systems/" + sysID + "/updater-runs",
+		"/api/systems/" + sysID + "/host-keys",
+		"/api/systems/" + sysID + "/labels",
+		"/api/systems/" + sysID + "/ansible-credential",
+		"/api/systems/" + sysID + "/effective-credential",
+		"/api/systems/" + sysID + "/package-exclusions",
+		"/api/systems/" + sysID + "/package-exclusions/effective?updater=builtin.dnf",
 		"/api/groups",
+		"/api/groups/" + groupID,
+		"/api/groups/" + groupID + "/ansible-credential",
+		"/api/groups/" + groupID + "/package-exclusions",
+		"/api/groups/" + groupID + "/role-assignments",
 		"/api/admin/users",
 		"/api/admin/settings",
 		"/api/admin/ansible-credentials",
@@ -248,8 +310,6 @@ func TestPopulatedEndpointsRespondAfterSetup(t *testing.T) {
 			t.Errorf("GET %s: %v", p, err)
 			continue
 		}
-		// Drain + close. Status doesn't matter — we only care that the
-		// route is wired and the handler responds.
 		_ = r.Body.Close()
 	}
 }

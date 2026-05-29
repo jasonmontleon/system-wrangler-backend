@@ -212,6 +212,144 @@ func TestAdminResetTOTPStoreError(t *testing.T) {
 	}
 }
 
+func TestAdminResetPasswordEmptyPassword(t *testing.T) {
+	srv, _, store := newAdminTestServer(t)
+	seedUser(t, store, "alice")
+	bob := seedUser(t, store, "bob")
+	client := loggedInClient(t, srv, "alice")
+
+	resp, err := client.Post(
+		srv.URL+"/api/admin/users/"+bob.ID+"/password",
+		"application/json",
+		strings.NewReader(`{"password":""}`),
+	)
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	_ = resp.Body.Close()
+	// HashPassword rejects empty as ErrInvalid → 400.
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", resp.StatusCode)
+	}
+}
+
+func TestAdminResetPasswordSetPasswordNotFound(t *testing.T) {
+	srv, _, store := newAdminTestServer(t)
+	seedUser(t, store, "alice")
+	bob := seedUser(t, store, "bob")
+	client := loggedInClient(t, srv, "alice")
+	store.failOn = "AdminSetPassword"
+	store.err = ErrUserNotFound
+
+	resp, err := client.Post(
+		srv.URL+"/api/admin/users/"+bob.ID+"/password",
+		"application/json",
+		strings.NewReader(`{"password":"newadminset"}`),
+	)
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", resp.StatusCode)
+	}
+}
+
+func TestAdminResetTOTPNotFoundFromReset(t *testing.T) {
+	srv, _, store := newAdminTestServer(t)
+	seedUser(t, store, "alice")
+	bob := seedUser(t, store, "bob")
+	client := loggedInClient(t, srv, "alice")
+	store.failOn = "AdminResetTOTP"
+	store.err = ErrUserNotFound
+
+	resp, err := client.Post(
+		srv.URL+"/api/admin/users/"+bob.ID+"/totp/reset",
+		"application/json",
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", resp.StatusCode)
+	}
+}
+
+func TestAdminDeleteUserLastGlobalAdmin(t *testing.T) {
+	srv, _, store := newAdminTestServer(t)
+	seedUser(t, store, "alice")
+	bob := seedUser(t, store, "bob")
+	client := loggedInClient(t, srv, "alice")
+	store.failOn = "Delete"
+	store.err = ErrLastGlobalAdmin
+
+	req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/api/admin/users/"+bob.ID, nil)
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusConflict {
+		t.Errorf("status = %d, want 409", resp.StatusCode)
+	}
+}
+
+func TestAdminDeleteUserCountError(t *testing.T) {
+	srv, _, store := newAdminTestServer(t)
+	seedUser(t, store, "alice")
+	bob := seedUser(t, store, "bob")
+	client := loggedInClient(t, srv, "alice")
+	store.failOn = "CountEnabled"
+	store.err = errAdminTest{}
+
+	req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/api/admin/users/"+bob.ID, nil)
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", resp.StatusCode)
+	}
+}
+
+func TestAdminDeleteUserLookupError(t *testing.T) {
+	srv, _, store := newAdminTestServer(t)
+	seedUser(t, store, "alice")
+	bob := seedUser(t, store, "bob")
+	client := loggedInClient(t, srv, "alice")
+	store.failOn = "GetByID"
+	store.err = errAdminTest{}
+
+	req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/api/admin/users/"+bob.ID, nil)
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", resp.StatusCode)
+	}
+}
+
+func TestAdminCreateUserHashError(t *testing.T) {
+	srv, _, store := newAdminTestServer(t)
+	seedUser(t, store, "alice")
+	client := loggedInClient(t, srv, "alice")
+
+	resp, err := client.Post(srv.URL+"/api/admin/users", "application/json",
+		strings.NewReader(`{"username":"bob","password":""}`))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", resp.StatusCode)
+	}
+}
+
 func TestAdminResetPasswordStoreError(t *testing.T) {
 	srv, _, store := newAdminTestServer(t)
 	seedUser(t, store, "alice")

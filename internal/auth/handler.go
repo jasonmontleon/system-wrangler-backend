@@ -507,7 +507,7 @@ func (s *Service) issueTrustedDeviceCookie(w http.ResponseWriter, deviceID, user
 	if err != nil {
 		return err
 	}
-	http.SetCookie(w, &http.Cookie{
+	http.SetCookie(w, &http.Cookie{ //nolint:gosec // G124: Secure is set from s.SecureCookie at runtime; gosec only recognises a literal true.
 		Name:     TrustedDeviceCookie,
 		Value:    tok,
 		Path:     "/",
@@ -523,7 +523,7 @@ func (s *Service) issueTrustedDeviceCookie(w http.ResponseWriter, deviceID, user
 // clearTrustedDeviceCookie deletes the long-lived trust cookie. Used by
 // the disable-TOTP flow alongside the row-level wipe in DisableTOTP.
 func (s *Service) clearTrustedDeviceCookie(w http.ResponseWriter) {
-	http.SetCookie(w, &http.Cookie{
+	http.SetCookie(w, &http.Cookie{ //nolint:gosec // G124: Secure is set from s.SecureCookie at runtime; gosec only recognises a literal true.
 		Name:     TrustedDeviceCookie,
 		Value:    "",
 		Path:     "/",
@@ -539,7 +539,7 @@ func (s *Service) handleLogout(w http.ResponseWriter, r *http.Request) {
 	// audit row has a real actor; a logout with no cookie still succeeds
 	// (idempotent), it just emits an unauthenticated row.
 	u, hadSession := s.userFromCookie(r)
-	http.SetCookie(w, &http.Cookie{
+	http.SetCookie(w, &http.Cookie{ //nolint:gosec // G124: Secure is set from s.SecureCookie at runtime; gosec only recognises a literal true.
 		Name:     CookieName,
 		Value:    "",
 		Path:     "/",
@@ -713,7 +713,7 @@ func (s *Service) issueCookie(w http.ResponseWriter, userID string) error {
 	if err != nil {
 		return err
 	}
-	http.SetCookie(w, &http.Cookie{
+	http.SetCookie(w, &http.Cookie{ //nolint:gosec // G124: Secure is set from s.SecureCookie at runtime; gosec only recognises a literal true.
 		Name:     CookieName,
 		Value:    tok,
 		Path:     "/",

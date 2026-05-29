@@ -656,7 +656,7 @@ func TestTOTPVerifyClearsTamperedChallengeCookie(t *testing.T) {
 	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/auth/totp/verify",
 		strings.NewReader(`{"code":"123456"}`))
 	req.Header.Set("Content-Type", "application/json")
-	req.AddCookie(&http.Cookie{Name: TOTPChallengeCookie, Value: "garbage.token"})
+	req.AddCookie(&http.Cookie{Name: TOTPChallengeCookie, Value: "garbage.token"}) //nolint:gosec // G124: test cookie sent in a request; server-side attributes don't apply.
 	resp, err := client.Do(req)
 	if err != nil {
 		t.Fatalf("do: %v", err)
