@@ -607,6 +607,32 @@ func TestPingRefusesEmptySystemID(t *testing.T) {
 	}
 }
 
+func TestRunNowAndNewIDDefaults(t *testing.T) {
+	f := newFixture(t)
+	// Strip the overrides so the runner falls back to time.Now / uuid.NewString.
+	f.runner.Now = nil
+	f.runner.NewID = nil
+	f.seedCredentials()
+	f.seedAcceptedHostKey()
+	f.exec.queue(AnsibleAdHocBinary, fakeResp{
+		stdout: `h-a.example | SUCCESS => {"ping": "pong"}`,
+		exit:   0,
+	})
+	run, err := f.runner.Run(context.Background(), Request{
+		SystemID:     f.system.ID,
+		PlaybookPath: f.playbookPath,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if run.ID == "" || run.ID == "fixed-run-id" {
+		t.Errorf("run.ID = %q, expected a default uuid", run.ID)
+	}
+	if run.StartedAt.IsZero() {
+		t.Error("StartedAt is zero, want default time.Now")
+	}
+}
+
 func TestPingRefusesUnwiredRunner(t *testing.T) {
 	r := &Runner{}
 	_, err := r.Ping(context.Background(), "x")
