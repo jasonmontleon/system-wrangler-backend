@@ -429,6 +429,107 @@ func TestHandleSetupShortPassword(t *testing.T) {
 	}
 }
 
+func TestAdminCreateUserUnauthorized(t *testing.T) {
+	svc := NewService(&stubUserStore{}, testSecret, false)
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/api/admin/users",
+		strings.NewReader(`{"username":"x","password":"y"}`))
+	svc.handleCreateUser(w, r)
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("code = %d, want 401", w.Code)
+	}
+}
+
+func TestAdminUpdateUserUnauthorized(t *testing.T) {
+	svc := NewService(&stubUserStore{}, testSecret, false)
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPatch, "/api/admin/users/x",
+		strings.NewReader(`{"disabled":true}`))
+	svc.handleUpdateUser(w, r)
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("code = %d, want 401", w.Code)
+	}
+}
+
+func TestAdminDeleteUserUnauthorized(t *testing.T) {
+	svc := NewService(&stubUserStore{}, testSecret, false)
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodDelete, "/api/admin/users/x", nil)
+	svc.handleDeleteUser(w, r)
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("code = %d, want 401", w.Code)
+	}
+}
+
+func TestAdminResetPasswordUnauthorized(t *testing.T) {
+	svc := NewService(&stubUserStore{}, testSecret, false)
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/api/admin/users/x/password",
+		strings.NewReader(`{"password":"y"}`))
+	svc.handleAdminResetPassword(w, r)
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("code = %d, want 401", w.Code)
+	}
+}
+
+func TestAdminResetTOTPUnauthorized(t *testing.T) {
+	svc := NewService(&stubUserStore{}, testSecret, false)
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/api/admin/users/x/totp/reset", nil)
+	svc.handleAdminResetTOTP(w, r)
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("code = %d, want 401", w.Code)
+	}
+}
+
+func TestAdminUpdateUserBadJSON(t *testing.T) {
+	srv, _, store := newAdminTestServer(t)
+	seedUser(t, store, "alice")
+	bob := seedUser(t, store, "bob")
+	client := loggedInClient(t, srv, "alice")
+	req, _ := http.NewRequest(http.MethodPatch, srv.URL+"/api/admin/users/"+bob.ID,
+		strings.NewReader("not json"))
+	req.Header.Set("Content-Type", "application/json")
+	resp, _ := client.Do(req)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", resp.StatusCode)
+	}
+}
+
+func TestAdminUpdateUserDisableSelfRejected(t *testing.T) {
+	srv, _, store := newAdminTestServer(t)
+	alice := seedUser(t, store, "alice")
+	client := loggedInClient(t, srv, "alice")
+	req, _ := http.NewRequest(http.MethodPatch, srv.URL+"/api/admin/users/"+alice.ID,
+		strings.NewReader(`{"disabled":true}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp, _ := client.Do(req)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400 (self-disable refused)", resp.StatusCode)
+	}
+}
+
+func TestAdminUpdateUserSetDisabledNotFound(t *testing.T) {
+	srv, _, store := newAdminTestServer(t)
+	seedUser(t, store, "alice")
+	bob := seedUser(t, store, "bob")
+	carol := seedUser(t, store, "carol")
+	_ = carol
+	client := loggedInClient(t, srv, "alice")
+	store.failOn = "SetDisabled"
+	store.err = ErrUserNotFound
+	req, _ := http.NewRequest(http.MethodPatch, srv.URL+"/api/admin/users/"+bob.ID,
+		strings.NewReader(`{"disabled":true}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp, _ := client.Do(req)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", resp.StatusCode)
+	}
+}
+
 func TestHandleLoginBadJSON(t *testing.T) {
 	store := &stubUserStore{}
 	svc := NewService(store, testSecret, false)
