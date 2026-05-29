@@ -255,3 +255,26 @@ func TestNowDefaultsToCurrentTime(t *testing.T) {
 		t.Errorf("set_at %v earlier than before=%v", got, before)
 	}
 }
+
+func TestStoreClosedDBSurfacesErrors(t *testing.T) {
+	f := newFixture(t)
+	if err := f.db.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	type call struct {
+		name string
+		fn   func() error
+	}
+	calls := []call{
+		{"List", func() error { _, err := f.store.List("s", "u"); return err }},
+		{"Replace", func() error { return f.store.Replace("s", "u", []string{"pkg"}) }},
+		{"RemoveSystem", func() error { _, err := f.store.RemoveSystem("s"); return err }},
+	}
+	for _, c := range calls {
+		t.Run(c.name, func(t *testing.T) {
+			if err := c.fn(); err == nil {
+				t.Errorf("%s on closed DB returned nil error", c.name)
+			}
+		})
+	}
+}

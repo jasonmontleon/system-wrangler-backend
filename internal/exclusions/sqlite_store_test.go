@@ -304,3 +304,37 @@ func TestScopeIsValid(t *testing.T) {
 		t.Error("Scope('nonsense').IsValid() = true")
 	}
 }
+
+func TestStoreClosedDBSurfacesErrors(t *testing.T) {
+	f := newFixture(t)
+	if err := f.db.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	type call struct {
+		name string
+		fn   func() error
+	}
+	calls := []call{
+		{"Create", func() error {
+			_, err := f.store.Create(ScopeGlobal, "", "builtin.dnf", "x*", "r", "u")
+			return err
+		}},
+		{"Get", func() error { _, err := f.store.Get("ex"); return err }},
+		{"Delete", func() error { return f.store.Delete("ex") }},
+		{"ListGlobal", func() error { _, err := f.store.ListGlobal(); return err }},
+		{"ListGroup", func() error { _, err := f.store.ListGroup("g"); return err }},
+		{"ListSystem", func() error { _, err := f.store.ListSystem("s"); return err }},
+		{"ResolveForSystem", func() error { _, err := f.store.ResolveForSystem("s", "builtin.dnf"); return err }},
+		{"ResolveEffectiveForSystem", func() error {
+			_, err := f.store.ResolveEffectiveForSystem("s", "builtin.dnf")
+			return err
+		}},
+	}
+	for _, c := range calls {
+		t.Run(c.name, func(t *testing.T) {
+			if err := c.fn(); err == nil {
+				t.Errorf("%s on closed DB returned nil error", c.name)
+			}
+		})
+	}
+}

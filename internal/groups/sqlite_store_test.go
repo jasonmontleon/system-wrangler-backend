@@ -178,3 +178,36 @@ func TestIsUniqueViolationOnNil(t *testing.T) {
 		t.Error("isUniqueViolation(nil) = true, want false")
 	}
 }
+
+func TestStoreClosedDBSurfacesErrors(t *testing.T) {
+	dsn := "file:" + t.TempDir() + "/groups-closed.db"
+	db, err := database.Open(dsn)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	store, err := NewSQLiteStore(db)
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	type call struct {
+		name string
+		fn   func() error
+	}
+	calls := []call{
+		{"Create", func() error { _, err := store.Create(GroupInput{Name: "g"}); return err }},
+		{"Get", func() error { _, err := store.Get("g"); return err }},
+		{"List", func() error { _, err := store.List(); return err }},
+		{"Rename", func() error { _, err := store.Rename("g", GroupInput{Name: "g2"}); return err }},
+		{"Delete", func() error { return store.Delete("g") }},
+	}
+	for _, c := range calls {
+		t.Run(c.name, func(t *testing.T) {
+			if err := c.fn(); err == nil {
+				t.Errorf("%s on closed DB returned nil error", c.name)
+			}
+		})
+	}
+}

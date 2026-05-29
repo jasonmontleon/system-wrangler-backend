@@ -578,3 +578,39 @@ func TestClearEmptyTable(t *testing.T) {
 		t.Errorf("Clear(30) on empty = (%d, %v), want (0, nil)", n, err)
 	}
 }
+
+func TestStoreClosedDBSurfacesErrors(t *testing.T) {
+	dsn := "file:" + filepath.Join(t.TempDir(), "audit-closed.db")
+	db, err := database.Open(dsn)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	store, err := NewSQLiteStore(db)
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	type call struct {
+		name string
+		fn   func() error
+	}
+	calls := []call{
+		{"Log", func() error {
+			return store.Log(context.Background(), Event{
+				Action: "test.action", Outcome: Success, TargetKind: "x",
+			})
+		}},
+		{"Get", func() error { _, err := store.Get("x"); return err }},
+		{"ListQuery", func() error { _, _, err := store.ListQuery(Query{Limit: 10}); return err }},
+		{"Clear", func() error { _, err := store.Clear(30); return err }},
+	}
+	for _, c := range calls {
+		t.Run(c.name, func(t *testing.T) {
+			if err := c.fn(); err == nil {
+				t.Errorf("%s on closed DB returned nil error", c.name)
+			}
+		})
+	}
+}

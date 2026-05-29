@@ -166,3 +166,34 @@ func TestSetUpdateConcurrencyLimitValidation(t *testing.T) {
 		t.Errorf("UpdateConcurrencyLimit = %d, want 8", got)
 	}
 }
+
+func TestStoreClosedDBSurfacesErrors(t *testing.T) {
+	dsn := "file:" + t.TempDir() + "/settings-closed.db"
+	db, err := database.Open(dsn)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	store, err := NewSQLiteStore(db)
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	type call struct {
+		name string
+		fn   func() error
+	}
+	calls := []call{
+		{"Get", func() error { _, err := store.Get("k"); return err }},
+		{"Set", func() error { return store.Set("k", "v") }},
+		{"All", func() error { _, err := store.All(); return err }},
+	}
+	for _, c := range calls {
+		t.Run(c.name, func(t *testing.T) {
+			if err := c.fn(); err == nil {
+				t.Errorf("%s on closed DB returned nil error", c.name)
+			}
+		})
+	}
+}
