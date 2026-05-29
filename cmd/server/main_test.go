@@ -411,6 +411,65 @@ func TestPopulatedEndpointsRespondAfterSetup(t *testing.T) {
 		}
 		_ = r.Body.Close()
 	}
+
+	// Create a second user with Group Admin only (no Global Admin) and
+	// log in as them so the populateMux closures take their
+	// !IsGlobalAdmin → RoleOnGroup(...) branches. Without this, the
+	// Group-Admin branches sit at 0% coverage forever.
+	postWithCSRF(t, "/api/admin/users",
+		`{"username":"groupadmin","password":"correctpassword"}`)
+	// Find the new user's id.
+	usersResp, _ := client.Get(srv.URL + "/api/admin/users")
+	var listed struct {
+		Users []struct {
+			ID       string `json:"id"`
+			Username string `json:"username"`
+		} `json:"users"`
+	}
+	_ = json.NewDecoder(usersResp.Body).Decode(&listed)
+	_ = usersResp.Body.Close()
+	var gaID string
+	for _, u := range listed.Users {
+		if u.Username == "groupadmin" {
+			gaID = u.ID
+		}
+	}
+	if gaID == "" {
+		t.Fatal("groupadmin user not visible in admin list")
+	}
+	if err := rbacStore.Grant(rbac.Assignment{UserID: gaID, GroupID: &groupID, Role: rbac.RoleAdmin}); err != nil {
+		t.Fatalf("grant group admin: %v", err)
+	}
+
+	// Log in as the Group Admin in a separate jar.
+	gaJar, _ := cookiejar.New(nil)
+	gaClient := &http.Client{Jar: gaJar}
+	loginResp, err := gaClient.Post(srv.URL+"/api/auth/login", "application/json",
+		strings.NewReader(`{"username":"groupadmin","password":"correctpassword"}`))
+	if err != nil {
+		t.Fatalf("group-admin login: %v", err)
+	}
+	_ = loginResp.Body.Close()
+	if loginResp.StatusCode != http.StatusOK {
+		t.Fatalf("group-admin login status = %d", loginResp.StatusCode)
+	}
+
+	// Hit endpoints that flow through CanManageSystem / CanReadSystem
+	// closures so the !IsGlobalAdmin → RoleOnGroup branch executes.
+	gaEndpoints := []string{
+		"/api/systems",
+		"/api/groups",
+		"/api/groups/" + groupID,
+		"/api/auth/status",
+	}
+	for _, p := range gaEndpoints {
+		r, err := gaClient.Get(srv.URL + p)
+		if err != nil {
+			t.Errorf("ga GET %s: %v", p, err)
+			continue
+		}
+		_ = r.Body.Close()
+	}
 }
 
 func TestUnknownAPIReturnsJSON404(t *testing.T) {
