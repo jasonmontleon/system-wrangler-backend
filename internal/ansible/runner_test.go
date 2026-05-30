@@ -660,6 +660,46 @@ func TestRunWithOmitAuditSkipsCompletionAudit(t *testing.T) {
 	}
 }
 
+func TestRunValidateEmptyPlaybookPath(t *testing.T) {
+	f := newFixture(t)
+	_, err := f.runner.Run(context.Background(), Request{
+		SystemID:     f.system.ID,
+		PlaybookPath: "  ",
+	})
+	if !errors.Is(err, ErrInvalidRequest) {
+		t.Errorf("err = %v, want ErrInvalidRequest", err)
+	}
+}
+
+func TestRunValidatePlaybookMissingFile(t *testing.T) {
+	f := newFixture(t)
+	_, err := f.runner.Run(context.Background(), Request{
+		SystemID:     f.system.ID,
+		PlaybookPath: "/nonexistent-playbook-test/missing.yml",
+	})
+	if !errors.Is(err, ErrInvalidRequest) {
+		t.Errorf("err = %v, want ErrInvalidRequest", err)
+	}
+}
+
+func TestPingNowDefaultsToTimeNow(t *testing.T) {
+	f := newFixture(t)
+	f.runner.Now = nil
+	f.seedCredentials()
+	f.seedAcceptedHostKey()
+	f.exec.queue(AnsibleAdHocBinary, fakeResp{
+		stdout: `h | SUCCESS => {"ping":"pong"}`,
+		exit:   0,
+	})
+	res, err := f.runner.Ping(context.Background(), f.system.ID)
+	if err != nil {
+		t.Fatalf("Ping: %v", err)
+	}
+	if res.StartedAt.IsZero() {
+		t.Error("StartedAt zero with nil Now override; expected time.Now default")
+	}
+}
+
 func TestPingRefusesUnwiredRunner(t *testing.T) {
 	r := &Runner{}
 	_, err := r.Ping(context.Background(), "x")

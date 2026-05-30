@@ -96,6 +96,20 @@ func TestParseSelector_Errors(t *testing.T) {
 	}
 }
 
+func TestParseSelector_ExtraErrors(t *testing.T) {
+	cases := []string{
+		"!",
+		"!=value",
+		"key in)",
+		",key=value",
+	}
+	for _, c := range cases {
+		if _, err := labels.ParseSelector(c); err == nil {
+			t.Errorf("ParseSelector(%q) = nil err, want error", c)
+		}
+	}
+}
+
 func TestParseSelector_RejectsBadKeyCharsetInSelector(t *testing.T) {
 	// A key that's too long should bubble up through labels.ParseSelector even
 	// though tokenize itself doesn't enforce length.

@@ -322,6 +322,17 @@ func TestFetchOverTunnelHostKeyMismatch(t *testing.T) {
 	}
 }
 
+func TestFetchOverTunnelNoHostKeySurfacesErrNoHostKey(t *testing.T) {
+	rig := newProxyRig(t, http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {}))
+	if err := rig.hk.Delete(acceptedKeyID(t, rig)); err != nil {
+		t.Fatalf("Delete accepted: %v", err)
+	}
+	_, err := rig.proxy.FetchOverTunnel(context.Background(), rig.system.ID, "127.0.0.1", 9100, "/metrics")
+	if !errors.Is(err, ErrNoHostKey) {
+		t.Errorf("err = %v, want ErrNoHostKey", err)
+	}
+}
+
 func TestFetchOverTunnelSequentialFetches(t *testing.T) {
 	rig := newProxyRig(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = io.WriteString(w, "ok")
