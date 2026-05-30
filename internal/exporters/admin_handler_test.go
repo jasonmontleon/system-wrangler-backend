@@ -234,6 +234,87 @@ func TestAdminUpdateBadID(t *testing.T) {
 	}
 }
 
+func TestAdminHandlerNowDefaultsToTimeNow(t *testing.T) {
+	h := &AdminHandler{}
+	got := h.now()
+	if got.IsZero() {
+		t.Error("now() returned zero with nil Now override")
+	}
+}
+
+func TestAdminUpdateStatusPlaybookCredential(t *testing.T) {
+	_, srv, _ := newAdminFixture(t)
+	// First create one so update has a target.
+	resp := postJSON(t, srv.URL+"/api/admin/exporter-definitions", createInputDTO{
+		ID:                  "leakstatus",
+		DisplayName:         "leak status",
+		AppliesToPkgManager: "builtin.apt",
+		ExporterKind:        KindNodeExporter,
+		BindPort:            9100,
+		InstallPlaybook:     "- hosts: all\n  tasks: []\n",
+		StatusPlaybook:      "- hosts: all\n  tasks: []\n",
+	})
+	_ = resp.Body.Close()
+	resp = patchJSON(t, srv.URL+"/api/admin/exporter-definitions/custom.leakstatus", updateInputDTO{
+		DisplayName:         "leak status",
+		AppliesToPkgManager: "builtin.apt",
+		ExporterKind:        KindNodeExporter,
+		BindPort:            9100,
+		InstallPlaybook:     "- hosts: all\n  tasks: []\n",
+		StatusPlaybook:      "- hosts: all\n  vars:\n    password: leaked\n",
+	})
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400 (status playbook inline credential)", resp.StatusCode)
+	}
+}
+
+func TestWriteStoreErrorMapping(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want int
+	}{
+		{"not-found", ErrNotFound, http.StatusNotFound},
+		{"duplicate", ErrDuplicate, http.StatusConflict},
+		{"reserved", ErrReservedID, http.StatusBadRequest},
+		{"builtin-write", ErrBuiltinWrite, http.StatusForbidden},
+		{"invalid", ErrInvalid, http.StatusBadRequest},
+		{"generic", errAdminTestStub("boom"), http.StatusInternalServerError},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			writeStoreError(w, tc.err)
+			if w.Code != tc.want {
+				t.Errorf("got %d, want %d", w.Code, tc.want)
+			}
+		})
+	}
+}
+
+func TestWriteGuardErrorMapping(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want int
+	}{
+		{"syntax", ErrSyntax, http.StatusBadRequest},
+		{"inline-cred", ErrInlineCredential, http.StatusBadRequest},
+		{"invalid", ErrInvalid, http.StatusBadRequest},
+		{"generic", errAdminTestStub("boom"), http.StatusInternalServerError},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			writeGuardError(w, tc.err)
+			if w.Code != tc.want {
+				t.Errorf("got %d, want %d", w.Code, tc.want)
+			}
+		})
+	}
+}
+
 func TestAdminListRegistryError500(t *testing.T) {
 	dsn := "file:" + filepath.Join(t.TempDir(), "admin-listerr.db")
 	db, err := database.Open(dsn)
