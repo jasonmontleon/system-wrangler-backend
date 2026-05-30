@@ -197,6 +197,34 @@ jobs:
             --exit-code 1 \
             --vuln-type os,library
 
+  frontend-gates:
+    name: Frontend typecheck, lint, test, 90% coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/system-wrangler-frontend
+          ref: main
+          token: ${{ secrets.FRONTEND_TOKEN }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm test -- --run --coverage
+      - name: Enforce ≥90% line coverage
+        run: |
+          set -euo pipefail
+          pct=$(node -e "console.log(JSON.parse(require('fs').readFileSync('coverage/coverage-summary.json','utf8')).total.lines.pct)")
+          echo "frontend coverage: ${pct}%"
+          ok=$(node -e "process.stdout.write(String(Number(process.argv[1]) >= 90))" "$pct")
+          if [ "$ok" != "true" ]; then
+            echo "::error::frontend coverage ${pct}% < 90%"
+            exit 1
+          fi
+
   publish:
     name: Build and push image
     runs-on: ubuntu-latest
@@ -210,6 +238,7 @@ jobs:
       - gitleaks
       - trivy-fs
       - trivy-image
+      - frontend-gates
     env:
       IMAGE_NAME: ${{ vars.IMAGE_NAME }}
       FRONTEND_TOKEN: ${{ secrets.FRONTEND_TOKEN }}
