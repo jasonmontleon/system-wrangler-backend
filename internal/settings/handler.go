@@ -73,6 +73,15 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 	if _, ok := all[KeyUpdateConcurrencyLimit]; !ok {
 		all[KeyUpdateConcurrencyLimit] = strconv.Itoa(UpdateConcurrencyLimit(h.Store))
 	}
+	if _, ok := all[KeyProbeIntervalSeconds]; !ok {
+		all[KeyProbeIntervalSeconds] = strconv.Itoa(ProbeIntervalSeconds(h.Store))
+	}
+	if _, ok := all[KeyProbeFailureThreshold]; !ok {
+		all[KeyProbeFailureThreshold] = strconv.Itoa(ProbeFailureThreshold(h.Store))
+	}
+	if _, ok := all[KeyProbeSuccessThreshold]; !ok {
+		all[KeyProbeSuccessThreshold] = strconv.Itoa(ProbeSuccessThreshold(h.Store))
+	}
 	writeJSON(w, http.StatusOK, settingsResponseDTO{Settings: all})
 }
 
@@ -127,6 +136,18 @@ func (h *Handler) put(w http.ResponseWriter, r *http.Request) {
 			slog.Error("settings set", "err", err, "key", key) //nolint:gosec
 			return
 		}
+	case KeyProbeIntervalSeconds:
+		if err := h.setIntFromBody(w, in.Value, key, SetProbeIntervalSeconds); err != nil {
+			return
+		}
+	case KeyProbeFailureThreshold:
+		if err := h.setIntFromBody(w, in.Value, key, SetProbeFailureThreshold); err != nil {
+			return
+		}
+	case KeyProbeSuccessThreshold:
+		if err := h.setIntFromBody(w, in.Value, key, SetProbeSuccessThreshold); err != nil {
+			return
+		}
 	default:
 		writeError(w, http.StatusNotFound, "unknown setting")
 		return
@@ -134,6 +155,30 @@ func (h *Handler) put(w http.ResponseWriter, r *http.Request) {
 
 	h.emitAudit(r.Context(), key, before, in.Value)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// setIntFromBody decodes value as an int and persists it through
+// setter. Returns a non-nil error after writing the matching HTTP
+// response so the caller can short-circuit. Shared by the three
+// bounded-integer probe settings to keep each case a one-liner.
+func (h *Handler) setIntFromBody(w http.ResponseWriter, value, key string, setter func(Store, int) error) error {
+	n, err := strconv.Atoi(value)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "value must be an integer")
+		return err
+	}
+	if err := setter(h.Store, n); err != nil {
+		if errors.Is(err, ErrInvalid) {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return err
+		}
+		writeError(w, http.StatusInternalServerError, "set failed")
+		// key is user-controlled but slog's structured kv form doesn't
+		// interpolate it into the message — gosec G706 false positive.
+		slog.Error("settings set", "err", err, "key", key) //nolint:gosec
+		return err
+	}
+	return nil
 }
 
 func (h *Handler) allowed(ctx context.Context) bool {

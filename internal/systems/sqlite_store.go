@@ -40,6 +40,9 @@ func NewSQLiteStore(db *sql.DB) (*SQLiteStore, error) {
 	if err := addRebootRequiredColumn(db); err != nil {
 		return nil, fmt.Errorf("systems: migrate reboot_required_at: %w", err)
 	}
+	if err := addProbeCounterColumns(db); err != nil {
+		return nil, fmt.Errorf("systems: migrate probe counters: %w", err)
+	}
 	return &SQLiteStore{db: db, NewID: newUUID, Now: time.Now}, nil
 }
 
@@ -63,7 +66,9 @@ CREATE TABLE IF NOT EXISTS hosts (
     os_family       TEXT NOT NULL DEFAULT '',
     os_distribution TEXT NOT NULL DEFAULT '',
     virtualization  TEXT NOT NULL DEFAULT '',
-    reboot_required_at INTEGER
+    reboot_required_at INTEGER,
+    consecutive_failures  INTEGER NOT NULL DEFAULT 0,
+    consecutive_successes INTEGER NOT NULL DEFAULT 0
 ) STRICT;
 
 CREATE INDEX IF NOT EXISTS hosts_created_at ON hosts(created_at, id);
@@ -122,6 +127,30 @@ func addPlatformInfoColumns(db *sql.DB) error {
 		case errors.Is(err, sql.ErrNoRows):
 			//nolint:gosec // col is a fixed string literal from the loop above, not user input
 			if _, err := db.Exec(`ALTER TABLE hosts ADD COLUMN ` + col + ` TEXT NOT NULL DEFAULT ''`); err != nil {
+				return err
+			}
+		default:
+			return err
+		}
+	}
+	return nil
+}
+
+// addProbeCounterColumns brings older databases up to schema for the
+// reachability hysteresis pair. Each column probes independently so
+// a partially-migrated database self-heals on the next start. Both
+// default to 0 — equivalent to "no probe outcomes recorded yet,"
+// which matches a fresh row's pre-probe state.
+func addProbeCounterColumns(db *sql.DB) error {
+	for _, col := range []string{"consecutive_failures", "consecutive_successes"} {
+		row := db.QueryRow(`SELECT 1 FROM pragma_table_info('hosts') WHERE name = ?`, col)
+		var found int
+		switch err := row.Scan(&found); {
+		case err == nil:
+			continue
+		case errors.Is(err, sql.ErrNoRows):
+			//nolint:gosec // col is a fixed string literal from the loop above, not user input
+			if _, err := db.Exec(`ALTER TABLE hosts ADD COLUMN ` + col + ` INTEGER NOT NULL DEFAULT 0`); err != nil {
 				return err
 			}
 		default:
@@ -196,7 +225,7 @@ func (s *SQLiteStore) createWith(e execer, in SystemInput) (System, error) {
 // Get returns the System with the given ID, or ErrNotFound.
 func (s *SQLiteStore) Get(id string) (System, error) {
 	row := s.db.QueryRow(
-		`SELECT id, name, hostname, created_at, status, last_seen, group_id, is_windows, os_family, os_distribution, virtualization, reboot_required_at FROM hosts WHERE id = ?`,
+		`SELECT id, name, hostname, created_at, status, last_seen, group_id, is_windows, os_family, os_distribution, virtualization, reboot_required_at, consecutive_failures, consecutive_successes FROM hosts WHERE id = ?`,
 		id,
 	)
 	h, err := scanHost(row)
@@ -210,7 +239,7 @@ func (s *SQLiteStore) Get(id string) (System, error) {
 // MemStore so handler behavior is identical regardless of backend.
 func (s *SQLiteStore) List() ([]System, error) {
 	rows, err := s.db.Query(
-		`SELECT id, name, hostname, created_at, status, last_seen, group_id, is_windows, os_family, os_distribution, virtualization, reboot_required_at FROM hosts ORDER BY created_at, id`,
+		`SELECT id, name, hostname, created_at, status, last_seen, group_id, is_windows, os_family, os_distribution, virtualization, reboot_required_at, consecutive_failures, consecutive_successes FROM hosts ORDER BY created_at, id`,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("systems: list: %w", err)
@@ -289,32 +318,65 @@ func (s *SQLiteStore) ClearGroup(groupID string) error {
 	return nil
 }
 
-// UpdateProbe mirrors MemStore: success sets Status + LastSeen; failure sets
-// Status only, preserving any prior LastSeen.
-func (s *SQLiteStore) UpdateProbe(id string, ok bool, when time.Time) error {
+// UpdateProbe applies the threshold-based reachability state
+// machine in a single transaction so the counter bump, status
+// flip, and LastSeen update are atomic with the read that decides
+// whether the status changed at all. See Store.UpdateProbe for
+// semantics.
+func (s *SQLiteStore) UpdateProbe(id string, ok bool, when time.Time, failThreshold, succThreshold int) (bool, error) {
 	when = when.UTC()
-	var (
-		res sql.Result
-		err error
-	)
-	if ok {
-		res, err = s.db.Exec(
-			`UPDATE hosts SET status = ?, last_seen = ? WHERE id = ?`,
-			string(StatusReachable), when.UnixNano(), id,
-		)
-	} else {
-		res, err = s.db.Exec(
-			`UPDATE hosts SET status = ? WHERE id = ?`,
-			string(StatusUnreachable), id,
-		)
-	}
+	tx, err := s.db.Begin()
 	if err != nil {
-		return fmt.Errorf("systems: update probe: %w", err)
+		return false, fmt.Errorf("systems: update probe: begin: %w", err)
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return ErrNotFound
+	defer func() { _ = tx.Rollback() }()
+
+	var (
+		prevStatus string
+		failures   int
+		successes  int
+	)
+	if err := tx.QueryRow(
+		`SELECT status, consecutive_failures, consecutive_successes FROM hosts WHERE id = ?`,
+		id,
+	).Scan(&prevStatus, &failures, &successes); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, ErrNotFound
+		}
+		return false, fmt.Errorf("systems: update probe: read: %w", err)
 	}
-	return nil
+
+	newStatus := Status(prevStatus)
+	if ok {
+		successes++
+		failures = 0
+		if successes >= succThreshold && newStatus != StatusReachable {
+			newStatus = StatusReachable
+		}
+		if _, err := tx.Exec(
+			`UPDATE hosts SET status = ?, last_seen = ?, consecutive_failures = ?, consecutive_successes = ? WHERE id = ?`,
+			string(newStatus), when.UnixNano(), failures, successes, id,
+		); err != nil {
+			return false, fmt.Errorf("systems: update probe: write: %w", err)
+		}
+	} else {
+		failures++
+		successes = 0
+		if failures >= failThreshold && newStatus != StatusUnreachable {
+			newStatus = StatusUnreachable
+		}
+		if _, err := tx.Exec(
+			`UPDATE hosts SET status = ?, consecutive_failures = ?, consecutive_successes = ? WHERE id = ?`,
+			string(newStatus), failures, successes, id,
+		); err != nil {
+			return false, fmt.Errorf("systems: update probe: write: %w", err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("systems: update probe: commit: %w", err)
+	}
+	return Status(prevStatus) != newStatus, nil
 }
 
 // rowScanner unifies *sql.Row and *sql.Rows so scanHost serves Get and List.
@@ -337,6 +399,7 @@ func scanHost(r rowScanner) (System, error) {
 		&groupID, &isWindows,
 		&h.OSFamily, &h.OSDistribution, &h.Virtualization,
 		&rebootAtNs,
+		&h.ConsecutiveFailures, &h.ConsecutiveSuccesses,
 	); err != nil {
 		return System{}, err
 	}

@@ -43,13 +43,29 @@ func (p TCPProber) Probe(ctx context.Context, address string) error {
 // Probe runs the periodic reachability loop. Construct via fields; Run blocks
 // until ctx is cancelled.
 type Probe struct {
-	Store    Store
-	Prober   Prober
+	Store  Store
+	Prober Prober
+	// Interval is the fallback cadence used when IntervalFn is nil
+	// (mostly tests). Production wiring sets IntervalFn so the live
+	// settings value is picked up each cycle without restart.
 	Interval time.Duration
-	Timeout  time.Duration
-	Workers  int
-	Now      func() time.Time
-	Logger   *slog.Logger
+	// IntervalFn, when non-nil, is consulted at the end of every
+	// Tick to decide the next sleep. Returning <= 0 falls back to
+	// Interval. Bound to settings.ProbeIntervalSeconds in
+	// cmd/server/main.go.
+	IntervalFn func() time.Duration
+	// FailThresholdFn returns the number of consecutive failures
+	// required to flip a system to unreachable. Optional; nil is
+	// treated as 1 (immediate flip — matches the pre-threshold
+	// default).
+	FailThresholdFn func() int
+	// SuccThresholdFn mirrors FailThresholdFn for the recovery
+	// path. Optional; nil is treated as 1.
+	SuccThresholdFn func() int
+	Timeout         time.Duration
+	Workers         int
+	Now             func() time.Time
+	Logger          *slog.Logger
 	// Trigger fires an immediate Tick when received. Optional; nil disables
 	// the case (a nil channel never selects). Use a buffered channel of
 	// size 1 so non-blocking sends drop cleanly when a tick is in flight.
@@ -60,8 +76,11 @@ type Probe struct {
 	OnChange func()
 }
 
-// Run probes all known systems immediately, then on every Interval until ctx is
-// cancelled. Safe to invoke as a goroutine.
+// Run probes all known systems immediately, then on the configured
+// cadence (IntervalFn or Interval) until ctx is cancelled. Safe to
+// invoke as a goroutine. The ticker is Reset after every cycle so a
+// live settings change to probe_interval_seconds takes effect on the
+// next sleep without a restart.
 func (p *Probe) Run(ctx context.Context) {
 	if p.Logger == nil {
 		p.Logger = slog.Default()
@@ -73,7 +92,8 @@ func (p *Probe) Run(ctx context.Context) {
 		p.Workers = 10
 	}
 	p.Tick(ctx)
-	t := time.NewTicker(p.Interval)
+	current := p.currentInterval()
+	t := time.NewTicker(current)
 	defer t.Stop()
 	for {
 		select {
@@ -84,18 +104,60 @@ func (p *Probe) Run(ctx context.Context) {
 		case <-p.Trigger:
 			p.Tick(ctx)
 		}
+		next := p.currentInterval()
+		if next != current {
+			t.Reset(next)
+			current = next
+		}
 	}
+}
+
+// currentInterval returns the live cadence: IntervalFn() when set
+// and positive, falling back to Interval otherwise.
+func (p *Probe) currentInterval() time.Duration {
+	if p.IntervalFn != nil {
+		if d := p.IntervalFn(); d > 0 {
+			return d
+		}
+	}
+	return p.Interval
+}
+
+// failThreshold returns the live consecutive-failure threshold, or
+// 1 when no provider is wired (matches the immediate-flip default).
+func (p *Probe) failThreshold() int {
+	if p.FailThresholdFn != nil {
+		if n := p.FailThresholdFn(); n > 0 {
+			return n
+		}
+	}
+	return 1
+}
+
+// succThreshold returns the live consecutive-success threshold, or
+// 1 when no provider is wired.
+func (p *Probe) succThreshold() int {
+	if p.SuccThresholdFn != nil {
+		if n := p.SuccThresholdFn(); n > 0 {
+			return n
+		}
+	}
+	return 1
 }
 
 // Tick runs one probe cycle across all systems. Exposed for tests; Run calls
 // it on its schedule. Calls OnChange (if set) once at the end if any
-// system transitioned status this cycle.
+// system transitioned status this cycle. Reads the live failure /
+// success thresholds once at the top of the cycle so a settings
+// change mid-tick can't observe a per-system race.
 func (p *Probe) Tick(ctx context.Context) {
 	systems, err := p.Store.List()
 	if err != nil {
 		p.Logger.Error("probe list", "err", err)
 		return
 	}
+	failT := p.failThreshold()
+	succT := p.succThreshold()
 	sem := make(chan struct{}, p.Workers)
 	var wg sync.WaitGroup
 	var changes atomic.Int32
@@ -113,15 +175,13 @@ func (p *Probe) Tick(ctx context.Context) {
 			probeCtx, cancel := context.WithTimeout(ctx, p.Timeout)
 			defer cancel()
 			ok := p.Prober.Probe(probeCtx, h.Hostname) == nil
-			newStatus := StatusUnreachable
-			if ok {
-				newStatus = StatusReachable
-			}
-			if h.Status != newStatus {
-				changes.Add(1)
-			}
-			if err := p.Store.UpdateProbe(h.ID, ok, p.Now()); err != nil {
+			transitioned, err := p.Store.UpdateProbe(h.ID, ok, p.Now(), failT, succT)
+			if err != nil {
 				p.Logger.Error("probe update", "err", err, "id", h.ID)
+				return
+			}
+			if transitioned {
+				changes.Add(1)
 			}
 		}(h)
 	}

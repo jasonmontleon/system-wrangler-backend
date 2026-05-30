@@ -661,8 +661,8 @@ func (s *stubStore) Get(string) (System, error)                    { return Syst
 func (s *stubStore) List() ([]System, error)                       { return nil, s.err }
 func (s *stubStore) Delete(string) error                           { return s.err }
 func (s *stubStore) DeleteTx(*sql.Tx, string) error                { return s.err }
-func (s *stubStore) UpdateProbe(string, bool, time.Time) error {
-	return s.err
+func (s *stubStore) UpdateProbe(string, bool, time.Time, int, int) (bool, error) {
+	return false, s.err
 }
 func (s *stubStore) SetGroup(string, *string) error            { return s.err }
 func (s *stubStore) SetPlatform(string, bool) error            { return s.err }

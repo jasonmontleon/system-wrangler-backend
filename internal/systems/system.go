@@ -108,6 +108,17 @@ type System struct {
 	// Windows; the SPA may merge the two signals for display but the
 	// column is the fast-path "we know right now" answer.
 	RebootRequiredAt *time.Time `json:"rebootRequiredAt,omitempty"`
+	// ConsecutiveFailures is the count of probe failures since the
+	// last success (or since the system was created if there has
+	// never been a success). Reset to 0 on every successful probe.
+	// Status flips to unreachable when this reaches the configured
+	// failure threshold (settings.ProbeFailureThreshold).
+	ConsecutiveFailures int `json:"consecutiveFailures,omitempty"`
+	// ConsecutiveSuccesses mirrors ConsecutiveFailures for the
+	// recovery path: count of probe successes since the last failure,
+	// reset on every failed probe, flips status to reachable when it
+	// reaches the configured success threshold.
+	ConsecutiveSuccesses int `json:"consecutiveSuccesses,omitempty"`
 }
 
 // PendingPackage is the systems-package mirror of the updaters

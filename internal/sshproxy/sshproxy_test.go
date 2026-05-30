@@ -100,9 +100,11 @@ func (s stubSystems) Create(systems.SystemInput) (systems.System, error) {
 func (s stubSystems) CreateTx(*sql.Tx, systems.SystemInput) (systems.System, error) {
 	return systems.System{}, nil
 }
-func (s stubSystems) Delete(string) error                                  { return nil }
-func (s stubSystems) DeleteTx(*sql.Tx, string) error                       { return nil }
-func (s stubSystems) UpdateProbe(string, bool, time.Time) error            { return nil }
+func (s stubSystems) Delete(string) error            { return nil }
+func (s stubSystems) DeleteTx(*sql.Tx, string) error { return nil }
+func (s stubSystems) UpdateProbe(string, bool, time.Time, int, int) (bool, error) {
+	return false, nil
+}
 func (s stubSystems) SetGroup(string, *string) error                       { return nil }
 func (s stubSystems) ClearGroup(string) error                              { return nil }
 func (s stubSystems) SetPlatform(string, bool) error                       { return nil }

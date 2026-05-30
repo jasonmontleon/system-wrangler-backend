@@ -26,9 +26,18 @@ type Store interface {
 	// DeleteTx is the in-transaction sibling of Delete. Same contract as
 	// CreateTx.
 	DeleteTx(tx *sql.Tx, id string) error
-	// UpdateProbe records a probe outcome. when is the timestamp the probe
-	// completed; on success it also becomes the system's LastSeen.
-	UpdateProbe(id string, ok bool, when time.Time) error
+	// UpdateProbe records a probe outcome and applies the threshold-
+	// based state machine. ok=true bumps ConsecutiveSuccesses and
+	// resets ConsecutiveFailures; ok=false bumps ConsecutiveFailures
+	// and resets ConsecutiveSuccesses. Status flips to reachable only
+	// after ConsecutiveSuccesses >= succThreshold, and to unreachable
+	// only after ConsecutiveFailures >= failThreshold. The returned
+	// bool is true when the call caused a Status transition (so the
+	// caller can fire change notifications without a re-read).
+	// LastSeen is updated on every success regardless of the
+	// threshold (per-probe "last contact" is independent of "are we
+	// declaring this system reachable yet").
+	UpdateProbe(id string, ok bool, when time.Time, failThreshold, succThreshold int) (transitioned bool, err error)
 	// SetGroup assigns a system to a group, or clears its group when
 	// groupID is nil. Returns ErrNotFound if the system does not exist.
 	// FK integrity (does the group exist?) is enforced by the groups
@@ -123,25 +132,34 @@ func (s *MemStore) List() ([]System, error) {
 	return out, nil
 }
 
-// UpdateProbe records a probe result against id. ok=true sets Status to
-// reachable and updates LastSeen; ok=false sets Status to unreachable and
-// preserves any prior LastSeen.
-func (s *MemStore) UpdateProbe(id string, ok bool, when time.Time) error {
+// UpdateProbe applies the threshold-based reachability state
+// machine. See Store.UpdateProbe for semantics. The transitioned
+// bool reflects whether Status itself changed on this call.
+func (s *MemStore) UpdateProbe(id string, ok bool, when time.Time, failThreshold, succThreshold int) (bool, error) {
 	when = when.UTC()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	h, found := s.systems[id]
 	if !found {
-		return ErrNotFound
+		return false, ErrNotFound
 	}
+	prevStatus := h.Status
 	if ok {
-		h.Status = StatusReachable
+		h.ConsecutiveSuccesses++
+		h.ConsecutiveFailures = 0
 		h.LastSeen = &when
+		if h.ConsecutiveSuccesses >= succThreshold && h.Status != StatusReachable {
+			h.Status = StatusReachable
+		}
 	} else {
-		h.Status = StatusUnreachable
+		h.ConsecutiveFailures++
+		h.ConsecutiveSuccesses = 0
+		if h.ConsecutiveFailures >= failThreshold && h.Status != StatusUnreachable {
+			h.Status = StatusUnreachable
+		}
 	}
 	s.systems[id] = h
-	return nil
+	return prevStatus != h.Status, nil
 }
 
 // Delete removes the System with the given ID, or returns ErrNotFound.

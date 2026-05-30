@@ -147,8 +147,12 @@ func TestMemStoreUpdateProbe(t *testing.T) {
 	h, _ := s.Create(SystemInput{Name: "h", Hostname: "1.1.1.1"})
 	probeAt := time.Date(2026, 5, 5, 12, 0, 0, 0, time.UTC)
 
-	if err := s.UpdateProbe(h.ID, true, probeAt); err != nil {
+	transitioned, err := s.UpdateProbe(h.ID, true, probeAt, 1, 1)
+	if err != nil {
 		t.Fatalf("UpdateProbe ok: %v", err)
+	}
+	if !transitioned {
+		t.Errorf("transitioned = false, want true on first success from unprobed")
 	}
 	got, _ := s.Get(h.ID)
 	if got.Status != StatusReachable {
@@ -157,11 +161,18 @@ func TestMemStoreUpdateProbe(t *testing.T) {
 	if got.LastSeen == nil || !got.LastSeen.Equal(probeAt) {
 		t.Errorf("LastSeen = %v, want %v", got.LastSeen, probeAt)
 	}
+	if got.ConsecutiveSuccesses != 1 || got.ConsecutiveFailures != 0 {
+		t.Errorf("counters = (s=%d, f=%d), want (1, 0)", got.ConsecutiveSuccesses, got.ConsecutiveFailures)
+	}
 
 	// A failed probe sets Unreachable but preserves LastSeen.
 	failAt := probeAt.Add(time.Minute)
-	if err := s.UpdateProbe(h.ID, false, failAt); err != nil {
+	transitioned, err = s.UpdateProbe(h.ID, false, failAt, 1, 1)
+	if err != nil {
 		t.Fatalf("UpdateProbe fail: %v", err)
+	}
+	if !transitioned {
+		t.Errorf("transitioned = false on reachable→unreachable, want true")
 	}
 	got, _ = s.Get(h.ID)
 	if got.Status != StatusUnreachable {
@@ -170,11 +181,72 @@ func TestMemStoreUpdateProbe(t *testing.T) {
 	if got.LastSeen == nil || !got.LastSeen.Equal(probeAt) {
 		t.Errorf("LastSeen = %v, want preserved %v", got.LastSeen, probeAt)
 	}
+	if got.ConsecutiveSuccesses != 0 || got.ConsecutiveFailures != 1 {
+		t.Errorf("counters = (s=%d, f=%d), want (0, 1)", got.ConsecutiveSuccesses, got.ConsecutiveFailures)
+	}
+}
+
+func TestMemStoreUpdateProbeHysteresis(t *testing.T) {
+	s := newTestStore()
+	h, _ := s.Create(SystemInput{Name: "h", Hostname: "1.1.1.1"})
+	at := time.Date(2026, 5, 5, 12, 0, 0, 0, time.UTC)
+
+	// Threshold = 3: two failures shouldn't flip; the third should.
+	for i := 1; i <= 2; i++ {
+		transitioned, err := s.UpdateProbe(h.ID, false, at, 3, 3)
+		if err != nil {
+			t.Fatalf("fail %d: %v", i, err)
+		}
+		if transitioned {
+			t.Errorf("fail %d: transitioned = true, want false before threshold", i)
+		}
+		got, _ := s.Get(h.ID)
+		if got.Status != StatusUnprobed {
+			t.Errorf("fail %d: Status = %q, want unprobed", i, got.Status)
+		}
+		if got.ConsecutiveFailures != i {
+			t.Errorf("fail %d: ConsecutiveFailures = %d, want %d", i, got.ConsecutiveFailures, i)
+		}
+	}
+	transitioned, err := s.UpdateProbe(h.ID, false, at, 3, 3)
+	if err != nil {
+		t.Fatalf("third fail: %v", err)
+	}
+	if !transitioned {
+		t.Errorf("third fail: transitioned = false, want true at threshold")
+	}
+	got, _ := s.Get(h.ID)
+	if got.Status != StatusUnreachable {
+		t.Errorf("Status = %q, want unreachable", got.Status)
+	}
+
+	// One success interrupts the failure streak but doesn't recover yet.
+	if _, err := s.UpdateProbe(h.ID, true, at, 3, 3); err != nil {
+		t.Fatalf("recovery start: %v", err)
+	}
+	got, _ = s.Get(h.ID)
+	if got.Status != StatusUnreachable {
+		t.Errorf("Status = %q after 1 success, want still unreachable (threshold 3)", got.Status)
+	}
+	if got.ConsecutiveFailures != 0 || got.ConsecutiveSuccesses != 1 {
+		t.Errorf("counters = (s=%d, f=%d), want (1, 0)", got.ConsecutiveSuccesses, got.ConsecutiveFailures)
+	}
+
+	// Three consecutive successes total → recover.
+	for i := 2; i <= 3; i++ {
+		if _, err := s.UpdateProbe(h.ID, true, at, 3, 3); err != nil {
+			t.Fatalf("recovery %d: %v", i, err)
+		}
+	}
+	got, _ = s.Get(h.ID)
+	if got.Status != StatusReachable {
+		t.Errorf("Status = %q after 3 successes, want reachable", got.Status)
+	}
 }
 
 func TestMemStoreUpdateProbeMissing(t *testing.T) {
 	s := newTestStore()
-	if err := s.UpdateProbe("nope", true, time.Now()); !errors.Is(err, ErrNotFound) {
+	if _, err := s.UpdateProbe("nope", true, time.Now(), 1, 1); !errors.Is(err, ErrNotFound) {
 		t.Errorf("err = %v, want ErrNotFound", err)
 	}
 }

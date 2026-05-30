@@ -195,11 +195,16 @@ func run(ctx context.Context, args []string, getenv func(string) string) error {
 	probe := &systems.Probe{
 		Store:    store,
 		Prober:   systems.TCPProber{Port: "22", Timeout: 3 * time.Second},
-		Interval: 30 * time.Second,
-		Timeout:  5 * time.Second,
-		Workers:  10,
-		Trigger:  make(chan struct{}, 1),
-		OnChange: broadcastSystemsChanged,
+		Interval: time.Duration(settings.DefaultProbeIntervalSeconds) * time.Second,
+		IntervalFn: func() time.Duration {
+			return time.Duration(settings.ProbeIntervalSeconds(settingsStore)) * time.Second
+		},
+		FailThresholdFn: func() int { return settings.ProbeFailureThreshold(settingsStore) },
+		SuccThresholdFn: func() int { return settings.ProbeSuccessThreshold(settingsStore) },
+		Timeout:         5 * time.Second,
+		Workers:         10,
+		Trigger:         make(chan struct{}, 1),
+		OnChange:        broadcastSystemsChanged,
 	}
 
 	onCreate := func() {

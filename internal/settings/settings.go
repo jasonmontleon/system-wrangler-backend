@@ -55,6 +55,58 @@ const MinUpdateConcurrencyLimit = 1
 // file and child-process limits.
 const MaxUpdateConcurrencyLimit = 100
 
+// KeyProbeIntervalSeconds is the cadence at which the reachability
+// loop visits every system. Stored as a string-encoded integer
+// number of seconds.
+const KeyProbeIntervalSeconds = "probe_interval_seconds"
+
+// DefaultProbeIntervalSeconds matches the pre-settings hardcoded
+// value so an unconfigured instance behaves identically to one
+// pinned at the default.
+const DefaultProbeIntervalSeconds = 30
+
+// MinProbeIntervalSeconds prevents an operator from setting a value
+// that would hammer the fleet (and the dialer's connection table)
+// with sub-5-second probing.
+const MinProbeIntervalSeconds = 5
+
+// MaxProbeIntervalSeconds caps at one hour. Slower than that and
+// "are we live?" answers stop being meaningful as a health signal.
+const MaxProbeIntervalSeconds = 3600
+
+// KeyProbeFailureThreshold is the number of consecutive failed
+// probes required to flip a system to unreachable. Stored as a
+// string-encoded integer.
+const KeyProbeFailureThreshold = "probe_failure_threshold"
+
+// DefaultProbeFailureThreshold matches the pre-threshold behavior:
+// one failure flips immediately.
+const DefaultProbeFailureThreshold = 1
+
+// MinProbeFailureThreshold is 1: zero would mean "never mark
+// unreachable" which would silently mask the whole feature.
+const MinProbeFailureThreshold = 1
+
+// MaxProbeFailureThreshold caps the hysteresis at 10. Beyond that
+// the lag between the system being down and the dashboard noticing
+// crosses into "useless".
+const MaxProbeFailureThreshold = 10
+
+// KeyProbeSuccessThreshold is the number of consecutive successful
+// probes required to flip a system back to reachable. Stored as
+// a string-encoded integer.
+const KeyProbeSuccessThreshold = "probe_success_threshold"
+
+// DefaultProbeSuccessThreshold matches the pre-threshold behavior:
+// one success flips immediately.
+const DefaultProbeSuccessThreshold = 1
+
+// MinProbeSuccessThreshold mirrors the failure-side reasoning.
+const MinProbeSuccessThreshold = 1
+
+// MaxProbeSuccessThreshold mirrors the failure-side cap.
+const MaxProbeSuccessThreshold = 10
+
 // ErrNotFound is returned by Store.Get when no row exists for the
 // requested key. Typed accessors translate this to the matching
 // default rather than propagating the error.

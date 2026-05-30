@@ -78,3 +78,78 @@ func SetUpdateConcurrencyLimit(store Store, n int) error {
 	}
 	return store.Set(KeyUpdateConcurrencyLimit, strconv.Itoa(n))
 }
+
+// ProbeIntervalSeconds returns the reachability cadence, falling
+// back to DefaultProbeIntervalSeconds on unset/unparseable/out-of-
+// range values. The probe loop reads this on every Tick so a
+// settings change takes effect at the next cycle without restart.
+func ProbeIntervalSeconds(store Store) int {
+	return clampedSetting(store, KeyProbeIntervalSeconds,
+		DefaultProbeIntervalSeconds, MinProbeIntervalSeconds, MaxProbeIntervalSeconds)
+}
+
+// SetProbeIntervalSeconds validates and persists the cadence.
+func SetProbeIntervalSeconds(store Store, n int) error {
+	return setBoundedSetting(store, KeyProbeIntervalSeconds, n,
+		MinProbeIntervalSeconds, MaxProbeIntervalSeconds, "probe_interval_seconds")
+}
+
+// ProbeFailureThreshold returns the number of consecutive failures
+// required to mark a system unreachable.
+func ProbeFailureThreshold(store Store) int {
+	return clampedSetting(store, KeyProbeFailureThreshold,
+		DefaultProbeFailureThreshold, MinProbeFailureThreshold, MaxProbeFailureThreshold)
+}
+
+// SetProbeFailureThreshold validates and persists the threshold.
+func SetProbeFailureThreshold(store Store, n int) error {
+	return setBoundedSetting(store, KeyProbeFailureThreshold, n,
+		MinProbeFailureThreshold, MaxProbeFailureThreshold, "probe_failure_threshold")
+}
+
+// ProbeSuccessThreshold returns the number of consecutive successes
+// required to mark a system reachable.
+func ProbeSuccessThreshold(store Store) int {
+	return clampedSetting(store, KeyProbeSuccessThreshold,
+		DefaultProbeSuccessThreshold, MinProbeSuccessThreshold, MaxProbeSuccessThreshold)
+}
+
+// SetProbeSuccessThreshold validates and persists the threshold.
+func SetProbeSuccessThreshold(store Store, n int) error {
+	return setBoundedSetting(store, KeyProbeSuccessThreshold, n,
+		MinProbeSuccessThreshold, MaxProbeSuccessThreshold, "probe_success_threshold")
+}
+
+// clampedSetting reads key, falls back to defaultValue on
+// unset/unparseable/below-min, and caps to max. Shared by the
+// three new probe accessors so each stays a one-liner.
+func clampedSetting(store Store, key string, defaultValue, minValue, maxValue int) int {
+	if store == nil {
+		return defaultValue
+	}
+	raw, err := store.Get(key)
+	if err != nil {
+		return defaultValue
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < minValue {
+		return defaultValue
+	}
+	if n > maxValue {
+		return maxValue
+	}
+	return n
+}
+
+// setBoundedSetting validates n against [minValue, maxValue] and
+// persists. Shared by the three new probe setters.
+func setBoundedSetting(store Store, key string, n, minValue, maxValue int, displayName string) error {
+	if store == nil {
+		return errors.New("settings: store is nil")
+	}
+	if n < minValue || n > maxValue {
+		return fmt.Errorf("%w: %s must be between %d and %d",
+			ErrInvalid, displayName, minValue, maxValue)
+	}
+	return store.Set(key, strconv.Itoa(n))
+}

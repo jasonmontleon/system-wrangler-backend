@@ -187,8 +187,12 @@ func TestSQLiteStoreUpdateProbe(t *testing.T) {
 	h, _ := s.Create(SystemInput{Name: "h", Hostname: "1.1.1.1"})
 	probeAt := time.Date(2026, 5, 5, 12, 0, 0, 0, time.UTC)
 
-	if err := s.UpdateProbe(h.ID, true, probeAt); err != nil {
+	transitioned, err := s.UpdateProbe(h.ID, true, probeAt, 1, 1)
+	if err != nil {
 		t.Fatalf("UpdateProbe ok: %v", err)
+	}
+	if !transitioned {
+		t.Errorf("transitioned = false on first success, want true")
 	}
 	got, _ := s.Get(h.ID)
 	if got.Status != StatusReachable {
@@ -197,11 +201,18 @@ func TestSQLiteStoreUpdateProbe(t *testing.T) {
 	if got.LastSeen == nil || !got.LastSeen.Equal(probeAt) {
 		t.Errorf("LastSeen = %v, want %v", got.LastSeen, probeAt)
 	}
+	if got.ConsecutiveSuccesses != 1 || got.ConsecutiveFailures != 0 {
+		t.Errorf("counters = (s=%d, f=%d), want (1, 0)", got.ConsecutiveSuccesses, got.ConsecutiveFailures)
+	}
 
 	// A failed probe sets Unreachable but preserves LastSeen.
 	failAt := probeAt.Add(time.Minute)
-	if err := s.UpdateProbe(h.ID, false, failAt); err != nil {
+	transitioned, err = s.UpdateProbe(h.ID, false, failAt, 1, 1)
+	if err != nil {
 		t.Fatalf("UpdateProbe fail: %v", err)
+	}
+	if !transitioned {
+		t.Errorf("transitioned = false on reachable→unreachable, want true")
 	}
 	got, _ = s.Get(h.ID)
 	if got.Status != StatusUnreachable {
@@ -212,9 +223,60 @@ func TestSQLiteStoreUpdateProbe(t *testing.T) {
 	}
 }
 
+func TestSQLiteStoreUpdateProbeHysteresis(t *testing.T) {
+	s := newTestSQLiteStore(t)
+	h, _ := s.Create(SystemInput{Name: "h", Hostname: "1.1.1.1"})
+	at := time.Date(2026, 5, 5, 12, 0, 0, 0, time.UTC)
+
+	// Two failures with threshold=3 must not flip status.
+	for i := 1; i <= 2; i++ {
+		transitioned, err := s.UpdateProbe(h.ID, false, at, 3, 3)
+		if err != nil {
+			t.Fatalf("fail %d: %v", i, err)
+		}
+		if transitioned {
+			t.Errorf("fail %d: transitioned, want still pre-threshold", i)
+		}
+	}
+	transitioned, err := s.UpdateProbe(h.ID, false, at, 3, 3)
+	if err != nil {
+		t.Fatalf("third fail: %v", err)
+	}
+	if !transitioned {
+		t.Errorf("third fail: transitioned = false, want true at threshold")
+	}
+	got, _ := s.Get(h.ID)
+	if got.Status != StatusUnreachable {
+		t.Errorf("Status = %q, want unreachable", got.Status)
+	}
+
+	// One success starts the recovery counter but doesn't flip yet.
+	if _, err := s.UpdateProbe(h.ID, true, at, 3, 3); err != nil {
+		t.Fatalf("recovery 1: %v", err)
+	}
+	got, _ = s.Get(h.ID)
+	if got.Status != StatusUnreachable {
+		t.Errorf("after 1 success: Status = %q, want still unreachable", got.Status)
+	}
+	if got.ConsecutiveSuccesses != 1 || got.ConsecutiveFailures != 0 {
+		t.Errorf("counters = (s=%d, f=%d), want (1, 0)", got.ConsecutiveSuccesses, got.ConsecutiveFailures)
+	}
+
+	// Two more successes → recover at threshold.
+	for i := 2; i <= 3; i++ {
+		if _, err := s.UpdateProbe(h.ID, true, at, 3, 3); err != nil {
+			t.Fatalf("recovery %d: %v", i, err)
+		}
+	}
+	got, _ = s.Get(h.ID)
+	if got.Status != StatusReachable {
+		t.Errorf("Status = %q, want reachable after 3 successes", got.Status)
+	}
+}
+
 func TestSQLiteStoreUpdateProbeMissing(t *testing.T) {
 	s := newTestSQLiteStore(t)
-	if err := s.UpdateProbe("nope", true, time.Now()); !errors.Is(err, ErrNotFound) {
+	if _, err := s.UpdateProbe("nope", true, time.Now(), 1, 1); !errors.Is(err, ErrNotFound) {
 		t.Errorf("err = %v, want ErrNotFound", err)
 	}
 }
@@ -590,7 +652,7 @@ func TestSQLiteStoreClosedDBSurfacesErrors(t *testing.T) {
 		{"DeleteTx-nil", func() error { return s.DeleteTx(nil, "x") }},
 		{"SetGroup", func() error { return s.SetGroup("x", nil) }},
 		{"ClearGroup", func() error { return s.ClearGroup("g") }},
-		{"UpdateProbe", func() error { return s.UpdateProbe("x", true, time.Now()) }},
+		{"UpdateProbe", func() error { _, err := s.UpdateProbe("x", true, time.Now(), 1, 1); return err }},
 		{"SetPlatform", func() error { return s.SetPlatform("x", true) }},
 		{"SetPlatformTx-nil", func() error { return s.SetPlatformTx(nil, "x", true) }},
 		{"SetRebootRequired", func() error { return s.SetRebootRequired("x", time.Now()) }},

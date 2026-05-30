@@ -130,6 +130,99 @@ func TestPutUpdateConcurrencyLimit(t *testing.T) {
 	}
 }
 
+func TestPutProbeKnobs(t *testing.T) {
+	// The three probe keys all route through the same setIntFromBody
+	// helper, so a single table covers happy-path, non-integer, and
+	// out-of-range for each.
+	for _, key := range []string{
+		KeyProbeIntervalSeconds,
+		KeyProbeFailureThreshold,
+		KeyProbeSuccessThreshold,
+	} {
+		t.Run(key+"_ok", func(t *testing.T) {
+			h, srv := newHandlerSrv(t, true)
+			req, _ := http.NewRequest(
+				http.MethodPut,
+				srv.URL+"/api/admin/settings/"+key,
+				strings.NewReader(`{"value":"5"}`),
+			)
+			req.Header.Set("Content-Type", "application/json")
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("put: %v", err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+			if resp.StatusCode != http.StatusNoContent {
+				t.Fatalf("status = %d, want 204", resp.StatusCode)
+			}
+			if v, _ := h.Store.Get(key); v != "5" {
+				t.Errorf("stored = %q, want 5", v)
+			}
+		})
+		t.Run(key+"_bad_integer", func(t *testing.T) {
+			_, srv := newHandlerSrv(t, true)
+			req, _ := http.NewRequest(
+				http.MethodPut,
+				srv.URL+"/api/admin/settings/"+key,
+				strings.NewReader(`{"value":"not-a-number"}`),
+			)
+			req.Header.Set("Content-Type", "application/json")
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("put: %v", err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Errorf("status = %d, want 400", resp.StatusCode)
+			}
+		})
+		t.Run(key+"_out_of_range", func(t *testing.T) {
+			_, srv := newHandlerSrv(t, true)
+			req, _ := http.NewRequest(
+				http.MethodPut,
+				srv.URL+"/api/admin/settings/"+key,
+				strings.NewReader(`{"value":"0"}`),
+			)
+			req.Header.Set("Content-Type", "application/json")
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("put: %v", err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Errorf("status = %d, want 400", resp.StatusCode)
+			}
+		})
+	}
+}
+
+func TestListSurfacesProbeDefaults(t *testing.T) {
+	_, srv := newHandlerSrv(t, true)
+	resp, err := http.Get(srv.URL + "/api/admin/settings")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	var got struct {
+		Settings map[string]string `json:"settings"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	for _, key := range []string{
+		KeyProbeIntervalSeconds,
+		KeyProbeFailureThreshold,
+		KeyProbeSuccessThreshold,
+	} {
+		if _, ok := got.Settings[key]; !ok {
+			t.Errorf("%s missing from list response", key)
+		}
+	}
+}
+
 func TestPutHappyPath(t *testing.T) {
 	h, srv := newHandlerSrv(t, true)
 	req, _ := http.NewRequest(
