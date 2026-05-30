@@ -7,9 +7,12 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strconv"
 	"testing"
 	"time"
+
+	"system-wrangler-backend/internal/database"
 )
 
 // newTestHandler returns a Handler backed by a fresh store + a test
@@ -333,6 +336,44 @@ func TestHandlerClear_RejectsBadOlderThanDays(t *testing.T) {
 		mux.ServeHTTP(w, httptest.NewRequest(http.MethodDelete, "/api/admin/audit?older_than_days="+bad, nil))
 		if w.Code != http.StatusBadRequest {
 			t.Errorf("older_than_days=%q status = %d, want 400", bad, w.Code)
+		}
+	}
+}
+
+// TestHandlerStoreErrors uses a closed-DB store to surface 500 errors
+// from the audit list and get endpoints.
+func TestHandlerStoreErrors(t *testing.T) {
+	dsn := "file:" + filepath.Join(t.TempDir(), "h-closed.db")
+	db, err := database.Open(dsn)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	s, err := NewSQLiteStore(db)
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	h := NewHandler(s)
+	h.CanClear = func(*http.Request) bool { return true }
+	mux := http.NewServeMux()
+	h.Register(mux, nil)
+
+	cases := []struct {
+		method string
+		path   string
+	}{
+		{http.MethodGet, "/api/admin/audit"},
+		{http.MethodGet, "/api/admin/audit/x"},
+		{http.MethodDelete, "/api/admin/audit?older_than_days=30"},
+	}
+	for _, tc := range cases {
+		w := httptest.NewRecorder()
+		r := httptest.NewRequest(tc.method, tc.path, nil)
+		mux.ServeHTTP(w, r)
+		if w.Code != http.StatusInternalServerError {
+			t.Errorf("%s %s status = %d, want 500", tc.method, tc.path, w.Code)
 		}
 	}
 }

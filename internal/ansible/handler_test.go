@@ -94,6 +94,25 @@ func TestHandlerTestConnectionNoRunner(t *testing.T) {
 
 // failingSystems returns a non-NotFound error so handler hits the 500
 // lookup path. Distinct from the missing-system test above which hits 404.
+type emptyIDSystems struct{}
+
+func (emptyIDSystems) Get(string) (systems.System, error) {
+	return systems.System{ID: ""}, nil // pass-through with empty id triggers Ping ErrInvalidRequest
+}
+
+func TestHandlerTestConnectionPingInvalidRequest400(t *testing.T) {
+	h, srv, _ := newHandlerFixture(t)
+	h.Systems = emptyIDSystems{}
+	resp, err := http.Post(srv.URL+"/api/systems/abc/test-connection", "application/json", nil)
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", resp.StatusCode)
+	}
+}
+
 type failingSystems struct{}
 
 func (failingSystems) Get(string) (systems.System, error) {
