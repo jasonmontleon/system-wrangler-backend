@@ -16,8 +16,17 @@ if [ -n "$unformatted" ]; then
   exit 1
 fi
 
-echo "==> go test -race"
-go test ./... -race
+echo "==> go test -race -cover"
+go test ./... -race -coverprofile=.cover.out
+total_pct=$(go tool cover -func=.cover.out | awk '/^total:/ {sub("%","",$3); print $3}')
+rm -f .cover.out
+echo "    whole-repo statement coverage: ${total_pct}%"
+ok=$(awk -v p="$total_pct" 'BEGIN { print (p+0 >= 90) ? "true" : "false" }')
+if [ "$ok" != "true" ]; then
+  echo "coverage: whole-repo statement coverage ${total_pct}% is below the 90% gate." >&2
+  echo "Add tests anywhere in the repo until total is ≥90% before committing." >&2
+  exit 1
+fi
 
 if command -v golangci-lint >/dev/null 2>&1; then
   echo "==> golangci-lint"
