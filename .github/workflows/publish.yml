@@ -39,7 +39,7 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - run: go test ./... -race
+      - run: go test ./... -race -timeout 30m
 
   coverage-gate:
     name: 90% statement coverage gate

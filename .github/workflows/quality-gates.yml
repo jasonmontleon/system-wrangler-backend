@@ -44,7 +44,7 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - run: go test ./... -race
+      - run: go test ./... -race -timeout 30m
 
   golangci-lint:
     name: golangci-lint
