@@ -300,6 +300,14 @@ jobs:
           fi
           echo "tags=${tags}" >> "$GITHUB_OUTPUT"
 
+      - name: Compute build args
+        id: build-args
+        run: |
+          set -euo pipefail
+          echo "backend_sha=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+          echo "frontend_sha=$(git -C _frontend rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+          echo "build_date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
       - name: Registry login
         if: env.REGISTRY_USER != '' && env.REGISTRY_TOKEN != ''
         run: |
@@ -312,6 +320,10 @@ jobs:
           file: Containerfile
           build-contexts: |
             frontend=_frontend
+          build-args: |
+            BACKEND_SHA=${{ steps.build-args.outputs.backend_sha }}
+            FRONTEND_SHA=${{ steps.build-args.outputs.frontend_sha }}
+            BUILD_DATE=${{ steps.build-args.outputs.build_date }}
           platforms: ${{ steps.platforms.outputs.platforms }}
           push: true
           tags: ${{ steps.tags.outputs.tags }}

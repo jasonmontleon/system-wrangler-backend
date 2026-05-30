@@ -198,6 +198,32 @@ func TestServerRoutesHealth(t *testing.T) {
 	}
 }
 
+func TestServerRoutesBuildInfo(t *testing.T) {
+	srv := httptest.NewServer(withLogging(newTestMux(t)))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/api/build-info")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	var body struct {
+		Backend   string `json:"backend"`
+		Frontend  string `json:"frontend"`
+		BuildDate string `json:"buildDate"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.Backend == "" || body.Frontend == "" || body.BuildDate == "" {
+		t.Fatalf("body = %+v", body)
+	}
+}
+
 func TestSystemsRequiresAuth(t *testing.T) {
 	srv := httptest.NewServer(withLogging(newTestMux(t)))
 	defer srv.Close()

@@ -27,6 +27,7 @@ import (
 	"system-wrangler-backend/internal/audit"
 	"system-wrangler-backend/internal/auth"
 	"system-wrangler-backend/internal/backup"
+	"system-wrangler-backend/internal/buildinfo"
 	"system-wrangler-backend/internal/credentials"
 	"system-wrangler-backend/internal/database"
 	"system-wrangler-backend/internal/events"
@@ -311,6 +312,7 @@ func newMux(db *sql.DB, store systems.Store, groupStore groups.Store, authStore 
 // test needs this entry point.
 func populateMux(mux router.Mux, db *sql.DB, store systems.Store, groupStore groups.Store, authStore *auth.SQLiteAuthStore, authSvc *auth.Service, secret []byte, vault *secrets.Vault, hub *events.Hub, auditStore *audit.Store, rbacStore rbac.Store, credStore credentials.Store, hostKeyStore hostkeys.Store, updaterStore updaters.Store, exporterStore exporters.Store, settingsStore settings.Store, exclusionStore exclusions.Store, holdsStore holds.Store, labelStore labels.Store, labelStyleStore labels.StyleStore, onSystemCreate, onSystemDelete func()) {
 	mux.Handle("GET /api/health", http.HandlerFunc(handleHealth))
+	mux.Handle("GET /api/build-info", buildinfo.Handler())
 	authSvc.Register(mux)
 	requireUserOnly := auth.RequireUser(secret, authStore, time.Now)
 	withScope := rbac.Middleware(rbacStore)

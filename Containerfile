@@ -13,6 +13,9 @@ RUN npm run build
 
 FROM quay.io/centos/centos:stream10 AS backend-build
 ARG GO_VERSION=1.25.10
+ARG BACKEND_SHA=dev
+ARG FRONTEND_SHA=dev
+ARG BUILD_DATE=unknown
 RUN dnf update -y \
  && dnf install -y --setopt=install_weak_deps=False tar gzip curl-minimal \
  && dnf clean all && rm -rf /var/cache/dnf \
@@ -31,7 +34,10 @@ RUN go mod download
 COPY . .
 COPY --from=frontend-build /app/dist ./web/dist
 RUN CGO_ENABLED=0 GOOS=linux go build \
-    -ldflags="-s -w" \
+    -ldflags="-s -w \
+        -X system-wrangler-backend/internal/buildinfo.Backend=${BACKEND_SHA} \
+        -X system-wrangler-backend/internal/buildinfo.Frontend=${FRONTEND_SHA} \
+        -X system-wrangler-backend/internal/buildinfo.BuildDate=${BUILD_DATE}" \
     -o /out/server \
     ./cmd/server
 

@@ -81,6 +81,35 @@ paths:
                     type: string
                     enum: [ok]
 
+  /api/build-info:
+    get:
+      tags: [meta]
+      summary: Build identifiers (backend SHA, frontend SHA, UTC build date).
+      description: |
+        Strings injected at build time via `-ldflags`. Defaults are
+        `"dev"` / `"unknown"` when the binary is built locally without
+        the linker flags. Surfaced on the login page footer so an
+        operator can identify what's deployed without authenticating.
+      security: []
+      responses:
+        "200":
+          description: Build identifiers.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [backend, frontend, buildDate]
+                properties:
+                  backend:
+                    type: string
+                    description: Backend short commit SHA, or `dev`.
+                  frontend:
+                    type: string
+                    description: Frontend short commit SHA, or `dev`.
+                  buildDate:
+                    type: string
+                    description: UTC build timestamp (RFC 3339), or `unknown`.
+
   /api/openapi.yaml:
     get:
       tags: [meta]
