@@ -866,6 +866,89 @@ func TestHandleTOTPConfirmNoPending(t *testing.T) {
 	}
 }
 
+func TestHandleListDevicesUnauthorized(t *testing.T) {
+	svc := NewService(&stubUserStore{}, testSecret, false)
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/api/auth/devices", nil)
+	svc.handleListDevices(w, r)
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("code = %d, want 401", w.Code)
+	}
+}
+
+func TestHandleListDevicesNilStore(t *testing.T) {
+	store := &stubUserStore{}
+	svc := NewService(store, testSecret, false)
+	u := seedUser(t, store, "alice")
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/api/auth/devices", nil).WithContext(withUserCtx(t, u))
+	svc.handleListDevices(w, r)
+	if w.Code != http.StatusOK {
+		t.Errorf("code = %d, want 200 (empty list)", w.Code)
+	}
+}
+
+func TestHandleRevokeDeviceUnauthorized(t *testing.T) {
+	svc := NewService(&stubUserStore{}, testSecret, false)
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodDelete, "/api/auth/devices/x", nil)
+	svc.handleRevokeDevice(w, r)
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("code = %d, want 401", w.Code)
+	}
+}
+
+func TestHandleRevokeDeviceNilStore(t *testing.T) {
+	store := &stubUserStore{}
+	svc := NewService(store, testSecret, false)
+	u := seedUser(t, store, "alice")
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodDelete, "/api/auth/devices/x", nil).WithContext(withUserCtx(t, u))
+	svc.handleRevokeDevice(w, r)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("code = %d, want 503", w.Code)
+	}
+}
+
+func TestHandleTOTPVerifyThrottled(t *testing.T) {
+	store := &stubUserStore{}
+	svc := NewService(store, testSecret, false)
+	now := time.Date(2026, 5, 13, 12, 0, 0, 0, time.UTC)
+	svc.Now = func() time.Time { return now }
+	throttle := NewThrottle(time.Hour, 1, func() time.Time { return now })
+	for i := 0; i < 5; i++ {
+		throttle.Record("192.0.2.1")
+	}
+	svc.LoginThrottle = throttle
+	svc.TOTPStore = newStubTOTPStore()
+	svc.RecoveryStore = newStubRecoveryStore()
+	svc.Vault = fixedVault(t)
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/api/auth/totp/verify",
+		strings.NewReader(`{"code":"123456"}`))
+	r.RemoteAddr = "192.0.2.1:1234"
+	svc.handleTOTPVerify(w, r)
+	if w.Code != http.StatusTooManyRequests {
+		t.Errorf("code = %d, want 429", w.Code)
+	}
+}
+
+func TestHandleTOTPVerifyNoChallenge(t *testing.T) {
+	store := &stubUserStore{}
+	svc := NewService(store, testSecret, false)
+	svc.TOTPStore = newStubTOTPStore()
+	svc.RecoveryStore = newStubRecoveryStore()
+	svc.Vault = fixedVault(t)
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/api/auth/totp/verify",
+		strings.NewReader(`{"code":"123456"}`))
+	svc.handleTOTPVerify(w, r)
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("code = %d, want 401", w.Code)
+	}
+}
+
 func TestHandleTOTPVerifyNotConfigured(t *testing.T) {
 	store := &stubUserStore{}
 	svc := NewService(store, testSecret, false)
