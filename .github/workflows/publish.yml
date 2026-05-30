@@ -334,14 +334,11 @@ jobs:
         id: tags
         run: |
           set -euo pipefail
-          short_sha=$(git rev-parse --short HEAD)
           ref_name="${GITHUB_REF_NAME:-main}"
-          tags="${IMAGE_NAME}:${short_sha}"
-          if [ "${ref_name}" = "main" ]; then
-            tags="${tags},${IMAGE_NAME}:latest"
-          fi
           if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
-            tags="${tags},${IMAGE_NAME}:${ref_name}"
+            tags="${IMAGE_NAME}:${ref_name}"
+          else
+            tags="${IMAGE_NAME}:latest"
           fi
           echo "tags=${tags}" >> "$GITHUB_OUTPUT"
 
