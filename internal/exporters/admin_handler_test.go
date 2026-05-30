@@ -315,6 +315,58 @@ func TestWriteGuardErrorMapping(t *testing.T) {
 	}
 }
 
+func TestAdminCreateWithRemovePlaybook(t *testing.T) {
+	_, srv, _ := newAdminFixture(t)
+	resp := postJSON(t, srv.URL+"/api/admin/exporter-definitions", createInputDTO{
+		ID:                  "withremove",
+		DisplayName:         "with remove",
+		AppliesToPkgManager: "builtin.apt",
+		ExporterKind:        KindNodeExporter,
+		BindPort:            9100,
+		InstallPlaybook:     "- hosts: all\n  tasks: []\n",
+		StatusPlaybook:      "- hosts: all\n  tasks: []\n",
+		RemovePlaybook:      "- hosts: all\n  tasks: []\n",
+	})
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusCreated {
+		t.Errorf("status = %d, want 201", resp.StatusCode)
+	}
+}
+
+func TestAdminEmitAuditWithoutAudit(t *testing.T) {
+	dsn := "file:" + filepath.Join(t.TempDir(), "noaud.db")
+	db, err := database.Open(dsn)
+	if err != nil {
+		t.Fatalf("db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	_, _ = systems.NewSQLiteStore(db)
+	store, _ := NewSQLiteStore(db)
+	h := &AdminHandler{
+		Registry:  NewRegistry(store),
+		Syntax:    stubSyntax{},
+		CanManage: func(context.Context) bool { return true },
+		// Audit deliberately nil — emitAudit hits its early-return guard.
+	}
+	mux := http.NewServeMux()
+	h.Register(mux, nil)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	resp := postJSON(t, srv.URL+"/api/admin/exporter-definitions", createInputDTO{
+		ID:                  "noaud",
+		DisplayName:         "noaud",
+		AppliesToPkgManager: "builtin.apt",
+		ExporterKind:        KindNodeExporter,
+		BindPort:            9100,
+		InstallPlaybook:     "- hosts: all\n  tasks: []\n",
+		StatusPlaybook:      "- hosts: all\n  tasks: []\n",
+	})
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusCreated {
+		t.Errorf("status = %d, want 201", resp.StatusCode)
+	}
+}
+
 func TestAdminListRegistryError500(t *testing.T) {
 	dsn := "file:" + filepath.Join(t.TempDir(), "admin-listerr.db")
 	db, err := database.Open(dsn)
