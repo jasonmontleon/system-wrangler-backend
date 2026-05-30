@@ -1,0 +1,65 @@
+- name: Test syspatch apply rc tolerance and progress-marker parsing
+  hosts: localhost
+  gather_facts: false
+  vars:
+    apply_acceptable_rcs: [0, 2]
+    syspatch_applied:
+      rc: 0
+      stdout_lines:
+        - "Get/Verify syspatch71-001_libssl.tgz 100% ..."
+        - "Installing patch 001_libssl"
+        - "Get/Verify syspatch71-002_dhcpd.tgz 100% ..."
+        - "Installing patch 002_dhcpd"
+        - "Relinking to create unique kernel... done."
+    syspatch_no_patches:
+      rc: 2
+      stdout_lines: []
+    syspatch_real_error:
+      rc: 1
+      stdout_lines: []
+  tasks:
+    - name: rc=0 is acceptable (patches were installed)
+      ansible.builtin.assert:
+        that:
+          - not (syspatch_applied.rc not in apply_acceptable_rcs)
+        fail_msg: "rc=0 must be treated as success"
+
+    - name: rc=2 is acceptable (no additional patch was installed)
+      ansible.builtin.assert:
+        that:
+          - not (syspatch_no_patches.rc not in apply_acceptable_rcs)
+        fail_msg: "rc=2 must be treated as a clean no-op, not a failure"
+
+    - name: rc=1 is rejected (genuine syspatch error)
+      ansible.builtin.assert:
+        that:
+          - syspatch_real_error.rc not in apply_acceptable_rcs
+        fail_msg: "rc=1 must be treated as a failure"
+
+    - name: Applied count from progress markers (typical run)
+      ansible.builtin.set_fact:
+        applied_count: >-
+          {{ syspatch_applied.stdout_lines
+             | default([])
+             | select('match', '^Installing patch ')
+             | list
+             | length }}
+    - name: Assert two patches counted
+      ansible.builtin.assert:
+        that:
+          - applied_count | int == 2
+        fail_msg: "applied_count={{ applied_count }}, want 2"
+
+    - name: Applied count for rc=2 no-op (empty stdout)
+      ansible.builtin.set_fact:
+        applied_count_noop: >-
+          {{ syspatch_no_patches.stdout_lines
+             | default([])
+             | select('match', '^Installing patch ')
+             | list
+             | length }}
+    - name: Assert zero counted on no-op
+      ansible.builtin.assert:
+        that:
+          - applied_count_noop | int == 0
+        fail_msg: "applied_count_noop={{ applied_count_noop }}, want 0"

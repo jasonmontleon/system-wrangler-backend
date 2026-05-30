@@ -7,6 +7,9 @@
       ansible.builtin.command:
         cmd: syspatch
       register: syspatch_result
+      # syspatch(8) exits 2 when no additional patch was installed
+      # (a clean no-op, not a failure); treat it as success.
+      failed_when: syspatch_result.rc not in [0, 2]
       changed_when: syspatch_result.stdout is search('^Installing patch ', multiline=True)
     - name: Compute applied patch count from progress markers
       ansible.builtin.set_fact:
