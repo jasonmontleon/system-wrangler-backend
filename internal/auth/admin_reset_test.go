@@ -866,6 +866,64 @@ func TestHandleTOTPConfirmNoPending(t *testing.T) {
 	}
 }
 
+func TestHandleTOTPDisableUnauthorized(t *testing.T) {
+	svc := NewService(&stubUserStore{}, testSecret, false)
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodDelete, "/api/auth/totp",
+		strings.NewReader(`{"password":"x","code":"123456"}`))
+	svc.handleTOTPDisable(w, r)
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("code = %d, want 401", w.Code)
+	}
+}
+
+func TestHandleTOTPDisableNotConfigured(t *testing.T) {
+	store := &stubUserStore{}
+	svc := NewService(store, testSecret, false)
+	u := seedUser(t, store, "alice")
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodDelete, "/api/auth/totp",
+		strings.NewReader(`{"password":"x","code":"123456"}`)).WithContext(withUserCtx(t, u))
+	svc.handleTOTPDisable(w, r)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("code = %d, want 503", w.Code)
+	}
+}
+
+func TestHandleTOTPDisableBadJSON(t *testing.T) {
+	store := &stubUserStore{}
+	svc := NewService(store, testSecret, false)
+	svc.Vault = fixedVault(t)
+	svc.TOTPStore = newStubTOTPStore()
+	svc.RecoveryStore = newStubRecoveryStore()
+	svc.DeviceStore = newStubDeviceStore()
+	u := seedUser(t, store, "alice")
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodDelete, "/api/auth/totp",
+		strings.NewReader("not json")).WithContext(withUserCtx(t, u))
+	svc.handleTOTPDisable(w, r)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("code = %d, want 400", w.Code)
+	}
+}
+
+func TestHandleTOTPDisableEmptyFields(t *testing.T) {
+	store := &stubUserStore{}
+	svc := NewService(store, testSecret, false)
+	svc.Vault = fixedVault(t)
+	svc.TOTPStore = newStubTOTPStore()
+	svc.RecoveryStore = newStubRecoveryStore()
+	svc.DeviceStore = newStubDeviceStore()
+	u := seedUser(t, store, "alice")
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodDelete, "/api/auth/totp",
+		strings.NewReader(`{"password":"","code":""}`)).WithContext(withUserCtx(t, u))
+	svc.handleTOTPDisable(w, r)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("code = %d, want 400", w.Code)
+	}
+}
+
 func TestHandleListDevicesUnauthorized(t *testing.T) {
 	svc := NewService(&stubUserStore{}, testSecret, false)
 	w := httptest.NewRecorder()
