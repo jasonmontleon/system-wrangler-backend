@@ -197,6 +197,49 @@ jobs:
             --exit-code 1 \
             --vuln-type os,library
 
+  dco:
+    name: DCO sign-off on every commit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Verify Signed-off-by
+        env:
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          case "${GITHUB_EVENT_NAME}" in
+            push)
+              base="${PUSH_BEFORE}"
+              head="${GITHUB_SHA}"
+              if [ "$base" = "0000000000000000000000000000000000000000" ]; then
+                base=""
+              fi
+              ;;
+            workflow_dispatch)
+              base=""
+              head="$(git rev-parse HEAD)"
+              ;;
+            *)
+              echo "DCO check not configured for event: ${GITHUB_EVENT_NAME}" >&2
+              exit 0
+              ;;
+          esac
+          if [ -z "$base" ]; then
+            shas="$head"
+          else
+            shas="$(git rev-list "$base..$head")"
+          fi
+          missing=0
+          for sha in $shas; do
+            if ! git log -1 --format=%B "$sha" | grep -qE '^Signed-off-by: .+'; then
+              echo "::error::commit $sha is missing a Signed-off-by line (use 'git commit -s')"
+              missing=1
+            fi
+          done
+          exit $missing
+
   frontend-gates:
     name: Frontend typecheck, lint, test, 90% coverage
     runs-on: ubuntu-latest
@@ -239,6 +282,7 @@ jobs:
       - trivy-fs
       - trivy-image
       - frontend-gates
+      - dco
     env:
       IMAGE_NAME: ${{ vars.IMAGE_NAME }}
       FRONTEND_TOKEN: ${{ secrets.FRONTEND_TOKEN }}
