@@ -29,6 +29,7 @@ import (
 	"system-wrangler-backend/internal/backup"
 	"system-wrangler-backend/internal/buildinfo"
 	"system-wrangler-backend/internal/credentials"
+	"system-wrangler-backend/internal/dashboardlayout"
 	"system-wrangler-backend/internal/database"
 	"system-wrangler-backend/internal/events"
 	"system-wrangler-backend/internal/exclusions"
@@ -133,12 +134,21 @@ func run(ctx context.Context, args []string, getenv func(string) string) error {
 	if err != nil {
 		return err
 	}
-	authStore.PostDelete = func(tx *sql.Tx, _ string) error {
+	// We use a closure capture for the dashboard-layout store so the
+	// PostDelete hook can hit it inside the same transaction the user
+	// row is being removed from.
+	var dashboardLayoutStoreForCleanup *dashboardlayout.SQLiteStore
+	authStore.PostDelete = func(tx *sql.Tx, userID string) error {
 		if err := rbac.EnsureGlobalAdminRemains(tx); err != nil {
 			if errors.Is(err, rbac.ErrLastGlobalAdmin) {
 				return auth.ErrLastGlobalAdmin
 			}
 			return err
+		}
+		if dashboardLayoutStoreForCleanup != nil {
+			if err := dashboardLayoutStoreForCleanup.DeleteByUserTx(tx, userID); err != nil {
+				return err
+			}
 		}
 		return nil
 	}
@@ -178,6 +188,11 @@ func run(ctx context.Context, args []string, getenv func(string) string) error {
 	if err != nil {
 		return err
 	}
+	dashboardLayoutStore, err := initStore(db, "dashboardlayout", dashboardlayout.NewSQLiteStore)
+	if err != nil {
+		return err
+	}
+	dashboardLayoutStoreForCleanup = dashboardLayoutStore
 	authSvc := auth.NewService(authStore, secret, useTLS)
 	authSvc.TOTPStore = authStore
 	authSvc.RecoveryStore = authStore
@@ -217,7 +232,7 @@ func run(ctx context.Context, args []string, getenv func(string) string) error {
 		Handler: withRequestMeta(
 			withLogging(
 				auth.CSRF(auditStore)(
-					newMux(db, store, groupStore, authStore, authSvc, secret, vault, hub, auditStore, rbacStore, credStore, hostKeyStore, updaterStore, exporterStore, settingsStore, exclusionStore, holdsStore, labelStore, labelStyleStore, onCreate, broadcastSystemsChanged),
+					newMux(db, store, groupStore, authStore, authSvc, secret, vault, hub, auditStore, rbacStore, credStore, hostKeyStore, updaterStore, exporterStore, settingsStore, exclusionStore, holdsStore, labelStore, labelStyleStore, dashboardLayoutStore, onCreate, broadcastSystemsChanged),
 				),
 			),
 		),
@@ -304,9 +319,9 @@ func run(ctx context.Context, args []string, getenv func(string) string) error {
 	return nil
 }
 
-func newMux(db *sql.DB, store systems.Store, groupStore groups.Store, authStore *auth.SQLiteAuthStore, authSvc *auth.Service, secret []byte, vault *secrets.Vault, hub *events.Hub, auditStore *audit.Store, rbacStore rbac.Store, credStore credentials.Store, hostKeyStore hostkeys.Store, updaterStore updaters.Store, exporterStore exporters.Store, settingsStore settings.Store, exclusionStore exclusions.Store, holdsStore holds.Store, labelStore labels.Store, labelStyleStore labels.StyleStore, onSystemCreate, onSystemDelete func()) *http.ServeMux {
+func newMux(db *sql.DB, store systems.Store, groupStore groups.Store, authStore *auth.SQLiteAuthStore, authSvc *auth.Service, secret []byte, vault *secrets.Vault, hub *events.Hub, auditStore *audit.Store, rbacStore rbac.Store, credStore credentials.Store, hostKeyStore hostkeys.Store, updaterStore updaters.Store, exporterStore exporters.Store, settingsStore settings.Store, exclusionStore exclusions.Store, holdsStore holds.Store, labelStore labels.Store, labelStyleStore labels.StyleStore, dashboardLayoutStore dashboardlayout.Store, onSystemCreate, onSystemDelete func()) *http.ServeMux {
 	mux := http.NewServeMux()
-	populateMux(mux, db, store, groupStore, authStore, authSvc, secret, vault, hub, auditStore, rbacStore, credStore, hostKeyStore, updaterStore, exporterStore, settingsStore, exclusionStore, holdsStore, labelStore, labelStyleStore, onSystemCreate, onSystemDelete)
+	populateMux(mux, db, store, groupStore, authStore, authSvc, secret, vault, hub, auditStore, rbacStore, credStore, hostKeyStore, updaterStore, exporterStore, settingsStore, exclusionStore, holdsStore, labelStore, labelStyleStore, dashboardLayoutStore, onSystemCreate, onSystemDelete)
 	return mux
 }
 
@@ -315,7 +330,7 @@ func newMux(db *sql.DB, store systems.Store, groupStore groups.Store, authStore 
 // that captures every (method, path) pattern without spinning up a real
 // *http.ServeMux. main.go and tests reach for newMux; only the drift
 // test needs this entry point.
-func populateMux(mux router.Mux, db *sql.DB, store systems.Store, groupStore groups.Store, authStore *auth.SQLiteAuthStore, authSvc *auth.Service, secret []byte, vault *secrets.Vault, hub *events.Hub, auditStore *audit.Store, rbacStore rbac.Store, credStore credentials.Store, hostKeyStore hostkeys.Store, updaterStore updaters.Store, exporterStore exporters.Store, settingsStore settings.Store, exclusionStore exclusions.Store, holdsStore holds.Store, labelStore labels.Store, labelStyleStore labels.StyleStore, onSystemCreate, onSystemDelete func()) {
+func populateMux(mux router.Mux, db *sql.DB, store systems.Store, groupStore groups.Store, authStore *auth.SQLiteAuthStore, authSvc *auth.Service, secret []byte, vault *secrets.Vault, hub *events.Hub, auditStore *audit.Store, rbacStore rbac.Store, credStore credentials.Store, hostKeyStore hostkeys.Store, updaterStore updaters.Store, exporterStore exporters.Store, settingsStore settings.Store, exclusionStore exclusions.Store, holdsStore holds.Store, labelStore labels.Store, labelStyleStore labels.StyleStore, dashboardLayoutStore dashboardlayout.Store, onSystemCreate, onSystemDelete func()) {
 	mux.Handle("GET /api/health", http.HandlerFunc(handleHealth))
 	mux.Handle("GET /api/build-info", buildinfo.Handler())
 	authSvc.Register(mux)
@@ -853,6 +868,8 @@ func populateMux(mux router.Mux, db *sql.DB, store systems.Store, groupStore gro
 		},
 	}
 	settingsHandler.Register(mux, requireUser)
+	dashboardLayoutHandler := &dashboardlayout.Handler{Store: dashboardLayoutStore}
+	dashboardLayoutHandler.Register(mux, requireUser)
 	openapi.Handler{}.Register(mux)
 	// Catchall for unmatched /api/* — without this they fall through to the
 	// SPA handler and get index.html as a misleading 200. The SPA handler

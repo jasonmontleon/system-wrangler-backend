@@ -30,6 +30,7 @@ import (
 	"system-wrangler-backend/internal/audit"
 	"system-wrangler-backend/internal/auth"
 	"system-wrangler-backend/internal/credentials"
+	"system-wrangler-backend/internal/dashboardlayout"
 	"system-wrangler-backend/internal/database"
 	"system-wrangler-backend/internal/events"
 	"system-wrangler-backend/internal/exclusions"
@@ -134,6 +135,10 @@ func newTestMuxWithStores(t *testing.T) (http.Handler, *audit.Store, *rbac.SQLit
 	if err != nil {
 		t.Fatalf("labels.NewSQLiteStyleStore: %v", err)
 	}
+	dashboardLayoutStore, err := dashboardlayout.NewSQLiteStore(db)
+	if err != nil {
+		t.Fatalf("dashboardlayout.NewSQLiteStore: %v", err)
+	}
 	// Build a real vault so populateMux's `if vault != nil` branches
 	// (credentials key materialise, scrape, secretscan, ansible runner)
 	// wire up. Without this the test mux has half the handlers missing
@@ -151,7 +156,7 @@ func newTestMuxWithStores(t *testing.T) (http.Handler, *audit.Store, *rbac.SQLit
 	svc.DB = db
 	svc.Vault = vault
 	hub := events.NewHub(nil)
-	return newMux(db, invStore, groupStore, authStore, svc, secret, vault, hub, auditStore, rbacStore, credStore, hostKeyStore, updaterStore, exporterStore, settingsStore, exclusionStore, holdsStore, labelStore, labelStyleStore, nil, nil), auditStore, rbacStore
+	return newMux(db, invStore, groupStore, authStore, svc, secret, vault, hub, auditStore, rbacStore, credStore, hostKeyStore, updaterStore, exporterStore, settingsStore, exclusionStore, holdsStore, labelStore, labelStyleStore, dashboardLayoutStore, nil, nil), auditStore, rbacStore
 }
 
 func TestHandleHealth(t *testing.T) {
@@ -455,6 +460,7 @@ func TestPopulatedEndpointsRespondAfterSetup(t *testing.T) {
 		"/api/label-styles",
 		"/api/auth/status",
 		"/api/auth/devices",
+		"/api/dashboard/layout",
 		"/api/docs",
 	}
 	for _, p := range endpoints {
@@ -463,6 +469,22 @@ func TestPopulatedEndpointsRespondAfterSetup(t *testing.T) {
 			t.Errorf("GET %s: %v", p, err)
 			continue
 		}
+		_ = r.Body.Close()
+	}
+
+	// Round-trip a dashboard layout PUT + GET so the per-user layout
+	// handler's happy path is covered through the wired mux. The
+	// payload shape mirrors what the SPA writes.
+	putLayout, _ := http.NewRequest(http.MethodPut, srv.URL+"/api/dashboard/layout",
+		strings.NewReader(`{"layout":[{"instanceId":"system-health","widgetId":"system-health","enabled":true}]}`))
+	putLayout.Header.Set("Content-Type", "application/json")
+	if csrfTok != "" {
+		putLayout.Header.Set("X-CSRF-Token", csrfTok)
+	}
+	if r, err := client.Do(putLayout); err == nil {
+		_ = r.Body.Close()
+	}
+	if r, err := client.Get(srv.URL + "/api/dashboard/layout"); err == nil {
 		_ = r.Body.Close()
 	}
 

@@ -2561,6 +2561,50 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /api/dashboard/layout:
+    get:
+      tags: [dashboard]
+      summary: Get the authenticated user's saved dashboard widget layout.
+      description: |
+        Returns the JSON layout the user previously saved, or an empty
+        body when the user has never customised the dashboard. The
+        server treats the layout as opaque JSON — the schema is owned
+        by the frontend and evolves there.
+      responses:
+        "200":
+          description: The user's saved layout, or an empty body for defaults.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  layout:
+                    description: The persisted layout as inline JSON, or omitted for defaults.
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    put:
+      tags: [dashboard]
+      summary: Replace the authenticated user's saved dashboard widget layout.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [layout]
+              properties:
+                layout:
+                  description: Any valid JSON value — the server stores it verbatim.
+      responses:
+        "204": { description: Layout stored. }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "413":
+          description: Layout body exceeds the size limit.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /api/metrics/query:
     get:
       tags: [metrics]
