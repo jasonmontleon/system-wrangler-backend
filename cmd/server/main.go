@@ -44,6 +44,7 @@ import (
 	"system-wrangler-backend/internal/promtargets"
 	"system-wrangler-backend/internal/rbac"
 	"system-wrangler-backend/internal/router"
+	"system-wrangler-backend/internal/schedules"
 	"system-wrangler-backend/internal/scrape"
 	"system-wrangler-backend/internal/secrets"
 	"system-wrangler-backend/internal/secretscan"
@@ -193,6 +194,10 @@ func run(ctx context.Context, args []string, getenv func(string) string) error {
 	if err != nil {
 		return err
 	}
+	scheduleStore, err := initStore(db, "schedules", schedules.NewSQLiteStore)
+	if err != nil {
+		return err
+	}
 	dashboardLayoutStoreForCleanup = dashboardLayoutStore
 	authSvc := auth.NewService(authStore, secret, useTLS)
 	authSvc.TOTPStore = authStore
@@ -233,7 +238,7 @@ func run(ctx context.Context, args []string, getenv func(string) string) error {
 		Handler: withRequestMeta(
 			withLogging(
 				auth.CSRF(auditStore)(
-					newMux(db, store, groupStore, authStore, authSvc, secret, vault, hub, auditStore, rbacStore, credStore, hostKeyStore, updaterStore, exporterStore, settingsStore, exclusionStore, holdsStore, labelStore, labelStyleStore, dashboardLayoutStore, onCreate, broadcastSystemsChanged),
+					newMux(db, store, groupStore, authStore, authSvc, secret, vault, hub, auditStore, rbacStore, credStore, hostKeyStore, updaterStore, exporterStore, settingsStore, exclusionStore, holdsStore, labelStore, labelStyleStore, dashboardLayoutStore, scheduleStore, onCreate, broadcastSystemsChanged),
 				),
 			),
 		),
@@ -320,9 +325,9 @@ func run(ctx context.Context, args []string, getenv func(string) string) error {
 	return nil
 }
 
-func newMux(db *sql.DB, store systems.Store, groupStore groups.Store, authStore *auth.SQLiteAuthStore, authSvc *auth.Service, secret []byte, vault *secrets.Vault, hub *events.Hub, auditStore *audit.Store, rbacStore rbac.Store, credStore credentials.Store, hostKeyStore hostkeys.Store, updaterStore updaters.Store, exporterStore exporters.Store, settingsStore settings.Store, exclusionStore exclusions.Store, holdsStore holds.Store, labelStore labels.Store, labelStyleStore labels.StyleStore, dashboardLayoutStore dashboardlayout.Store, onSystemCreate, onSystemDelete func()) *http.ServeMux {
+func newMux(db *sql.DB, store systems.Store, groupStore groups.Store, authStore *auth.SQLiteAuthStore, authSvc *auth.Service, secret []byte, vault *secrets.Vault, hub *events.Hub, auditStore *audit.Store, rbacStore rbac.Store, credStore credentials.Store, hostKeyStore hostkeys.Store, updaterStore updaters.Store, exporterStore exporters.Store, settingsStore settings.Store, exclusionStore exclusions.Store, holdsStore holds.Store, labelStore labels.Store, labelStyleStore labels.StyleStore, dashboardLayoutStore dashboardlayout.Store, scheduleStore schedules.Store, onSystemCreate, onSystemDelete func()) *http.ServeMux {
 	mux := http.NewServeMux()
-	populateMux(mux, db, store, groupStore, authStore, authSvc, secret, vault, hub, auditStore, rbacStore, credStore, hostKeyStore, updaterStore, exporterStore, settingsStore, exclusionStore, holdsStore, labelStore, labelStyleStore, dashboardLayoutStore, onSystemCreate, onSystemDelete)
+	populateMux(mux, db, store, groupStore, authStore, authSvc, secret, vault, hub, auditStore, rbacStore, credStore, hostKeyStore, updaterStore, exporterStore, settingsStore, exclusionStore, holdsStore, labelStore, labelStyleStore, dashboardLayoutStore, scheduleStore, onSystemCreate, onSystemDelete)
 	return mux
 }
 
@@ -331,7 +336,7 @@ func newMux(db *sql.DB, store systems.Store, groupStore groups.Store, authStore 
 // that captures every (method, path) pattern without spinning up a real
 // *http.ServeMux. main.go and tests reach for newMux; only the drift
 // test needs this entry point.
-func populateMux(mux router.Mux, db *sql.DB, store systems.Store, groupStore groups.Store, authStore *auth.SQLiteAuthStore, authSvc *auth.Service, secret []byte, vault *secrets.Vault, hub *events.Hub, auditStore *audit.Store, rbacStore rbac.Store, credStore credentials.Store, hostKeyStore hostkeys.Store, updaterStore updaters.Store, exporterStore exporters.Store, settingsStore settings.Store, exclusionStore exclusions.Store, holdsStore holds.Store, labelStore labels.Store, labelStyleStore labels.StyleStore, dashboardLayoutStore dashboardlayout.Store, onSystemCreate, onSystemDelete func()) {
+func populateMux(mux router.Mux, db *sql.DB, store systems.Store, groupStore groups.Store, authStore *auth.SQLiteAuthStore, authSvc *auth.Service, secret []byte, vault *secrets.Vault, hub *events.Hub, auditStore *audit.Store, rbacStore rbac.Store, credStore credentials.Store, hostKeyStore hostkeys.Store, updaterStore updaters.Store, exporterStore exporters.Store, settingsStore settings.Store, exclusionStore exclusions.Store, holdsStore holds.Store, labelStore labels.Store, labelStyleStore labels.StyleStore, dashboardLayoutStore dashboardlayout.Store, scheduleStore schedules.Store, onSystemCreate, onSystemDelete func()) {
 	mux.Handle("GET /api/health", http.HandlerFunc(handleHealth))
 	mux.Handle("GET /api/ready", handleReady(db))
 	mux.Handle("GET /api/build-info", buildinfo.Handler())
@@ -872,6 +877,41 @@ func populateMux(mux router.Mux, db *sql.DB, store systems.Store, groupStore gro
 	settingsHandler.Register(mux, requireUser)
 	dashboardLayoutHandler := &dashboardlayout.Handler{Store: dashboardLayoutStore}
 	dashboardLayoutHandler.Register(mux, requireUser)
+	scheduleHandler := &schedules.Handler{
+		Store: scheduleStore,
+		Audit: auditStore,
+		VisibleSchedule: func(ctx context.Context, sch schedules.Schedule) bool {
+			scope, ok := rbac.ScopeFromContext(ctx)
+			if !ok {
+				return false
+			}
+			if scope.IsGlobalAdmin() || scope.IsGlobalAuditor() {
+				return true
+			}
+			// Group Admin sees schedules targeting groups they admin;
+			// global / selector / specific-systems schedules are
+			// global-admin territory and stay hidden from group-scoped
+			// callers so the list isn't a leaky directory.
+			if sch.TargetKind == schedules.TargetGroup {
+				return scope.RoleOnGroup(sch.TargetValue) == rbac.RoleAdmin
+			}
+			return false
+		},
+		CanManage: func(ctx context.Context, sch schedules.Schedule) bool {
+			scope, ok := rbac.ScopeFromContext(ctx)
+			if !ok {
+				return false
+			}
+			if scope.IsGlobalAdmin() {
+				return true
+			}
+			if sch.TargetKind == schedules.TargetGroup {
+				return scope.RoleOnGroup(sch.TargetValue) == rbac.RoleAdmin
+			}
+			return false
+		},
+	}
+	scheduleHandler.Register(mux, requireUser)
 	openapi.Handler{}.Register(mux)
 	// Catchall for unmatched /api/* — without this they fall through to the
 	// SPA handler and get index.html as a misleading 200. The SPA handler

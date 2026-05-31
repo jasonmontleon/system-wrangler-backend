@@ -40,6 +40,7 @@ import (
 	"system-wrangler-backend/internal/hostkeys"
 	"system-wrangler-backend/internal/labels"
 	"system-wrangler-backend/internal/rbac"
+	"system-wrangler-backend/internal/schedules"
 	"system-wrangler-backend/internal/secrets"
 	"system-wrangler-backend/internal/settings"
 	"system-wrangler-backend/internal/systems"
@@ -139,6 +140,10 @@ func newTestMuxWithStores(t *testing.T) (http.Handler, *audit.Store, *rbac.SQLit
 	if err != nil {
 		t.Fatalf("dashboardlayout.NewSQLiteStore: %v", err)
 	}
+	scheduleStore, err := schedules.NewSQLiteStore(db)
+	if err != nil {
+		t.Fatalf("schedules.NewSQLiteStore: %v", err)
+	}
 	// Build a real vault so populateMux's `if vault != nil` branches
 	// (credentials key materialise, scrape, secretscan, ansible runner)
 	// wire up. Without this the test mux has half the handlers missing
@@ -156,7 +161,7 @@ func newTestMuxWithStores(t *testing.T) (http.Handler, *audit.Store, *rbac.SQLit
 	svc.DB = db
 	svc.Vault = vault
 	hub := events.NewHub(nil)
-	return newMux(db, invStore, groupStore, authStore, svc, secret, vault, hub, auditStore, rbacStore, credStore, hostKeyStore, updaterStore, exporterStore, settingsStore, exclusionStore, holdsStore, labelStore, labelStyleStore, dashboardLayoutStore, nil, nil), auditStore, rbacStore
+	return newMux(db, invStore, groupStore, authStore, svc, secret, vault, hub, auditStore, rbacStore, credStore, hostKeyStore, updaterStore, exporterStore, settingsStore, exclusionStore, holdsStore, labelStore, labelStyleStore, dashboardLayoutStore, scheduleStore, nil, nil), auditStore, rbacStore
 }
 
 func TestHandleHealth(t *testing.T) {
@@ -550,6 +555,7 @@ func TestPopulatedEndpointsRespondAfterSetup(t *testing.T) {
 		"/api/auth/status",
 		"/api/auth/devices",
 		"/api/dashboard/layout",
+		"/api/schedules",
 		"/api/docs",
 	}
 	for _, p := range endpoints {
@@ -575,6 +581,57 @@ func TestPopulatedEndpointsRespondAfterSetup(t *testing.T) {
 	}
 	if r, err := client.Get(srv.URL + "/api/dashboard/layout"); err == nil {
 		_ = r.Body.Close()
+	}
+
+	// Walk the schedules CRUD path. The Global-Admin caller can manage
+	// every target kind; we exercise create + get + update + delete +
+	// runs so populateMux's VisibleSchedule / CanManage closures take
+	// their happy-path branches.
+	postWithCSRF(t, "/api/schedules", `{
+        "name":"nightly",
+        "cronExpr":"0 3 * * *",
+        "timezone":"UTC",
+        "runCheck":true,
+        "runApply":false,
+        "rebootAfterApply":false,
+        "targetKind":"global",
+        "targetValue":"",
+        "enabled":true
+    }`)
+	if r, err := client.Get(srv.URL + "/api/schedules"); err == nil {
+		var list []struct {
+			ID string `json:"id"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&list)
+		_ = r.Body.Close()
+		if len(list) > 0 {
+			schID := list[0].ID
+			if r2, err := client.Get(srv.URL + "/api/schedules/" + schID); err == nil {
+				_ = r2.Body.Close()
+			}
+			if r2, err := client.Get(srv.URL + "/api/schedules/" + schID + "/runs"); err == nil {
+				_ = r2.Body.Close()
+			}
+			putSch, _ := http.NewRequest(http.MethodPut, srv.URL+"/api/schedules/"+schID, strings.NewReader(`{
+                "name":"nightly-renamed","cronExpr":"15 3 * * *","timezone":"UTC",
+                "runCheck":true,"runApply":false,"rebootAfterApply":false,
+                "targetKind":"global","targetValue":"","enabled":true
+            }`))
+			putSch.Header.Set("Content-Type", "application/json")
+			if csrfTok != "" {
+				putSch.Header.Set("X-CSRF-Token", csrfTok)
+			}
+			if r2, err := client.Do(putSch); err == nil {
+				_ = r2.Body.Close()
+			}
+			delSch, _ := http.NewRequest(http.MethodDelete, srv.URL+"/api/schedules/"+schID, nil)
+			if csrfTok != "" {
+				delSch.Header.Set("X-CSRF-Token", csrfTok)
+			}
+			if r2, err := client.Do(delSch); err == nil {
+				_ = r2.Body.Close()
+			}
+		}
 	}
 
 	// Create a second user with Group Admin only (no Global Admin) and
@@ -645,6 +702,7 @@ func TestPopulatedEndpointsRespondAfterSetup(t *testing.T) {
 		"/api/groups/" + groupID,
 		"/api/groups/" + groupID + "/package-exclusions",
 		"/api/auth/status",
+		"/api/schedules",
 	}
 	for _, p := range gaEndpoints {
 		r, err := gaClient.Get(srv.URL + p)
@@ -652,6 +710,31 @@ func TestPopulatedEndpointsRespondAfterSetup(t *testing.T) {
 			t.Errorf("ga GET %s: %v", p, err)
 			continue
 		}
+		_ = r.Body.Close()
+	}
+
+	// Group Admin creates a group-scoped schedule. This exercises the
+	// non-Global-Admin → RoleOnGroup branch of VisibleSchedule and
+	// CanManage in populateMux.
+	var gaCSRF string
+	if r, err := gaClient.Get(srv.URL + "/api/auth/status"); err == nil {
+		for _, c := range gaJar.Cookies(r.Request.URL) {
+			if c.Name == "csrf_token" {
+				gaCSRF = c.Value
+			}
+		}
+		_ = r.Body.Close()
+	}
+	gaPost, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/schedules", strings.NewReader(`{
+        "name":"group-nightly","cronExpr":"0 4 * * *","timezone":"UTC",
+        "runCheck":true,"runApply":false,"rebootAfterApply":false,
+        "targetKind":"group","targetValue":"`+groupID+`","enabled":true
+    }`))
+	gaPost.Header.Set("Content-Type", "application/json")
+	if gaCSRF != "" {
+		gaPost.Header.Set("X-CSRF-Token", gaCSRF)
+	}
+	if r, err := gaClient.Do(gaPost); err == nil {
 		_ = r.Body.Close()
 	}
 }

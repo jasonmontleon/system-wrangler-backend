@@ -2630,6 +2630,118 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /api/schedules:
+    get:
+      tags: [schedules]
+      summary: List schedules visible to the caller.
+      responses:
+        "200":
+          description: Schedules the caller can see.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Schedule"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      tags: [schedules]
+      summary: Create a schedule. Global Admin (any kind), or Group Admin on the targeted group.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ScheduleInput"
+      responses:
+        "201":
+          description: Schedule created. `Location` carries `/api/schedules/{id}`.
+          headers:
+            Location:
+              schema: { type: string }
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Schedule"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/schedules/{id}:
+    get:
+      tags: [schedules]
+      summary: One schedule by id.
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: The matching schedule.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Schedule"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404":
+          description: Not found, or hidden from the caller's scope.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    put:
+      tags: [schedules]
+      summary: Replace a schedule. Caller must be allowed to manage both the old and new target.
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ScheduleInput"
+      responses:
+        "200":
+          description: Updated schedule.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Schedule"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [schedules]
+      summary: Delete a schedule and its run history.
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+      responses:
+        "204": { description: Schedule deleted. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/schedules/{id}/runs:
+    get:
+      tags: [schedules]
+      summary: Run history for a schedule, most recent first.
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+        - in: query
+          name: limit
+          schema: { type: integer, minimum: 1 }
+          description: Max rows to return (server-capped to 50 by default).
+      responses:
+        "200":
+          description: Past runs.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ScheduleRun"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
   /api/metrics/query:
     get:
       tags: [metrics]
@@ -3077,6 +3189,99 @@ components:
       required: [name]
       properties:
         name: { type: string, maxLength: 255 }
+
+    Schedule:
+      type: object
+      required:
+        - id
+        - name
+        - cronExpr
+        - timezone
+        - runCheck
+        - runApply
+        - rebootAfterApply
+        - targetKind
+        - targetValue
+        - enabled
+        - createdBy
+        - createdAt
+        - updatedAt
+      properties:
+        id: { type: string }
+        name: { type: string, maxLength: 255 }
+        cronExpr:
+          type: string
+          description: 5-field POSIX cron expression, parsed in the schedule's timezone.
+        timezone:
+          type: string
+          description: IANA timezone name (defaults to "UTC").
+        runCheck: { type: boolean }
+        runApply: { type: boolean }
+        rebootAfterApply:
+          type: boolean
+          description: Reboot any target whose reboot_required flag is set after a successful apply.
+        targetKind:
+          type: string
+          enum: [global, group, systems, selector]
+        targetValue:
+          type: string
+          description: |
+            Interpretation depends on `targetKind`:
+              - global: empty string
+              - group: the System Group id
+              - systems: JSON array of system ids
+              - selector: k8s-subset label selector expression
+        enabled: { type: boolean }
+        nextRunAt: { type: string, format: date-time }
+        lastRunAt: { type: string, format: date-time }
+        lastStatus:
+          type: string
+          enum: [running, success, partial, failed]
+        createdBy: { type: string }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    ScheduleInput:
+      type: object
+      required:
+        - name
+        - cronExpr
+        - runCheck
+        - runApply
+        - rebootAfterApply
+        - targetKind
+        - targetValue
+        - enabled
+      properties:
+        name: { type: string, maxLength: 255 }
+        cronExpr: { type: string }
+        timezone:
+          type: string
+          description: IANA timezone name; defaults to "UTC" when omitted or empty.
+        runCheck: { type: boolean }
+        runApply: { type: boolean }
+        rebootAfterApply: { type: boolean }
+        targetKind:
+          type: string
+          enum: [global, group, systems, selector]
+        targetValue: { type: string }
+        enabled: { type: boolean }
+
+    ScheduleRun:
+      type: object
+      required: [id, scheduleId, startedAt, status, targetsAttempted, targetsSucceeded, targetsFailed]
+      properties:
+        id: { type: string }
+        scheduleId: { type: string }
+        startedAt: { type: string, format: date-time }
+        finishedAt: { type: string, format: date-time }
+        status:
+          type: string
+          enum: [running, success, partial, failed]
+        targetsAttempted: { type: integer }
+        targetsSucceeded: { type: integer }
+        targetsFailed: { type: integer }
+        message: { type: string }
 
     Exclusion:
       type: object
