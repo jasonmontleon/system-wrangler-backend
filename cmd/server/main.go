@@ -8,6 +8,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -332,6 +333,7 @@ func newMux(db *sql.DB, store systems.Store, groupStore groups.Store, authStore 
 // test needs this entry point.
 func populateMux(mux router.Mux, db *sql.DB, store systems.Store, groupStore groups.Store, authStore *auth.SQLiteAuthStore, authSvc *auth.Service, secret []byte, vault *secrets.Vault, hub *events.Hub, auditStore *audit.Store, rbacStore rbac.Store, credStore credentials.Store, hostKeyStore hostkeys.Store, updaterStore updaters.Store, exporterStore exporters.Store, settingsStore settings.Store, exclusionStore exclusions.Store, holdsStore holds.Store, labelStore labels.Store, labelStyleStore labels.StyleStore, dashboardLayoutStore dashboardlayout.Store, onSystemCreate, onSystemDelete func()) {
 	mux.Handle("GET /api/health", http.HandlerFunc(handleHealth))
+	mux.Handle("GET /api/ready", handleReady(db))
 	mux.Handle("GET /api/build-info", buildinfo.Handler())
 	authSvc.Register(mux)
 	requireUserOnly := auth.RequireUser(secret, authStore, time.Now)
@@ -893,6 +895,38 @@ func triggerProbe(p *systems.Probe) func() {
 func handleHealth(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write([]byte(`{"status":"ok"}`))
+}
+
+// readyCheckTimeout caps how long a single readiness probe waits on its
+// downstream checks. Keep it short so a Kubernetes-style probe can
+// distinguish "slow" from "healthy" within its own deadline.
+const readyCheckTimeout = 2 * time.Second
+
+// handleReady returns 200 with status=ready when every readiness check
+// passes, or 503 with status=not_ready and a per-check error message
+// otherwise. Today the only dependency is the SQLite database; future
+// checks (event hub backlog, scrape targets, etc.) can be added to the
+// same response shape without breaking clients.
+func handleReady(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), readyCheckTimeout)
+		defer cancel()
+		checks := map[string]string{"database": "ok"}
+		ready := true
+		if err := db.PingContext(ctx); err != nil {
+			checks["database"] = err.Error()
+			ready = false
+		}
+		status := "ready"
+		code := http.StatusOK
+		if !ready {
+			status = "not_ready"
+			code = http.StatusServiceUnavailable
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(code)
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": status, "checks": checks})
+	}
 }
 
 func handleAPINotFound(w http.ResponseWriter, _ *http.Request) {

@@ -81,6 +81,31 @@ paths:
                     type: string
                     enum: [ok]
 
+  /api/ready:
+    get:
+      tags: [meta]
+      summary: Readiness probe.
+      description: |
+        Reports whether downstream dependencies (database today) are
+        reachable. Returns 200 when every check passes, 503 when any
+        check fails. The per-check map lets operators see which
+        dependency is the source of a not-ready state without grepping
+        logs.
+      security: []
+      responses:
+        "200":
+          description: Service is ready to serve traffic.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Readiness"
+        "503":
+          description: At least one readiness check failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Readiness"
+
   /api/build-info:
     get:
       tags: [meta]
@@ -2842,6 +2867,21 @@ components:
       required: [error]
       properties:
         error: { type: string }
+
+    Readiness:
+      type: object
+      required: [status, checks]
+      properties:
+        status:
+          type: string
+          enum: [ready, not_ready]
+        checks:
+          type: object
+          additionalProperties:
+            type: string
+          description: |
+            Map of check name to result. `"ok"` for a passing check,
+            otherwise the error message that caused the failure.
 
     AccountLocked:
       type: object

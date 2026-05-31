@@ -203,6 +203,95 @@ func TestServerRoutesHealth(t *testing.T) {
 	}
 }
 
+func TestHandleReadyOK(t *testing.T) {
+	db, err := database.Open("file:" + filepath.Join(t.TempDir(), "ready.db"))
+	if err != nil {
+		t.Fatalf("database.Open: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/api/ready", nil)
+	handleReady(db)(w, r)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+	if ct := w.Header().Get("Content-Type"); ct != "application/json" {
+		t.Errorf("content-type = %q, want application/json", ct)
+	}
+	var body struct {
+		Status string            `json:"status"`
+		Checks map[string]string `json:"checks"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.Status != "ready" {
+		t.Errorf("status = %q, want ready", body.Status)
+	}
+	if body.Checks["database"] != "ok" {
+		t.Errorf("checks.database = %q, want ok", body.Checks["database"])
+	}
+}
+
+func TestHandleReadyDBFailureReturns503(t *testing.T) {
+	db, err := database.Open("file:" + filepath.Join(t.TempDir(), "ready.db"))
+	if err != nil {
+		t.Fatalf("database.Open: %v", err)
+	}
+	_ = db.Close()
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/api/ready", nil)
+	handleReady(db)(w, r)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusServiceUnavailable)
+	}
+	var body struct {
+		Status string            `json:"status"`
+		Checks map[string]string `json:"checks"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.Status != "not_ready" {
+		t.Errorf("status = %q, want not_ready", body.Status)
+	}
+	if body.Checks["database"] == "" || body.Checks["database"] == "ok" {
+		t.Errorf("checks.database = %q, want a non-empty error", body.Checks["database"])
+	}
+}
+
+func TestServerRoutesReady(t *testing.T) {
+	srv := httptest.NewServer(withLogging(newTestMux(t)))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/api/ready")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	var body struct {
+		Status string            `json:"status"`
+		Checks map[string]string `json:"checks"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.Status != "ready" {
+		t.Errorf("status = %q, want ready", body.Status)
+	}
+	if body.Checks["database"] != "ok" {
+		t.Errorf("checks.database = %q, want ok", body.Checks["database"])
+	}
+}
+
 func TestServerRoutesBuildInfo(t *testing.T) {
 	srv := httptest.NewServer(withLogging(newTestMux(t)))
 	defer srv.Close()
