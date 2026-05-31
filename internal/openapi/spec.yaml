@@ -2720,6 +2720,30 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
 
+  /api/schedules/{id}/run-now:
+    post:
+      tags: [schedules]
+      summary: Fire a schedule immediately, off-calendar.
+      description: |
+        Kicks the schedule's fan-out off as a background task and
+        returns 202 before the run completes. The run appears in the
+        schedule's history just like a calendar-driven fire. RBAC
+        matches `PUT /api/schedules/{id}` — the caller must be allowed
+        to manage the schedule.
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+      responses:
+        "202": { description: Run accepted; see history for outcome. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "503":
+          description: Schedule runtime not wired (e.g. ansible vault unavailable).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /api/schedules/{id}/runs:
     get:
       tags: [schedules]

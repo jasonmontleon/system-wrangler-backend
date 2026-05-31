@@ -10,8 +10,11 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"system-wrangler-backend/internal/audit"
+	"system-wrangler-backend/internal/systems"
+	"system-wrangler-backend/internal/updaters"
 )
 
 func newHandlerFixture(t *testing.T) (*httptest.Server, *SQLiteStore, *Handler) {
@@ -417,6 +420,78 @@ func TestListRunsIgnoresGarbageLimit(t *testing.T) {
 	if len(got) != 3 {
 		t.Errorf("garbage limit returned %d, want 3", len(got))
 	}
+}
+
+func TestRunNowReturns202AndFires(t *testing.T) {
+	store, _ := newStore(t)
+	o, _ := newFiringOrchestrator(t)
+	o.Store = store
+	o.Systems = fakeSysStore{systems: []systems.System{{ID: "s1"}}}
+	o.Registry = fakeRegistry{defs: []updaters.Definition{{ID: "dnf"}}}
+	o.Updaters = fakeAvailStore{rows: []updaters.Availability{{UpdaterID: "dnf", Enabled: true}}}
+	fired := make(chan struct{}, 1)
+	o.Runner = &fakeRunner{
+		check: func(string, string) (updaters.RunResult, error) {
+			select {
+			case fired <- struct{}{}:
+			default:
+			}
+			return ok()
+		},
+	}
+	h := &Handler{Store: store, Orchestrator: o}
+	mux := http.NewServeMux()
+	h.Register(mux, func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ctx := audit.WithActor(r.Context(), audit.Actor{Kind: audit.ActorUser, ID: "user-1"})
+			next.ServeHTTP(w, r.WithContext(ctx))
+		})
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	sch, _ := store.Create(validInput(), "user-1")
+	resp := mustDo(t, mustReq(t, http.MethodPost, srv.URL+"/api/schedules/"+sch.ID+"/run-now", nil))
+	if resp.StatusCode != http.StatusAccepted {
+		t.Errorf("status = %d, want 202", resp.StatusCode)
+	}
+	_ = resp.Body.Close()
+
+	select {
+	case <-fired:
+	case <-time.After(time.Second):
+		t.Fatal("expected the orchestrator to fire after run-now")
+	}
+}
+
+func TestRunNowReturns503WithoutOrchestrator(t *testing.T) {
+	srv, store, _ := newHandlerFixture(t)
+	sch, _ := store.Create(validInput(), "user-1")
+	resp := mustDo(t, mustReq(t, http.MethodPost, srv.URL+"/api/schedules/"+sch.ID+"/run-now", nil))
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Errorf("status = %d, want 503", resp.StatusCode)
+	}
+	_ = resp.Body.Close()
+}
+
+func TestRunNowReturns404ForMissingSchedule(t *testing.T) {
+	srv, _, _ := newHandlerFixture(t)
+	resp := mustDo(t, mustReq(t, http.MethodPost, srv.URL+"/api/schedules/missing/run-now", nil))
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", resp.StatusCode)
+	}
+	_ = resp.Body.Close()
+}
+
+func TestRunNowRespectsCanManage(t *testing.T) {
+	srv, store, h := newHandlerFixture(t)
+	sch, _ := store.Create(validInput(), "user-1")
+	h.CanManage = func(context.Context, Schedule) bool { return false }
+	resp := mustDo(t, mustReq(t, http.MethodPost, srv.URL+"/api/schedules/"+sch.ID+"/run-now", nil))
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("status = %d, want 403", resp.StatusCode)
+	}
+	_ = resp.Body.Close()
 }
 
 func TestCanManageBlocksDelete(t *testing.T) {

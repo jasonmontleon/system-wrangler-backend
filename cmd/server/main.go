@@ -233,20 +233,20 @@ func run(ctx context.Context, args []string, getenv func(string) string) error {
 		broadcastSystemsChanged()
 	}
 
+	runCtx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
 	srv := &http.Server{
 		Addr: addr,
 		Handler: withRequestMeta(
 			withLogging(
 				auth.CSRF(auditStore)(
-					newMux(db, store, groupStore, authStore, authSvc, secret, vault, hub, auditStore, rbacStore, credStore, hostKeyStore, updaterStore, exporterStore, settingsStore, exclusionStore, holdsStore, labelStore, labelStyleStore, dashboardLayoutStore, scheduleStore, onCreate, broadcastSystemsChanged),
+					newMux(runCtx, db, store, groupStore, authStore, authSvc, secret, vault, hub, auditStore, rbacStore, credStore, hostKeyStore, updaterStore, exporterStore, settingsStore, exclusionStore, holdsStore, labelStore, labelStyleStore, dashboardLayoutStore, scheduleStore, onCreate, broadcastSystemsChanged),
 				),
 			),
 		),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
-
-	runCtx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
 
 	probeDone := make(chan struct{})
 	go func() {
@@ -325,9 +325,9 @@ func run(ctx context.Context, args []string, getenv func(string) string) error {
 	return nil
 }
 
-func newMux(db *sql.DB, store systems.Store, groupStore groups.Store, authStore *auth.SQLiteAuthStore, authSvc *auth.Service, secret []byte, vault *secrets.Vault, hub *events.Hub, auditStore *audit.Store, rbacStore rbac.Store, credStore credentials.Store, hostKeyStore hostkeys.Store, updaterStore updaters.Store, exporterStore exporters.Store, settingsStore settings.Store, exclusionStore exclusions.Store, holdsStore holds.Store, labelStore labels.Store, labelStyleStore labels.StyleStore, dashboardLayoutStore dashboardlayout.Store, scheduleStore schedules.Store, onSystemCreate, onSystemDelete func()) *http.ServeMux {
+func newMux(runCtx context.Context, db *sql.DB, store systems.Store, groupStore groups.Store, authStore *auth.SQLiteAuthStore, authSvc *auth.Service, secret []byte, vault *secrets.Vault, hub *events.Hub, auditStore *audit.Store, rbacStore rbac.Store, credStore credentials.Store, hostKeyStore hostkeys.Store, updaterStore updaters.Store, exporterStore exporters.Store, settingsStore settings.Store, exclusionStore exclusions.Store, holdsStore holds.Store, labelStore labels.Store, labelStyleStore labels.StyleStore, dashboardLayoutStore dashboardlayout.Store, scheduleStore schedules.Store, onSystemCreate, onSystemDelete func()) *http.ServeMux {
 	mux := http.NewServeMux()
-	populateMux(mux, db, store, groupStore, authStore, authSvc, secret, vault, hub, auditStore, rbacStore, credStore, hostKeyStore, updaterStore, exporterStore, settingsStore, exclusionStore, holdsStore, labelStore, labelStyleStore, dashboardLayoutStore, scheduleStore, onSystemCreate, onSystemDelete)
+	populateMux(runCtx, mux, db, store, groupStore, authStore, authSvc, secret, vault, hub, auditStore, rbacStore, credStore, hostKeyStore, updaterStore, exporterStore, settingsStore, exclusionStore, holdsStore, labelStore, labelStyleStore, dashboardLayoutStore, scheduleStore, onSystemCreate, onSystemDelete)
 	return mux
 }
 
@@ -336,7 +336,12 @@ func newMux(db *sql.DB, store systems.Store, groupStore groups.Store, authStore 
 // that captures every (method, path) pattern without spinning up a real
 // *http.ServeMux. main.go and tests reach for newMux; only the drift
 // test needs this entry point.
-func populateMux(mux router.Mux, db *sql.DB, store systems.Store, groupStore groups.Store, authStore *auth.SQLiteAuthStore, authSvc *auth.Service, secret []byte, vault *secrets.Vault, hub *events.Hub, auditStore *audit.Store, rbacStore rbac.Store, credStore credentials.Store, hostKeyStore hostkeys.Store, updaterStore updaters.Store, exporterStore exporters.Store, settingsStore settings.Store, exclusionStore exclusions.Store, holdsStore holds.Store, labelStore labels.Store, labelStyleStore labels.StyleStore, dashboardLayoutStore dashboardlayout.Store, scheduleStore schedules.Store, onSystemCreate, onSystemDelete func()) {
+func populateMux(runCtx context.Context, mux router.Mux, db *sql.DB, store systems.Store, groupStore groups.Store, authStore *auth.SQLiteAuthStore, authSvc *auth.Service, secret []byte, vault *secrets.Vault, hub *events.Hub, auditStore *audit.Store, rbacStore rbac.Store, credStore credentials.Store, hostKeyStore hostkeys.Store, updaterStore updaters.Store, exporterStore exporters.Store, settingsStore settings.Store, exclusionStore exclusions.Store, holdsStore holds.Store, labelStore labels.Store, labelStyleStore labels.StyleStore, dashboardLayoutStore dashboardlayout.Store, scheduleStore schedules.Store, onSystemCreate, onSystemDelete func()) {
+	// scheduleOrchestrator is lazy-bound inside the `if vault != nil`
+	// block below — without a vault, ansible can't run, so schedules
+	// can't fire either. When nil, the schedules handler still serves
+	// CRUD; run-now returns 503.
+	var scheduleOrchestrator *schedules.Orchestrator
 	mux.Handle("GET /api/health", http.HandlerFunc(handleHealth))
 	mux.Handle("GET /api/ready", handleReady(db))
 	mux.Handle("GET /api/build-info", buildinfo.Handler())
@@ -679,6 +684,22 @@ func populateMux(mux router.Mux, db *sql.DB, store systems.Store, groupStore gro
 			SetRebootRequired:   store.SetRebootRequired,
 			ClearRebootRequired: store.ClearRebootRequired,
 		}
+		scheduleOrchestrator = &schedules.Orchestrator{
+			Store:    scheduleStore,
+			Systems:  store,
+			Labels:   labelStore,
+			Registry: updaterRegistry,
+			Updaters: updaterStore,
+			Runner:   updaterRunner,
+			Ansible:  ansibleRunner,
+			Clearer:  store,
+			Audit:    auditStore,
+		}
+		scheduleTicker := &schedules.Ticker{
+			Store:        scheduleStore,
+			Orchestrator: scheduleOrchestrator,
+		}
+		go scheduleTicker.Run(runCtx)
 		updaterHandler := &updaters.Handler{
 			Runner:  updaterRunner,
 			Store:   updaterStore,
@@ -910,6 +931,7 @@ func populateMux(mux router.Mux, db *sql.DB, store systems.Store, groupStore gro
 			}
 			return false
 		},
+		Orchestrator: scheduleOrchestrator,
 	}
 	scheduleHandler.Register(mux, requireUser)
 	openapi.Handler{}.Register(mux)

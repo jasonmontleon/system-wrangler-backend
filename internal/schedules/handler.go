@@ -39,6 +39,12 @@ type Handler struct {
 	// MaxRunHistory caps the row count returned by
 	// GET /api/schedules/{id}/runs. Zero means use the default (50).
 	MaxRunHistory int
+
+	// Orchestrator, if non-nil, enables POST /api/schedules/{id}/run-now.
+	// The endpoint kicks the fire off in a goroutine and returns 202
+	// immediately so the operator's POST doesn't block on a multi-host
+	// fan-out.
+	Orchestrator *Orchestrator
 }
 
 // Register attaches /api/schedules routes to the given mux.
@@ -52,6 +58,53 @@ func (h *Handler) Register(mux router.Mux, mw func(http.Handler) http.Handler) {
 	mux.Handle("PUT /api/schedules/{id}", mw(http.HandlerFunc(h.update)))
 	mux.Handle("DELETE /api/schedules/{id}", mw(http.HandlerFunc(h.delete)))
 	mux.Handle("GET /api/schedules/{id}/runs", mw(http.HandlerFunc(h.listRuns)))
+	mux.Handle("POST /api/schedules/{id}/run-now", mw(http.HandlerFunc(h.runNow)))
+}
+
+func (h *Handler) runNow(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	sch, err := h.Store.Get(id)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			writeError(w, http.StatusNotFound, "schedule not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "get failed")
+		slog.Error("schedules runNow get", "err", err, "id", id) //nolint:gosec // path param
+		return
+	}
+	if h.CanManage != nil && !h.CanManage(r.Context(), sch) {
+		writeError(w, http.StatusForbidden, "forbidden")
+		return
+	}
+	if h.Orchestrator == nil {
+		writeError(w, http.StatusServiceUnavailable, "schedule runtime not configured")
+		return
+	}
+	h.logAudit(r.Context(), audit.Event{
+		Action:      "schedule.run_now",
+		Outcome:     audit.Success,
+		TargetKind:  "schedule",
+		TargetID:    sch.ID,
+		TargetLabel: sch.Name,
+	})
+	// Fire asynchronously: the actor's HTTP round-trip shouldn't block
+	// on a multi-host fan-out that may take minutes. We detach the
+	// context so the run survives the HTTP handler returning, but
+	// we pass through the audit actor so the schedule.run row carries
+	// the right caller. ActorFromContext on a detached context gives
+	// the zero-value actor, so re-stamp it.
+	actor := audit.ActorFromContext(r.Context())
+	// Detach from the request context (HTTP handler returns
+	// immediately) but stamp the actor so the schedule.run audit
+	// row carries the right caller.
+	go func() { //nolint:gosec // G118: detached context is intentional — fan-out outlives the HTTP request
+		bg := audit.WithActor(context.Background(), actor)
+		if _, err := h.Orchestrator.Fire(bg, sch); err != nil {
+			slog.Error("schedules: run-now fire", "err", err, "schedule_id", sch.ID) //nolint:gosec // schedule id is internal
+		}
+	}()
+	w.WriteHeader(http.StatusAccepted)
 }
 
 func (h *Handler) list(w http.ResponseWriter, r *http.Request) {

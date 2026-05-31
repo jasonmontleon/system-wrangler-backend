@@ -161,7 +161,7 @@ func newTestMuxWithStores(t *testing.T) (http.Handler, *audit.Store, *rbac.SQLit
 	svc.DB = db
 	svc.Vault = vault
 	hub := events.NewHub(nil)
-	return newMux(db, invStore, groupStore, authStore, svc, secret, vault, hub, auditStore, rbacStore, credStore, hostKeyStore, updaterStore, exporterStore, settingsStore, exclusionStore, holdsStore, labelStore, labelStyleStore, dashboardLayoutStore, scheduleStore, nil, nil), auditStore, rbacStore
+	return newMux(t.Context(), db, invStore, groupStore, authStore, svc, secret, vault, hub, auditStore, rbacStore, credStore, hostKeyStore, updaterStore, exporterStore, settingsStore, exclusionStore, holdsStore, labelStore, labelStyleStore, dashboardLayoutStore, scheduleStore, nil, nil), auditStore, rbacStore
 }
 
 func TestHandleHealth(t *testing.T) {
@@ -610,6 +610,13 @@ func TestPopulatedEndpointsRespondAfterSetup(t *testing.T) {
 				_ = r2.Body.Close()
 			}
 			if r2, err := client.Get(srv.URL + "/api/schedules/" + schID + "/runs"); err == nil {
+				_ = r2.Body.Close()
+			}
+			runNow, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/schedules/"+schID+"/run-now", nil)
+			if csrfTok != "" {
+				runNow.Header.Set("X-CSRF-Token", csrfTok)
+			}
+			if r2, err := client.Do(runNow); err == nil {
 				_ = r2.Body.Close()
 			}
 			putSch, _ := http.NewRequest(http.MethodPut, srv.URL+"/api/schedules/"+schID, strings.NewReader(`{
