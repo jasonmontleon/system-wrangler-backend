@@ -60,6 +60,7 @@ var (
 	ErrLastGlobalAdmin  = errors.New("auth: would leave zero global admins")
 	ErrAccountLocked    = errors.New("auth: account locked")
 	ErrPasswordRequired = errors.New("auth: password change required")
+	ErrSessionNotFound  = errors.New("auth: session not found")
 )
 
 // ValidTheme reports whether s is a permitted theme value. The empty string

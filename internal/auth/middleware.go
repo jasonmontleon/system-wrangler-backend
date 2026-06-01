@@ -5,6 +5,7 @@ package auth
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -30,7 +31,8 @@ func UserFromContext(ctx context.Context) (User, bool) {
 // requireUserOpts collects optional behaviors on RequireUser. Kept
 // internal so the public surface stays the functional-option calls.
 type requireUserOpts struct {
-	trust *TrustHeaderConfig
+	trust    *TrustHeaderConfig
+	sessions SessionStore
 }
 
 // RequireUserOption mutates the optional behavior of RequireUser.
@@ -45,6 +47,18 @@ type RequireUserOption func(*requireUserOpts)
 // via the reverse proxy).
 func WithTrustHeader(cfg *TrustHeaderConfig) RequireUserOption {
 	return func(o *requireUserOpts) { o.trust = cfg }
+}
+
+// WithSessions enables server-side session enforcement. When store is
+// non-nil, a cookie is only accepted if its sid claim names a session
+// row that still exists and hasn't expired — so deleting the row
+// revokes the session on its next request. A cookie with no sid (issued
+// before sessions landed, or by a caller that doesn't create rows) is
+// refused under enforcement. nil leaves the middleware in its original
+// stateless mode, which keeps existing tests and minimal callers
+// working unchanged.
+func WithSessions(store SessionStore) RequireUserOption {
+	return func(o *requireUserOpts) { o.sessions = store }
 }
 
 // RequireUser returns middleware that loads the user from the session cookie
@@ -71,12 +85,16 @@ func RequireUser(secret []byte, store UserStore, now func() time.Time, opts ...R
 				writeUnauthorized(w)
 				return
 			}
-			uid, err := VerifySession(secret, now(), c.Value)
+			claims, err := VerifyToken(secret, now(), PurposeSession, c.Value)
 			if err != nil {
 				writeUnauthorized(w)
 				return
 			}
-			u, err := store.GetByID(uid)
+			if o.sessions != nil && !sessionLive(o.sessions, claims, now()) {
+				writeUnauthorized(w)
+				return
+			}
+			u, err := store.GetByID(claims.UID)
 			if err != nil {
 				if errors.Is(err, ErrUserNotFound) {
 					writeUnauthorized(w)
@@ -92,6 +110,34 @@ func RequireUser(secret []byte, store UserStore, now func() time.Time, opts ...R
 			next.ServeHTTP(w, r.WithContext(stampUser(r.Context(), u)))
 		})
 	}
+}
+
+// sessionLive reports whether the cookie's sid claim names a session row
+// that still exists, belongs to the claimed user, and hasn't expired.
+// On a live session it opportunistically refreshes last_seen_at, but no
+// more than once per SessionTouchInterval so the hot path stays
+// read-mostly. A store error is treated as "not live" — failing closed
+// is the safe choice for an auth gate.
+func sessionLive(store SessionStore, claims TokenClaims, now time.Time) bool {
+	if claims.SID == "" {
+		return false
+	}
+	sess, err := store.GetSession(claims.SID)
+	if err != nil {
+		return false
+	}
+	if sess.UserID != claims.UID {
+		return false
+	}
+	if !now.Before(sess.ExpiresAt) {
+		return false
+	}
+	if now.Sub(sess.LastSeenAt) >= SessionTouchInterval {
+		if err := store.TouchSession(sess.ID, now); err != nil {
+			slog.Warn("auth touch session", "err", err, "session_id", sess.ID)
+		}
+	}
+	return true
 }
 
 // stampUser is the single place that writes both the User and the

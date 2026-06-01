@@ -156,6 +156,15 @@ func (s *Service) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		slog.Error("admin update user", "err", err)
 		return
 	}
+	// Disabling an account should kick it out of every live session
+	// immediately, not just on the next request when GetByID happens to
+	// observe the disabled flag. Best-effort — the disable already
+	// committed and the middleware's disabled-user check is the backstop.
+	if wantDisabled && s.Sessions != nil {
+		if _, err := s.Sessions.RevokeUserSessions(id); err != nil {
+			slog.Warn("admin disable revoke sessions", "err", err, "user_id", id) //nolint:gosec // path param, slog kv form isn't interpolated
+		}
+	}
 	action := "user.enable"
 	if wantDisabled {
 		action = "user.disable"
@@ -218,6 +227,15 @@ func (s *Service) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 			slog.Error("admin delete user", "err", err)
 		}
 		return
+	}
+	// Sessions carry no FK to users (the table predates this row), so
+	// clear the deleted user's rows explicitly. Best-effort: a stale row
+	// is harmless — its owner is gone and the middleware's GetByID would
+	// reject the cookie — but leaving it would clutter the table.
+	if s.Sessions != nil {
+		if _, err := s.Sessions.RevokeUserSessions(id); err != nil {
+			slog.Warn("admin delete revoke sessions", "err", err, "user_id", id) //nolint:gosec // path param, slog kv form isn't interpolated
+		}
 	}
 	s.logAudit(r.Context(), audit.Event{
 		Action:      "user.delete",
@@ -287,6 +305,14 @@ func (s *Service) handleAdminResetPassword(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusInternalServerError, "reset failed")
 		slog.Error("admin reset password", "err", err)
 		return
+	}
+	// An admin reset means the old password is no longer trusted, so kill
+	// every session the target had — they must sign in with the new
+	// password the admin just set. Best-effort.
+	if s.Sessions != nil {
+		if _, err := s.Sessions.RevokeUserSessions(id); err != nil {
+			slog.Warn("admin reset password revoke sessions", "err", err, "user_id", id) //nolint:gosec // path param, slog kv form isn't interpolated
+		}
 	}
 	s.logAudit(r.Context(), audit.Event{
 		Action:      "auth.admin.password_reset",

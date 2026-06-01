@@ -95,6 +95,39 @@ type SecretStore interface {
 	SaveSecret(key string, val []byte) error
 }
 
+// SessionStore persists server-side login sessions so they can be
+// revoked. The session cookie references a row by id; the middleware
+// confirms the row is still live on every request. Kept as its own
+// interface so the middleware and handlers can be tested with a stub
+// and so it can be supplied independently of the rest of the store.
+type SessionStore interface {
+	// CreateSession inserts a new session row.
+	CreateSession(s Session) error
+	// GetSession returns the row by id, or ErrSessionNotFound.
+	GetSession(id string) (Session, error)
+	// TouchSession updates last_seen_at. A missing row is not an error —
+	// the session may have been revoked between the middleware's read and
+	// this write, and that race resolves itself on the next request.
+	TouchSession(id string, lastSeen time.Time) error
+	// RevokeSession deletes one row scoped to user_id, returning
+	// ErrSessionNotFound when nothing matched (wrong owner or already
+	// gone) so the handler can answer 404 on cross-user access.
+	RevokeSession(id, userID string) error
+	// RevokeUserSessions deletes every session for the user and returns
+	// the count removed. Used by logout-everywhere, admin disable, and
+	// admin password reset.
+	RevokeUserSessions(userID string) (int, error)
+	// RevokeOtherUserSessions deletes every session for the user except
+	// keepID, returning the count removed. Used by "sign out everywhere
+	// else" and by the change-password flow.
+	RevokeOtherUserSessions(userID, keepID string) (int, error)
+	// ListSessions returns the user's sessions newest-activity first.
+	ListSessions(userID string) ([]Session, error)
+	// DeleteExpiredSessions prunes rows whose expires_at is at or before
+	// `before`, returning the count removed.
+	DeleteExpiredSessions(before time.Time) (int, error)
+}
+
 // SQLiteAuthStore implements both UserStore and SecretStore against the
 // shared *sql.DB. Owns the users + meta table schema.
 type SQLiteAuthStore struct {
@@ -143,6 +176,18 @@ CREATE TABLE IF NOT EXISTS recovery_codes (
     used_at   INTEGER,
     PRIMARY KEY (user_id, code_hash)
 ) STRICT;
+
+CREATE TABLE IF NOT EXISTS sessions (
+    id           TEXT PRIMARY KEY,
+    user_id      TEXT NOT NULL,
+    label        TEXT NOT NULL DEFAULT '',
+    ip           TEXT NOT NULL DEFAULT '',
+    created_at   INTEGER NOT NULL,
+    last_seen_at INTEGER NOT NULL,
+    expires_at   INTEGER NOT NULL
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS sessions_user_idx ON sessions(user_id);
 `
 
 // migrate adds new user columns when upgrading from an older schema. SQLite's

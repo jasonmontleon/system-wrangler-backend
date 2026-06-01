@@ -56,7 +56,14 @@ type Service struct {
 	// row to that user. The RequireUser middleware in main.go is
 	// configured with the same value so cookieless API requests from
 	// the proxy also resolve to a user.
-	TrustHeader  *TrustHeaderConfig
+	TrustHeader *TrustHeaderConfig
+	// Sessions, when non-nil, makes login persist a server-side session
+	// row whose id is embedded in the cookie's sid claim, so the session
+	// can be revoked. Logout deletes the current row, change-password
+	// revokes the others, and the /api/auth/sessions endpoints let a
+	// user list and revoke their own. nil keeps the original stateless
+	// cookie behavior (used by older tests and stub callers).
+	Sessions     SessionStore
 	SessionTTL   time.Duration
 	SecureCookie bool
 	Now          func() time.Time
@@ -230,7 +237,7 @@ func (s *Service) logLoginFailed(ctx context.Context, attemptedUsername, reason 
 // the time we reach this function the user has proven they're the
 // account holder, so any stale failure history is meaningless.
 func (s *Service) finishLogin(w http.ResponseWriter, r *http.Request, u User, method string) {
-	if err := s.issueCookie(w, u.ID); err != nil {
+	if err := s.issueCookie(w, r, u.ID); err != nil {
 		writeError(w, http.StatusInternalServerError, "session failed")
 		slog.Error("auth login cookie", "err", err)
 		return
@@ -308,7 +315,7 @@ func (s *Service) handleSetup(w http.ResponseWriter, r *http.Request) {
 		slog.Error("auth setup create", "err", err)
 		return
 	}
-	if err := s.issueCookie(w, u.ID); err != nil {
+	if err := s.issueCookie(w, r, u.ID); err != nil {
 		writeError(w, http.StatusInternalServerError, "session failed")
 		slog.Error("auth setup cookie", "err", err)
 		return
@@ -559,6 +566,17 @@ func (s *Service) handleLogout(w http.ResponseWriter, r *http.Request) {
 	// a logout. The trusted-device cookie is *not* cleared here — that's the
 	// whole point of "remember this browser": survives logout/login.
 	s.clearChallengeCookie(w)
+	// Delete the server-side session row so a captured cookie can't be
+	// replayed after logout. Best-effort: the cookie is already cleared,
+	// and the next request with a stale cookie fails the live-session
+	// check anyway.
+	if hadSession && s.Sessions != nil {
+		if sid := s.currentSessionID(r); sid != "" {
+			if err := s.Sessions.RevokeSession(sid, u.ID); err != nil && !errors.Is(err, ErrSessionNotFound) {
+				slog.Warn("auth logout revoke session", "err", err, "user_id", u.ID)
+			}
+		}
+	}
 	if hadSession {
 		ctx := audit.WithActor(r.Context(), audit.Actor{
 			Kind:  audit.ActorUser,
@@ -666,6 +684,16 @@ func (s *Service) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		slog.Error("auth change password update", "err", err)
 		return
 	}
+	// Changing the password signs out every other session — the classic
+	// "I think someone has my old password" remediation. The session this
+	// request rode in on is kept so the user isn't bounced mid-flow.
+	// Best-effort: the password is already changed; a revoke failure
+	// shouldn't surface as a 500.
+	if s.Sessions != nil {
+		if _, err := s.Sessions.RevokeOtherUserSessions(u.ID, s.currentSessionID(r)); err != nil {
+			slog.Warn("auth change password revoke others", "err", err, "user_id", u.ID)
+		}
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -723,9 +751,49 @@ func (s *Service) userFromCookie(r *http.Request) (User, bool) {
 	return u, true
 }
 
-func (s *Service) issueCookie(w http.ResponseWriter, userID string) error {
+// currentSessionID returns the sid claim from the request's session
+// cookie, or "" when there's no cookie, the cookie doesn't verify, or it
+// carries no sid. Used to identify "this session" for logout and for the
+// keep-me-signed-in side of the revoke-others flows.
+func (s *Service) currentSessionID(r *http.Request) string {
+	c, err := r.Cookie(CookieName)
+	if err != nil {
+		return ""
+	}
+	claims, err := VerifyToken(s.Secret, s.Now(), PurposeSession, c.Value)
+	if err != nil {
+		return ""
+	}
+	return claims.SID
+}
+
+func (s *Service) issueCookie(w http.ResponseWriter, r *http.Request, userID string) error {
 	expires := s.Now().Add(s.SessionTTL)
-	tok, err := SignSession(s.Secret, userID, expires)
+	claims := TokenClaims{UID: userID}
+	if s.Sessions != nil {
+		sid := s.NewID()
+		now := s.Now().UTC()
+		sess := Session{
+			ID:         sid,
+			UserID:     userID,
+			Label:      LabelFromUserAgent(r.UserAgent()),
+			IP:         clientIP(r),
+			CreatedAt:  now,
+			LastSeenAt: now,
+			ExpiresAt:  expires.UTC(),
+		}
+		if err := s.Sessions.CreateSession(sess); err != nil {
+			return err
+		}
+		// Prune expired rows so an account that logs in often doesn't
+		// accumulate dead sessions. Best-effort: a prune failure must
+		// not break the login that just succeeded.
+		if _, err := s.Sessions.DeleteExpiredSessions(s.Now()); err != nil {
+			slog.Warn("auth prune sessions", "err", err)
+		}
+		claims.SID = sid
+	}
+	tok, err := SignToken(s.Secret, PurposeSession, claims, expires)
 	if err != nil {
 		return err
 	}

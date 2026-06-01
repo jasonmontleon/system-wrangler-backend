@@ -160,6 +160,7 @@ func newTestMuxWithStores(t *testing.T) (http.Handler, *audit.Store, *rbac.SQLit
 	svc.Audit = auditStore
 	svc.DB = db
 	svc.Vault = vault
+	svc.Sessions = authStore
 	hub := events.NewHub(nil)
 	return newMux(t.Context(), db, invStore, groupStore, authStore, svc, secret, vault, hub, auditStore, rbacStore, credStore, hostKeyStore, updaterStore, exporterStore, settingsStore, exclusionStore, holdsStore, labelStore, labelStyleStore, dashboardLayoutStore, scheduleStore, nil, nil), auditStore, rbacStore
 }

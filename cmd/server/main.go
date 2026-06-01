@@ -216,6 +216,7 @@ func run(ctx context.Context, args []string, getenv func(string) string) error {
 	authSvc.DB = db
 	authSvc.LoginThrottle = auth.NewThrottle(time.Minute, 10, time.Now)
 	authSvc.TrustHeader = trustHeaderCfg
+	authSvc.Sessions = authStore
 
 	hub := events.NewHub(slog.Default())
 	broadcastSystemsChanged := func() {
@@ -355,7 +356,7 @@ func populateMux(runCtx context.Context, mux router.Mux, db *sql.DB, store syste
 	mux.Handle("GET /api/ready", handleReady(db))
 	mux.Handle("GET /api/build-info", buildinfo.Handler())
 	authSvc.Register(mux)
-	requireUserOnly := auth.RequireUser(secret, authStore, time.Now, auth.WithTrustHeader(authSvc.TrustHeader))
+	requireUserOnly := auth.RequireUser(secret, authStore, time.Now, auth.WithTrustHeader(authSvc.TrustHeader), auth.WithSessions(authStore))
 	withScope := rbac.Middleware(rbacStore)
 	// requireUser chains RequireUser → Middleware(rbac) so every
 	// authenticated handler downstream can read both the User and the
@@ -365,6 +366,7 @@ func populateMux(runCtx context.Context, mux router.Mux, db *sql.DB, store syste
 	}
 	authSvc.RegisterProtected(mux, requireUser)
 	authSvc.RegisterTOTP(mux, requireUser)
+	authSvc.RegisterSessions(mux, requireUser)
 	authSvc.RegisterAdmin(mux, requireUser)
 	sysHandler := systems.NewHandler(store)
 	sysHandler.DB = db

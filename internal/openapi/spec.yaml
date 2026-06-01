@@ -500,6 +500,65 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /api/auth/sessions:
+    get:
+      tags: [totp]
+      summary: List the caller's active login sessions.
+      responses:
+        "200":
+          description: Caller's session rows, most-recently-active first.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Session"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/auth/sessions/{id}:
+    delete:
+      tags: [totp]
+      summary: Revoke one of the caller's sessions.
+      description: >
+        Deletes the named session so its cookie stops working on the
+        next request. Revoking the current session clears the caller's
+        own cookie, effectively logging out.
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+      responses:
+        "204": { description: Session revoked. }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "503":
+          description: Session store not configured.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/auth/sessions/revoke-others:
+    post:
+      tags: [totp]
+      summary: Revoke every session except the caller's current one.
+      responses:
+        "200":
+          description: Count of sessions revoked.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [revoked]
+                properties:
+                  revoked: { type: integer }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "503":
+          description: Session store not configured.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /api/admin/users:
     get:
       tags: [users]
@@ -3063,6 +3122,20 @@ components:
         createdAt: { type: string, format: date-time }
         lastUsedAt: { type: string, format: date-time }
         expiresAt: { type: string, format: date-time }
+
+    Session:
+      type: object
+      required: [id, label, createdAt, lastSeenAt, expiresAt, current]
+      properties:
+        id: { type: string }
+        label: { type: string }
+        ip: { type: string }
+        createdAt: { type: string, format: date-time }
+        lastSeenAt: { type: string, format: date-time }
+        expiresAt: { type: string, format: date-time }
+        current:
+          type: boolean
+          description: True for the session the requesting cookie belongs to.
 
     System:
       type: object

@@ -26,6 +26,31 @@ const CookieName = "sw_session"
 // DefaultSessionTTL is the cookie max-age. Fixed (no sliding refresh) for v1.
 const DefaultSessionTTL = 30 * 24 * time.Hour
 
+// SessionTouchInterval bounds how often the middleware rewrites a
+// session's last_seen_at. Without it every authenticated request would
+// be a write; with it, an actively-used session is touched at most once
+// per interval. Stale-by-more-than-this rows get refreshed on the next
+// request.
+const SessionTouchInterval = 5 * time.Minute
+
+// Session is a server-side record of an issued login session. The
+// session cookie carries this row's id in its `sid` claim; the
+// middleware confirms the row still exists (and isn't expired) on every
+// request, so deleting the row revokes the session immediately. Label
+// and IP are captured at issue time for the user-facing "active
+// sessions" list. Current is never persisted — the list handler sets it
+// on the row matching the caller's own cookie.
+type Session struct {
+	ID         string    `json:"id"`
+	UserID     string    `json:"-"`
+	Label      string    `json:"label"`
+	IP         string    `json:"ip,omitempty"`
+	CreatedAt  time.Time `json:"createdAt"`
+	LastSeenAt time.Time `json:"lastSeenAt"`
+	ExpiresAt  time.Time `json:"expiresAt"`
+	Current    bool      `json:"current"`
+}
+
 // Token purposes provide domain separation across the multiple cookies signed
 // with the same HMAC secret. A token issued for one purpose cannot be replayed
 // for another because Verify rejects a payload whose `p` field doesn't match.
@@ -45,6 +70,11 @@ type TokenClaims struct {
 	DeviceID string `json:"did,omitempty"`
 	Epoch    int64  `json:"epoch,omitempty"`
 	Nonce    string `json:"n,omitempty"`
+	// SID is the server-side session id for session-purpose tokens. Empty
+	// on tokens issued before the sessions table landed (and on the other
+	// token purposes); the middleware treats an empty sid under session
+	// enforcement as "no live session" and refuses it.
+	SID string `json:"sid,omitempty"`
 }
 
 type tokenPayload struct {

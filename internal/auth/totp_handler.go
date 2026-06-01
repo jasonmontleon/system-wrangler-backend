@@ -293,7 +293,7 @@ func (s *Service) handleTOTPVerify(w http.ResponseWriter, r *http.Request) {
 			slog.Warn("totp verify remember device", "err", err, "user_id", u.ID)
 		}
 	}
-	if err := s.issueCookie(w, u.ID); err != nil {
+	if err := s.issueCookie(w, r, u.ID); err != nil {
 		writeError(w, http.StatusInternalServerError, "session failed")
 		slog.Error("totp verify cookie", "err", err, "user_id", u.ID)
 		return
