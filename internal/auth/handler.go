@@ -50,10 +50,17 @@ type Service struct {
 	// /totp/verify. nil disables the per-IP layer entirely (the
 	// per-account lockout still runs).
 	LoginThrottle *Throttle
-	SessionTTL    time.Duration
-	SecureCookie  bool
-	Now           func() time.Time
-	NewID         func() string
+	// TrustHeader, when non-nil, enables reverse-proxy trust-header
+	// auth: /api/auth/status will report a header-identified user as
+	// authenticated, and /api/auth/logout will attribute the audit
+	// row to that user. The RequireUser middleware in main.go is
+	// configured with the same value so cookieless API requests from
+	// the proxy also resolve to a user.
+	TrustHeader  *TrustHeaderConfig
+	SessionTTL   time.Duration
+	SecureCookie bool
+	Now          func() time.Time
+	NewID        func() string
 }
 
 // Lockout policy constants. After LockoutThreshold consecutive failed
@@ -691,7 +698,16 @@ func (s *Service) changePasswordWithAudit(ctx context.Context, u User, newHash s
 	return tx.Commit()
 }
 
+// userFromCookie resolves the request's user from either the
+// trust-header (when configured and the request is from a trusted
+// proxy) or the session cookie, in that order. Trust-header wins so
+// a deployment behind oauth2-proxy doesn't need to also issue a
+// local session cookie. Name kept for historical reasons — the
+// trust-header path was bolted on without renaming every call site.
 func (s *Service) userFromCookie(r *http.Request) (User, bool) {
+	if u, ok := s.TrustHeader.ResolveUser(r, s.Store); ok {
+		return u, true
+	}
 	c, err := r.Cookie(CookieName)
 	if err != nil {
 		return User{}, false

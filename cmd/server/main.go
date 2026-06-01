@@ -199,6 +199,14 @@ func run(ctx context.Context, args []string, getenv func(string) string) error {
 		return err
 	}
 	dashboardLayoutStoreForCleanup = dashboardLayoutStore
+	trustHeaderCfg, err := auth.LoadTrustHeaderConfig(getenv)
+	if err != nil {
+		return fmt.Errorf("trust-header auth: %w", err)
+	}
+	if trustHeaderCfg != nil {
+		slog.Warn("reverse-proxy trust-header auth enabled — requests from trusted CIDRs may bypass the cookie/TOTP flow",
+			"header", trustHeaderCfg.HeaderName, "cidrs", len(trustHeaderCfg.ProxyCIDRs))
+	}
 	authSvc := auth.NewService(authStore, secret, useTLS)
 	authSvc.TOTPStore = authStore
 	authSvc.RecoveryStore = authStore
@@ -207,6 +215,7 @@ func run(ctx context.Context, args []string, getenv func(string) string) error {
 	authSvc.Audit = auditStore
 	authSvc.DB = db
 	authSvc.LoginThrottle = auth.NewThrottle(time.Minute, 10, time.Now)
+	authSvc.TrustHeader = trustHeaderCfg
 
 	hub := events.NewHub(slog.Default())
 	broadcastSystemsChanged := func() {
@@ -346,7 +355,7 @@ func populateMux(runCtx context.Context, mux router.Mux, db *sql.DB, store syste
 	mux.Handle("GET /api/ready", handleReady(db))
 	mux.Handle("GET /api/build-info", buildinfo.Handler())
 	authSvc.Register(mux)
-	requireUserOnly := auth.RequireUser(secret, authStore, time.Now)
+	requireUserOnly := auth.RequireUser(secret, authStore, time.Now, auth.WithTrustHeader(authSvc.TrustHeader))
 	withScope := rbac.Middleware(rbacStore)
 	// requireUser chains RequireUser → Middleware(rbac) so every
 	// authenticated handler downstream can read both the User and the
