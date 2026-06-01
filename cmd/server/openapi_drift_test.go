@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"net/http"
 	"path/filepath"
 	"regexp"
@@ -157,6 +158,12 @@ func recordRoutes(t *testing.T) map[string]bool {
 	svc := auth.NewService(authStore, secret, false)
 	svc.Audit = auditStore
 	svc.DB = db
+	// A non-nil OIDC authenticator makes populateMux register the
+	// conditional /api/auth/oidc/{login,callback} routes. The stub never
+	// talks to a network — this test only records patterns, it doesn't
+	// drive requests.
+	svc.OIDC = stubOIDCAuth{}
+	svc.OIDCConfig = &auth.OIDCConfig{DisplayName: "SSO"}
 	hub := events.NewHub(nil)
 
 	// A non-nil vault makes populateMux register the conditional
@@ -170,6 +177,15 @@ func recordRoutes(t *testing.T) map[string]bool {
 	rec := &recordingMux{patterns: map[string]bool{}}
 	populateMux(t.Context(), rec, db, invStore, groupStore, authStore, svc, secret, vault, hub, auditStore, rbacStore, credStore, hostKeyStore, updaterStore, exporterStore, settingsStore, exclusionStore, holdsStore, labelStore, labelStyleStore, dashboardLayoutStore, scheduleStore, nil, nil)
 	return rec.patterns
+}
+
+// stubOIDCAuth is a no-op OIDCAuthenticator used only to flip on the
+// conditional SSO routes for the drift test. Its methods are never called.
+type stubOIDCAuth struct{}
+
+func (stubOIDCAuth) AuthCodeURL(_, _, _ string) string { return "" }
+func (stubOIDCAuth) Exchange(_ context.Context, _, _ string) (auth.OIDCClaims, error) {
+	return auth.OIDCClaims{}, nil
 }
 
 // recordingMux satisfies router.Mux by logging every pattern instead

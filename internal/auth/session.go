@@ -26,6 +26,11 @@ const CookieName = "sw_session"
 // DefaultSessionTTL is the cookie max-age. Fixed (no sliding refresh) for v1.
 const DefaultSessionTTL = 30 * 24 * time.Hour
 
+// OIDCStateCookie holds the signed CSRF-state / nonce / PKCE-verifier
+// token across the redirect to the IdP and back. Same `sw_` prefix as the
+// other cookies for recognizability.
+const OIDCStateCookie = "sw_oidc_state"
+
 // SessionTouchInterval bounds how often the middleware rewrites a
 // session's last_seen_at. Without it every authenticated request would
 // be a write; with it, an actively-used session is touched at most once
@@ -58,7 +63,14 @@ const (
 	PurposeSession       = "session"
 	PurposeTOTPChallenge = "totp_challenge"
 	PurposeTrustedDevice = "trusted_device"
+	PurposeOIDCState     = "oidc_state"
 )
+
+// OIDCStateTTL bounds the lifetime of the signed state cookie that
+// carries the CSRF state, OIDC nonce, and PKCE verifier across the
+// redirect to the IdP and back. Ten minutes is comfortably longer than a
+// human login takes while keeping a leaked cookie short-lived.
+const OIDCStateTTL = 10 * time.Minute
 
 // TokenClaims is the cross-purpose claim set carried in a signed token. Not
 // every field is meaningful for every purpose: sessions use UID; the TOTP
@@ -75,6 +87,11 @@ type TokenClaims struct {
 	// token purposes); the middleware treats an empty sid under session
 	// enforcement as "no live session" and refuses it.
 	SID string `json:"sid,omitempty"`
+	// State and Verifier carry the OIDC CSRF state and the PKCE code
+	// verifier for oidc_state-purpose tokens; the OIDC nonce reuses the
+	// Nonce field above. Empty on every other purpose.
+	State    string `json:"ost,omitempty"`
+	Verifier string `json:"pkv,omitempty"`
 }
 
 type tokenPayload struct {

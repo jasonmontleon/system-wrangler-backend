@@ -22,6 +22,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/google/uuid"
 
 	"system-wrangler-backend/internal/ansible"
@@ -218,6 +219,37 @@ func run(ctx context.Context, args []string, getenv func(string) string) error {
 	authSvc.TrustHeader = trustHeaderCfg
 	authSvc.Sessions = authStore
 
+	oidcCfg, err := auth.LoadOIDCConfig(getenv)
+	if err != nil {
+		return fmt.Errorf("oidc auth: %w", err)
+	}
+	if oidcCfg != nil {
+		if !rbac.Role(oidcCfg.DefaultRole).IsValid() {
+			return fmt.Errorf("oidc auth: SW_OIDC_DEFAULT_ROLE=%q is not a valid role (admin, operator, or auditor)", oidcCfg.DefaultRole)
+		}
+		// Discovery is a network round trip to the IdP. We give it a short
+		// budget and, on failure, log loudly and start with SSO disabled
+		// rather than crash: System Wrangler is often the first thing
+		// installed in an environment, so a briefly-unreachable IdP must
+		// not block startup. Local login stays available either way.
+		discoCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		provider, derr := oidc.NewProvider(discoCtx, oidcCfg.Issuer)
+		cancel()
+		if derr != nil {
+			slog.Error("oidc discovery failed — single sign-on disabled, local login still available",
+				"issuer", oidcCfg.Issuer, "err", derr)
+		} else {
+			role := rbac.Role(oidcCfg.DefaultRole)
+			authSvc.OIDC = auth.NewOIDCAuthenticator(provider, oidcCfg)
+			authSvc.OIDCConfig = oidcCfg
+			authSvc.OIDCProvision = func(_ context.Context, userID string) error {
+				return rbacStore.Grant(rbac.Assignment{UserID: userID, Role: role})
+			}
+			slog.Info("OpenID Connect single sign-on enabled",
+				"issuer", oidcCfg.Issuer, "provision", oidcCfg.Provision, "default_role", oidcCfg.DefaultRole)
+		}
+	}
+
 	hub := events.NewHub(slog.Default())
 	broadcastSystemsChanged := func() {
 		hub.Broadcast(events.Event{Type: "systems.changed"})
@@ -356,6 +388,7 @@ func populateMux(runCtx context.Context, mux router.Mux, db *sql.DB, store syste
 	mux.Handle("GET /api/ready", handleReady(db))
 	mux.Handle("GET /api/build-info", buildinfo.Handler())
 	authSvc.Register(mux)
+	authSvc.RegisterOIDC(mux)
 	requireUserOnly := auth.RequireUser(secret, authStore, time.Now, auth.WithTrustHeader(authSvc.TrustHeader), auth.WithSessions(authStore))
 	withScope := rbac.Middleware(rbacStore)
 	// requireUser chains RequireUser → Middleware(rbac) so every

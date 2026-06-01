@@ -63,11 +63,25 @@ type Service struct {
 	// revokes the others, and the /api/auth/sessions endpoints let a
 	// user list and revoke their own. nil keeps the original stateless
 	// cookie behavior (used by older tests and stub callers).
-	Sessions     SessionStore
-	SessionTTL   time.Duration
-	SecureCookie bool
-	Now          func() time.Time
-	NewID        func() string
+	Sessions SessionStore
+	// OIDC, when non-nil, enables OpenID Connect single sign-on: the
+	// /api/auth/oidc/{login,callback} routes are served, and
+	// /api/auth/status advertises the mode so the SPA can render a
+	// "Sign in with …" button. nil leaves SSO off (the default), and the
+	// local cookie path remains the only way in.
+	OIDC OIDCAuthenticator
+	// OIDCConfig carries the parsed SSO settings (username claim,
+	// provisioning policy, display name). Non-nil whenever OIDC is.
+	OIDCConfig *OIDCConfig
+	// OIDCProvision grants a freshly auto-provisioned SSO user their
+	// default role. Injected from cmd/server (which can import rbac
+	// without the cycle the auth package would hit). Only called when
+	// OIDCConfig.Provision is true and a new row was created.
+	OIDCProvision func(ctx context.Context, userID string) error
+	SessionTTL    time.Duration
+	SecureCookie  bool
+	Now           func() time.Time
+	NewID         func() string
 }
 
 // Lockout policy constants. After LockoutThreshold consecutive failed
@@ -199,6 +213,11 @@ type statusResponse struct {
 	SetupRequired bool  `json:"setupRequired"`
 	Authenticated bool  `json:"authenticated"`
 	User          *User `json:"user,omitempty"`
+	// OIDCEnabled tells the SPA to render the SSO sign-in button;
+	// OIDCDisplayName is the provider label shown on it ("Sign in with
+	// {name}"). Omitted from the wire when SSO is off.
+	OIDCEnabled     bool   `json:"oidcEnabled,omitempty"`
+	OIDCDisplayName string `json:"oidcDisplayName,omitempty"`
 }
 
 // logAudit is the nil-safe shim every handler calls instead of touching
@@ -271,6 +290,12 @@ func (s *Service) handleStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resp := statusResponse{SetupRequired: count == 0}
+	if s.OIDC != nil {
+		resp.OIDCEnabled = true
+		if s.OIDCConfig != nil {
+			resp.OIDCDisplayName = s.OIDCConfig.DisplayName
+		}
+	}
 	if u, ok := s.userFromCookie(r); ok {
 		resp.Authenticated = true
 		resp.User = &u

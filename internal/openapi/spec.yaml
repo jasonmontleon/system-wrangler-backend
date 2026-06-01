@@ -181,6 +181,12 @@ paths:
                     type: boolean
                   user:
                     $ref: "#/components/schemas/User"
+                  oidcEnabled:
+                    type: boolean
+                    description: True when OpenID Connect single sign-on is configured; the SPA renders an SSO button.
+                  oidcDisplayName:
+                    type: string
+                    description: Provider label shown on the SSO button ("Sign in with {name}").
 
   /api/auth/setup:
     post:
@@ -265,6 +271,49 @@ paths:
       security: []
       responses:
         "204": { description: Logged out. }
+
+  /api/auth/oidc/login:
+    get:
+      tags: [auth]
+      summary: Begin the OpenID Connect single sign-on flow.
+      description: |
+        Mints a CSRF state, nonce, and PKCE verifier, stores them in a
+        short-lived signed cookie, and redirects the browser to the
+        configured identity provider's authorization endpoint. Only served
+        when SSO is enabled.
+      security: []
+      responses:
+        "302":
+          description: Redirect to the identity provider's authorization endpoint.
+          headers:
+            Location:
+              schema: { type: string }
+
+  /api/auth/oidc/callback:
+    get:
+      tags: [auth]
+      summary: OpenID Connect redirect-back endpoint.
+      description: |
+        Verifies the state cookie, exchanges the authorization code (with
+        PKCE) for tokens, validates the ID token and nonce, resolves or
+        provisions the local user, and issues a session cookie. Always
+        redirects: to `/` on success, or to `/?error=oidc` on any failure.
+      security: []
+      parameters:
+        - in: query
+          name: code
+          schema: { type: string }
+          description: Authorization code from the identity provider.
+        - in: query
+          name: state
+          schema: { type: string }
+          description: Opaque state echoed back by the identity provider; compared against the state cookie.
+      responses:
+        "302":
+          description: Redirect to the SPA — `/` on success, `/?error=oidc` on failure.
+          headers:
+            Location:
+              schema: { type: string }
 
   /api/auth/profile:
     patch:
