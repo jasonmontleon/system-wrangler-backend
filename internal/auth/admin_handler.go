@@ -30,6 +30,90 @@ func (s *Service) RegisterAdmin(mux router.Mux, requireUser func(http.Handler) h
 	mux.Handle("DELETE /api/admin/users/{id}", fresh(http.HandlerFunc(s.handleDeleteUser)))
 	mux.Handle("POST /api/admin/users/{id}/password", fresh(http.HandlerFunc(s.handleAdminResetPassword)))
 	mux.Handle("POST /api/admin/users/{id}/totp/reset", fresh(http.HandlerFunc(s.handleAdminResetTOTP)))
+	mux.Handle("GET /api/admin/users/{id}/sessions", fresh(http.HandlerFunc(s.handleAdminListUserSessions)))
+	mux.Handle("DELETE /api/admin/users/{id}/sessions/{sid}", fresh(http.HandlerFunc(s.handleAdminRevokeUserSession)))
+}
+
+// handleAdminListUserSessions returns the target user's active sessions.
+// Unlike the self-service list it never flags a "current" row — the
+// admin viewing the list isn't the session owner.
+func (s *Service) handleAdminListUserSessions(w http.ResponseWriter, r *http.Request) {
+	if _, ok := UserFromContext(r.Context()); !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	if s.Sessions == nil {
+		writeJSON(w, http.StatusOK, []Session{})
+		return
+	}
+	id := r.PathValue("id")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "user id required")
+		return
+	}
+	if _, err := s.Store.GetByID(id); err != nil {
+		if errors.Is(err, ErrUserNotFound) {
+			writeError(w, http.StatusNotFound, "user not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "lookup failed")
+		slog.Error("admin list user sessions lookup", "err", err)
+		return
+	}
+	sessions, err := s.Sessions.ListSessions(id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "list sessions failed")
+		slog.Error("admin list user sessions", "err", err) //nolint:gosec // path param, slog kv form isn't interpolated
+		return
+	}
+	writeJSON(w, http.StatusOK, sessions)
+}
+
+// handleAdminRevokeUserSession revokes one session belonging to the
+// target user. The revoke is scoped to the target's user_id so a
+// mistyped sid can't reach into another account's sessions.
+func (s *Service) handleAdminRevokeUserSession(w http.ResponseWriter, r *http.Request) {
+	if _, ok := UserFromContext(r.Context()); !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	if s.Sessions == nil {
+		writeError(w, http.StatusServiceUnavailable, "sessions not configured")
+		return
+	}
+	id := r.PathValue("id")
+	sid := r.PathValue("sid")
+	if id == "" || sid == "" {
+		writeError(w, http.StatusBadRequest, "user id and session id required")
+		return
+	}
+	target, err := s.Store.GetByID(id)
+	if err != nil {
+		if errors.Is(err, ErrUserNotFound) {
+			writeError(w, http.StatusNotFound, "user not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "lookup failed")
+		slog.Error("admin revoke user session lookup", "err", err)
+		return
+	}
+	if err := s.Sessions.RevokeSession(sid, id); err != nil {
+		if errors.Is(err, ErrSessionNotFound) {
+			writeError(w, http.StatusNotFound, "session not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "revoke session failed")
+		slog.Error("admin revoke user session", "err", err) //nolint:gosec // path param, slog kv form isn't interpolated
+		return
+	}
+	s.logAudit(r.Context(), audit.Event{
+		Action:      "auth.admin.session.revoke",
+		Outcome:     audit.Success,
+		TargetKind:  "user",
+		TargetID:    target.ID,
+		TargetLabel: target.Username,
+	})
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Service) handleListUsers(w http.ResponseWriter, _ *http.Request) {
