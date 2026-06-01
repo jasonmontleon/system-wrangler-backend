@@ -68,37 +68,52 @@ func (o *Orchestrator) Fire(ctx context.Context, sch Schedule) (ScheduleRun, err
 		return run, nil
 	}
 
+	// Per-host fan-out runs in parallel goroutines. The updater
+	// Runner already owns the cross-host concurrency cap via its
+	// Gate (settings.UpdateConcurrencyLimit) so we don't reimplement
+	// rate-limiting here — we just dispatch all hosts at once and
+	// let the Gate block whoever exceeds the limit. The per-system
+	// advisory lock inside updaters.Runner remains the guarantee that
+	// two runs on the *same* host never overlap.
 	var (
-		attempted = 0
-		succeeded = 0
-		failed    = 0
+		attempted = len(targets)
+		succeeded int
+		failed    int
+		mu        sync.Mutex
+		wg        sync.WaitGroup
 	)
 	for _, sys := range targets {
-		attempted++
-		hostOK := true
-		if sch.RunCheck {
-			r := FanOutOnSystem(ctx, sys.ID, FanOutCheck, o.Registry, o.Updaters, o.Runner)
-			if r.Failed > 0 || (r.Skipped && r.Reason != "no enabled updaters for this action") {
-				hostOK = false
+		wg.Add(1)
+		go func(sysID string) {
+			defer wg.Done()
+			hostOK := true
+			if sch.RunCheck {
+				r := FanOutOnSystem(ctx, sysID, FanOutCheck, o.Registry, o.Updaters, o.Runner)
+				if r.Failed > 0 || (r.Skipped && r.Reason != "no enabled updaters for this action") {
+					hostOK = false
+				}
 			}
-		}
-		if sch.RunApply && hostOK {
-			r := FanOutOnSystem(ctx, sys.ID, FanOutApply, o.Registry, o.Updaters, o.Runner)
-			if r.Failed > 0 || (r.Skipped && r.Reason != "no enabled updaters for this action") {
-				hostOK = false
+			if sch.RunApply && hostOK {
+				r := FanOutOnSystem(ctx, sysID, FanOutApply, o.Registry, o.Updaters, o.Runner)
+				if r.Failed > 0 || (r.Skipped && r.Reason != "no enabled updaters for this action") {
+					hostOK = false
+				}
 			}
-		}
-		if sch.RebootAfterApply && sch.RunApply && hostOK && o.Ansible != nil && o.Clearer != nil {
-			if _, rebootErr := RebootIfRequired(ctx, sys.ID, o.Systems, o.Clearer, o.Ansible); rebootErr != nil {
-				hostOK = false
+			if sch.RebootAfterApply && sch.RunApply && hostOK && o.Ansible != nil && o.Clearer != nil {
+				if _, rebootErr := RebootIfRequired(ctx, sysID, o.Systems, o.Clearer, o.Ansible); rebootErr != nil {
+					hostOK = false
+				}
 			}
-		}
-		if hostOK {
-			succeeded++
-		} else {
-			failed++
-		}
+			mu.Lock()
+			if hostOK {
+				succeeded++
+			} else {
+				failed++
+			}
+			mu.Unlock()
+		}(sys.ID)
 	}
+	wg.Wait()
 
 	status := finalStatus(attempted, succeeded, failed)
 	message := fmt.Sprintf("%d/%d hosts ok", succeeded, attempted)

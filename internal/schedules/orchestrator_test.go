@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -246,6 +247,50 @@ func TestFireRebootsAfterSuccessfulApplyWhenFlagSet(t *testing.T) {
 	}
 	if run.Status != StatusSuccess {
 		t.Errorf("Status = %q", run.Status)
+	}
+}
+
+func TestFireDispatchesHostsInParallel(t *testing.T) {
+	o, store := newFiringOrchestrator(t)
+	o.Systems = fakeSysStore{systems: []systems.System{
+		{ID: "a"}, {ID: "b"}, {ID: "c"}, {ID: "d"},
+	}}
+	o.Registry = fakeRegistry{defs: []updaters.Definition{{ID: "dnf"}}}
+	o.Updaters = fakeAvailStore{rows: []updaters.Availability{{UpdaterID: "dnf", Enabled: true}}}
+	// Each Check blocks until the gate is released. If the
+	// orchestrator dispatched sequentially the gate would never
+	// reach the expected concurrent-callers count.
+	var inFlight, peak atomic.Int32
+	release := make(chan struct{})
+	o.Runner = &fakeRunner{
+		check: func(string, string) (updaters.RunResult, error) {
+			now := inFlight.Add(1)
+			for {
+				p := peak.Load()
+				if now <= p || peak.CompareAndSwap(p, now) {
+					break
+				}
+			}
+			<-release
+			inFlight.Add(-1)
+			return ok()
+		},
+	}
+	sch, _ := store.Create(validInput(), "user-1")
+	done := make(chan struct{})
+	go func() {
+		_, _ = o.Fire(context.Background(), sch)
+		close(done)
+	}()
+	// Wait for the orchestrator to fan out at least two callers.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && peak.Load() < 2 {
+		time.Sleep(5 * time.Millisecond)
+	}
+	close(release)
+	<-done
+	if peak.Load() < 2 {
+		t.Errorf("orchestrator must dispatch at least 2 hosts concurrently, peak = %d", peak.Load())
 	}
 }
 
