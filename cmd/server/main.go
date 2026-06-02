@@ -25,6 +25,7 @@ import (
 	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/google/uuid"
 
+	"system-wrangler-backend/internal/alerts"
 	"system-wrangler-backend/internal/ansible"
 	"system-wrangler-backend/internal/audit"
 	"system-wrangler-backend/internal/auth"
@@ -52,6 +53,7 @@ import (
 	"system-wrangler-backend/internal/settings"
 	"system-wrangler-backend/internal/sshproxy"
 	"system-wrangler-backend/internal/systems"
+	"system-wrangler-backend/internal/targeting"
 	"system-wrangler-backend/internal/updaters"
 	"system-wrangler-backend/web"
 )
@@ -199,6 +201,10 @@ func run(ctx context.Context, args []string, getenv func(string) string) error {
 	if err != nil {
 		return err
 	}
+	alertStore, err := initStore(db, "alerts", alerts.NewSQLiteStore)
+	if err != nil {
+		return err
+	}
 	dashboardLayoutStoreForCleanup = dashboardLayoutStore
 	trustHeaderCfg, err := auth.LoadTrustHeaderConfig(getenv)
 	if err != nil {
@@ -276,7 +282,7 @@ func run(ctx context.Context, args []string, getenv func(string) string) error {
 		Handler: withRequestMeta(
 			withLogging(
 				auth.CSRF(auditStore)(
-					newMux(runCtx, db, store, groupStore, authStore, authSvc, secret, vault, hub, auditStore, rbacStore, credStore, hostKeyStore, updaterStore, exporterStore, settingsStore, exclusionStore, holdsStore, labelStore, labelStyleStore, dashboardLayoutStore, scheduleStore, onCreate, broadcastSystemsChanged),
+					newMux(runCtx, db, store, groupStore, authStore, authSvc, secret, vault, hub, auditStore, rbacStore, credStore, hostKeyStore, updaterStore, exporterStore, settingsStore, exclusionStore, holdsStore, labelStore, labelStyleStore, dashboardLayoutStore, scheduleStore, alertStore, onCreate, broadcastSystemsChanged),
 				),
 			),
 		),
@@ -360,9 +366,9 @@ func run(ctx context.Context, args []string, getenv func(string) string) error {
 	return nil
 }
 
-func newMux(runCtx context.Context, db *sql.DB, store systems.Store, groupStore groups.Store, authStore *auth.SQLiteAuthStore, authSvc *auth.Service, secret []byte, vault *secrets.Vault, hub *events.Hub, auditStore *audit.Store, rbacStore rbac.Store, credStore credentials.Store, hostKeyStore hostkeys.Store, updaterStore updaters.Store, exporterStore exporters.Store, settingsStore settings.Store, exclusionStore exclusions.Store, holdsStore holds.Store, labelStore labels.Store, labelStyleStore labels.StyleStore, dashboardLayoutStore dashboardlayout.Store, scheduleStore schedules.Store, onSystemCreate, onSystemDelete func()) *http.ServeMux {
+func newMux(runCtx context.Context, db *sql.DB, store systems.Store, groupStore groups.Store, authStore *auth.SQLiteAuthStore, authSvc *auth.Service, secret []byte, vault *secrets.Vault, hub *events.Hub, auditStore *audit.Store, rbacStore rbac.Store, credStore credentials.Store, hostKeyStore hostkeys.Store, updaterStore updaters.Store, exporterStore exporters.Store, settingsStore settings.Store, exclusionStore exclusions.Store, holdsStore holds.Store, labelStore labels.Store, labelStyleStore labels.StyleStore, dashboardLayoutStore dashboardlayout.Store, scheduleStore schedules.Store, alertStore alerts.Store, onSystemCreate, onSystemDelete func()) *http.ServeMux {
 	mux := http.NewServeMux()
-	populateMux(runCtx, mux, db, store, groupStore, authStore, authSvc, secret, vault, hub, auditStore, rbacStore, credStore, hostKeyStore, updaterStore, exporterStore, settingsStore, exclusionStore, holdsStore, labelStore, labelStyleStore, dashboardLayoutStore, scheduleStore, onSystemCreate, onSystemDelete)
+	populateMux(runCtx, mux, db, store, groupStore, authStore, authSvc, secret, vault, hub, auditStore, rbacStore, credStore, hostKeyStore, updaterStore, exporterStore, settingsStore, exclusionStore, holdsStore, labelStore, labelStyleStore, dashboardLayoutStore, scheduleStore, alertStore, onSystemCreate, onSystemDelete)
 	return mux
 }
 
@@ -371,7 +377,7 @@ func newMux(runCtx context.Context, db *sql.DB, store systems.Store, groupStore 
 // that captures every (method, path) pattern without spinning up a real
 // *http.ServeMux. main.go and tests reach for newMux; only the drift
 // test needs this entry point.
-func populateMux(runCtx context.Context, mux router.Mux, db *sql.DB, store systems.Store, groupStore groups.Store, authStore *auth.SQLiteAuthStore, authSvc *auth.Service, secret []byte, vault *secrets.Vault, hub *events.Hub, auditStore *audit.Store, rbacStore rbac.Store, credStore credentials.Store, hostKeyStore hostkeys.Store, updaterStore updaters.Store, exporterStore exporters.Store, settingsStore settings.Store, exclusionStore exclusions.Store, holdsStore holds.Store, labelStore labels.Store, labelStyleStore labels.StyleStore, dashboardLayoutStore dashboardlayout.Store, scheduleStore schedules.Store, onSystemCreate, onSystemDelete func()) {
+func populateMux(runCtx context.Context, mux router.Mux, db *sql.DB, store systems.Store, groupStore groups.Store, authStore *auth.SQLiteAuthStore, authSvc *auth.Service, secret []byte, vault *secrets.Vault, hub *events.Hub, auditStore *audit.Store, rbacStore rbac.Store, credStore credentials.Store, hostKeyStore hostkeys.Store, updaterStore updaters.Store, exporterStore exporters.Store, settingsStore settings.Store, exclusionStore exclusions.Store, holdsStore holds.Store, labelStore labels.Store, labelStyleStore labels.StyleStore, dashboardLayoutStore dashboardlayout.Store, scheduleStore schedules.Store, alertStore alerts.Store, onSystemCreate, onSystemDelete func()) {
 	// scheduleOrchestrator is lazy-bound inside the `if vault != nil`
 	// block below — without a vault, ansible can't run, so schedules
 	// can't fire either. When nil, the schedules handler still serves
@@ -974,6 +980,78 @@ func populateMux(runCtx context.Context, mux router.Mux, db *sql.DB, store syste
 		Orchestrator: scheduleOrchestrator,
 	}
 	scheduleHandler.Register(mux, requireUser)
+
+	// Alert evaluator + ticker run unconditionally: reachability rules
+	// need no Prometheus, and metric rules degrade gracefully (the
+	// querier's instant queries just fail and are logged) when the
+	// pipeline isn't wired. The interval is read live from settings each
+	// tick so a change takes effect without a restart.
+	alertEvaluator := &alerts.Evaluator{
+		Store:   alertStore,
+		Querier: &alerts.PrometheusQuerier{BaseURL: envOr("SW_PROMETHEUS_URL", metrics.DefaultUpstreamURL)},
+		Systems: store,
+		Labels:  labelStore,
+		Hub:     hub,
+	}
+	alertTicker := &alerts.Ticker{
+		Evaluator: alertEvaluator,
+		IntervalFn: func() time.Duration {
+			return time.Duration(settings.AlertEvalIntervalSeconds(settingsStore)) * time.Second
+		},
+	}
+	go alertTicker.Run(runCtx)
+
+	alertHandler := &alerts.Handler{
+		Store: alertStore,
+		Audit: auditStore,
+		VisibleRule: func(ctx context.Context, r alerts.Rule) bool {
+			scope, ok := rbac.ScopeFromContext(ctx)
+			if !ok {
+				return false
+			}
+			if scope.IsGlobalAdmin() || scope.IsGlobalAuditor() {
+				return true
+			}
+			// Group Admin sees rules targeting groups they admin; global /
+			// selector / specific-systems rules are global-admin territory
+			// and stay hidden from group-scoped callers.
+			if r.TargetKind == targeting.Group {
+				return scope.RoleOnGroup(r.TargetValue) == rbac.RoleAdmin
+			}
+			return false
+		},
+		CanManage: func(ctx context.Context, r alerts.Rule) bool {
+			scope, ok := rbac.ScopeFromContext(ctx)
+			if !ok {
+				return false
+			}
+			if scope.IsGlobalAdmin() {
+				return true
+			}
+			if r.TargetKind == targeting.Group {
+				return scope.RoleOnGroup(r.TargetValue) == rbac.RoleAdmin
+			}
+			return false
+		},
+		VisibleSystem: func(ctx context.Context, systemID string) bool {
+			scope, ok := rbac.ScopeFromContext(ctx)
+			if !ok {
+				return false
+			}
+			sys, err := store.Get(systemID)
+			if err != nil {
+				return false
+			}
+			return scope.CanReadSystem(sys.GroupID)
+		},
+		SystemName: func(systemID string) string {
+			if sys, err := store.Get(systemID); err == nil {
+				return sys.Name
+			}
+			return ""
+		},
+	}
+	alertHandler.Register(mux, requireUser)
 	openapi.Handler{}.Register(mux)
 	// Catchall for unmatched /api/* — without this they fall through to the
 	// SPA handler and get index.html as a misleading 200. The SPA handler

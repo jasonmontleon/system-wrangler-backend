@@ -130,6 +130,24 @@ const MinScheduleMisfireGraceSeconds = 60
 // the catch-up spike the setting exists to prevent.
 const MaxScheduleMisfireGraceSeconds = 3600
 
+// KeyAlertEvalIntervalSeconds is the cadence at which the alert
+// evaluator walks the enabled rules and reconciles firing state. Stored
+// as a string-encoded integer number of seconds.
+const KeyAlertEvalIntervalSeconds = "alert_eval_interval_seconds"
+
+// DefaultAlertEvalIntervalSeconds is one minute, matching the schedules
+// ticker and Prometheus's default scrape granularity — evaluating
+// thresholds faster than the data refreshes buys nothing.
+const DefaultAlertEvalIntervalSeconds = 60
+
+// MinAlertEvalIntervalSeconds keeps the evaluator from hammering
+// Prometheus with instant queries on a tight loop.
+const MinAlertEvalIntervalSeconds = 10
+
+// MaxAlertEvalIntervalSeconds caps at one hour. Slower than that and a
+// breach could persist most of an hour before an alert ever fires.
+const MaxAlertEvalIntervalSeconds = 3600
+
 // ErrNotFound is returned by Store.Get when no row exists for the
 // requested key. Typed accessors translate this to the matching
 // default rather than propagating the error.

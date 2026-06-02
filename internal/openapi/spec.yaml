@@ -2926,6 +2926,130 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
 
+  /api/alerts:
+    get:
+      tags: [alerts]
+      summary: List alert rules visible to the caller.
+      responses:
+        "200":
+          description: Alert rules the caller can see.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/AlertRule"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      tags: [alerts]
+      summary: Create an alert rule. Global Admin (any kind), or Group Admin on the targeted group.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AlertRuleInput"
+      responses:
+        "201":
+          description: Rule created. `Location` carries `/api/alerts/{id}`.
+          headers:
+            Location:
+              schema: { type: string }
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AlertRule"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/alerts/catalog:
+    get:
+      tags: [alerts]
+      summary: Curated metric catalog for the rule editor.
+      description: |
+        The fixed set of metrics a `conditionKind=metric` rule may
+        reference, each with a display label and unit. The PromQL each
+        maps to is server-internal and not returned.
+      responses:
+        "200":
+          description: Available curated metrics, in display order.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/AlertCatalogEntry"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/alerts/active:
+    get:
+      tags: [alerts]
+      summary: Currently pending/firing alert instances, filtered to readable systems.
+      responses:
+        "200":
+          description: Active alerts the caller may see.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ActiveAlert"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/alerts/{id}:
+    get:
+      tags: [alerts]
+      summary: One alert rule by id.
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: The matching rule.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AlertRule"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404":
+          description: Not found, or hidden from the caller's scope.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    put:
+      tags: [alerts]
+      summary: Replace an alert rule. Caller must be allowed to manage both the old and new target.
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AlertRuleInput"
+      responses:
+        "200":
+          description: Updated rule.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AlertRule"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [alerts]
+      summary: Delete an alert rule and its active instances.
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+      responses:
+        "204": { description: Rule deleted. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
   /api/metrics/query:
     get:
       tags: [metrics]
@@ -3480,6 +3604,159 @@ components:
         targetsSucceeded: { type: integer }
         targetsFailed: { type: integer }
         message: { type: string }
+
+    AlertRule:
+      type: object
+      required:
+        - id
+        - name
+        - conditionKind
+        - threshold
+        - forSeconds
+        - severity
+        - targetKind
+        - targetValue
+        - enabled
+        - createdBy
+        - createdAt
+        - updatedAt
+      properties:
+        id: { type: string }
+        name: { type: string, maxLength: 255 }
+        description: { type: string, maxLength: 1024 }
+        conditionKind:
+          type: string
+          enum: [metric, promql, unreachable]
+          description: |
+            How the rule decides a system is in breach:
+              - metric: a curated `metric` compared to `threshold` by `comparator`
+              - promql: a raw `expr` (per-system vector) compared to `threshold` by `comparator`
+              - unreachable: the system's reachability status is "unreachable"
+        metric:
+          type: string
+          enum: [mem_used_pct, fs_used_pct, cpu_busy_pct, swap_used_pct, load1]
+          description: Curated catalog key; present only when conditionKind=metric.
+        expr:
+          type: string
+          maxLength: 4096
+          description: Raw PromQL; present only when conditionKind=promql.
+        comparator:
+          type: string
+          enum: [gt, gte, lt, lte]
+          description: Relation of observed value to threshold; unused for unreachable.
+        threshold:
+          type: number
+          description: Numeric threshold the comparator tests against; unused for unreachable.
+        forSeconds:
+          type: integer
+          minimum: 0
+          maximum: 86400
+          description: How long the condition must hold before the alert fires (0 = immediately).
+        severity:
+          type: string
+          enum: [info, warning, critical]
+        targetKind:
+          type: string
+          enum: [global, group, systems, selector]
+        targetValue:
+          type: string
+          description: |
+            Interpretation depends on `targetKind`:
+              - global: empty string
+              - group: the System Group id
+              - systems: JSON array of system ids
+              - selector: k8s-subset label selector expression
+        enabled: { type: boolean }
+        createdBy: { type: string }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    AlertRuleInput:
+      type: object
+      required:
+        - name
+        - conditionKind
+        - targetKind
+        - targetValue
+        - enabled
+      properties:
+        name: { type: string, maxLength: 255 }
+        description: { type: string, maxLength: 1024 }
+        conditionKind:
+          type: string
+          enum: [metric, promql, unreachable]
+        metric:
+          type: string
+          enum: [mem_used_pct, fs_used_pct, cpu_busy_pct, swap_used_pct, load1]
+        expr: { type: string, maxLength: 4096 }
+        comparator:
+          type: string
+          enum: [gt, gte, lt, lte]
+        threshold: { type: number }
+        forSeconds: { type: integer, minimum: 0, maximum: 86400 }
+        severity:
+          type: string
+          enum: [info, warning, critical]
+          description: Defaults to "warning" when omitted or empty.
+        targetKind:
+          type: string
+          enum: [global, group, systems, selector]
+        targetValue: { type: string }
+        enabled: { type: boolean }
+
+    AlertCatalogEntry:
+      type: object
+      required: [metric, label, unit]
+      properties:
+        metric:
+          type: string
+          enum: [mem_used_pct, fs_used_pct, cpu_busy_pct, swap_used_pct, load1]
+        label: { type: string }
+        unit: { type: string }
+
+    ActiveAlert:
+      type: object
+      required:
+        - ruleId
+        - systemId
+        - state
+        - value
+        - firstBreachAt
+        - lastEvalAt
+        - ruleName
+        - severity
+        - conditionKind
+        - threshold
+      properties:
+        ruleId: { type: string }
+        systemId: { type: string }
+        state:
+          type: string
+          enum: [pending, firing]
+        value:
+          type: number
+          description: Last observed value for the breaching system (1 for unreachable rules).
+        firstBreachAt: { type: string, format: date-time }
+        firedAt:
+          type: string
+          format: date-time
+          description: When the instance transitioned to firing; absent while still pending.
+        lastEvalAt: { type: string, format: date-time }
+        ruleName: { type: string }
+        severity:
+          type: string
+          enum: [info, warning, critical]
+        conditionKind:
+          type: string
+          enum: [metric, promql, unreachable]
+        metric:
+          type: string
+          enum: [mem_used_pct, fs_used_pct, cpu_busy_pct, swap_used_pct, load1]
+        comparator:
+          type: string
+          enum: [gt, gte, lt, lte]
+        threshold: { type: number }
+        systemName: { type: string }
 
     Exclusion:
       type: object

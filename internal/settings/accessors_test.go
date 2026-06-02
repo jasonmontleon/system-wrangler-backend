@@ -237,3 +237,45 @@ func TestSetScheduleMisfireGraceSeconds(t *testing.T) {
 		t.Errorf("nil store err = nil, want error")
 	}
 }
+
+func TestAlertEvalIntervalSeconds(t *testing.T) {
+	if got := AlertEvalIntervalSeconds(nil); got != DefaultAlertEvalIntervalSeconds {
+		t.Fatalf("nil store = %d, want default %d", got, DefaultAlertEvalIntervalSeconds)
+	}
+	if got := AlertEvalIntervalSeconds(newFakeStore()); got != DefaultAlertEvalIntervalSeconds {
+		t.Fatalf("unset = %d, want default %d", got, DefaultAlertEvalIntervalSeconds)
+	}
+
+	f := newFakeStore()
+	f.values[KeyAlertEvalIntervalSeconds] = strconv.Itoa(MinAlertEvalIntervalSeconds - 1)
+	if got := AlertEvalIntervalSeconds(f); got != DefaultAlertEvalIntervalSeconds {
+		t.Errorf("below min = %d, want default %d", got, DefaultAlertEvalIntervalSeconds)
+	}
+	f.values[KeyAlertEvalIntervalSeconds] = strconv.Itoa(MaxAlertEvalIntervalSeconds + 100)
+	if got := AlertEvalIntervalSeconds(f); got != MaxAlertEvalIntervalSeconds {
+		t.Errorf("above max = %d, want clamp %d", got, MaxAlertEvalIntervalSeconds)
+	}
+	f.values[KeyAlertEvalIntervalSeconds] = "120"
+	if got := AlertEvalIntervalSeconds(f); got != 120 {
+		t.Errorf("valid = %d, want 120", got)
+	}
+}
+
+func TestSetAlertEvalIntervalSeconds(t *testing.T) {
+	f := newFakeStore()
+	if err := SetAlertEvalIntervalSeconds(f, 120); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if got := AlertEvalIntervalSeconds(f); got != 120 {
+		t.Fatalf("round-trip = %d, want 120", got)
+	}
+	if err := SetAlertEvalIntervalSeconds(f, MinAlertEvalIntervalSeconds-1); !errors.Is(err, ErrInvalid) {
+		t.Errorf("below-min err = %v, want ErrInvalid", err)
+	}
+	if err := SetAlertEvalIntervalSeconds(f, MaxAlertEvalIntervalSeconds+1); !errors.Is(err, ErrInvalid) {
+		t.Errorf("above-max err = %v, want ErrInvalid", err)
+	}
+	if err := SetAlertEvalIntervalSeconds(nil, 60); err == nil {
+		t.Errorf("nil store err = nil, want error")
+	}
+}

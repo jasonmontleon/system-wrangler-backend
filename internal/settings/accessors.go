@@ -136,6 +136,21 @@ func SetScheduleMisfireGraceSeconds(store Store, n int) error {
 		MinScheduleMisfireGraceSeconds, MaxScheduleMisfireGraceSeconds, "schedule_misfire_grace_seconds")
 }
 
+// AlertEvalIntervalSeconds returns the cadence at which the alert
+// evaluator runs, falling back to DefaultAlertEvalIntervalSeconds on
+// unset/unparseable/out-of-range values. The ticker reads this on every
+// cycle so a change takes effect on the next tick without a restart.
+func AlertEvalIntervalSeconds(store Store) int {
+	return clampedSetting(store, KeyAlertEvalIntervalSeconds,
+		DefaultAlertEvalIntervalSeconds, MinAlertEvalIntervalSeconds, MaxAlertEvalIntervalSeconds)
+}
+
+// SetAlertEvalIntervalSeconds validates and persists the cadence.
+func SetAlertEvalIntervalSeconds(store Store, n int) error {
+	return setBoundedSetting(store, KeyAlertEvalIntervalSeconds, n,
+		MinAlertEvalIntervalSeconds, MaxAlertEvalIntervalSeconds, "alert_eval_interval_seconds")
+}
+
 // clampedSetting reads key, falls back to defaultValue on
 // unset/unparseable/below-min, and caps to max. Shared by the
 // three new probe accessors so each stays a one-liner.
