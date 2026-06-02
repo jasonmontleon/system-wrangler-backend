@@ -221,7 +221,7 @@ func TestOIDCCallbackExpiredState(t *testing.T) {
 	}
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodGet, "/api/auth/oidc/callback?state=S1&code=c", nil)
-	r.AddCookie(&http.Cookie{Name: OIDCStateCookie, Value: tok})
+	r.AddCookie(&http.Cookie{Name: OIDCStateCookie, Value: tok}) //nolint:gosec // G124: request cookie — only Name/Value are transmitted
 	svc.handleOIDCCallback(w, r)
 
 	if loc := w.Header().Get("Location"); loc != oidcErrorRedirect {
@@ -304,7 +304,7 @@ func TestOIDCCallbackEmptyStateClaim(t *testing.T) {
 	}
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodGet, "/api/auth/oidc/callback?state=S1&code=c", nil)
-	r.AddCookie(&http.Cookie{Name: OIDCStateCookie, Value: tok})
+	r.AddCookie(&http.Cookie{Name: OIDCStateCookie, Value: tok}) //nolint:gosec // G124: request cookie — only Name/Value are transmitted
 	svc.handleOIDCCallback(w, r)
 
 	if w.Header().Get("Location") != oidcErrorRedirect {
@@ -383,7 +383,7 @@ func signSessionCookie(t *testing.T, svc *Service, userID string, oidc bool) *ht
 	if err != nil {
 		t.Fatalf("sign session: %v", err)
 	}
-	return &http.Cookie{Name: CookieName, Value: tok}
+	return &http.Cookie{Name: CookieName, Value: tok} //nolint:gosec // G124: request cookie — only Name/Value are transmitted
 }
 
 func TestLogoutOIDCReturnsLogoutURL(t *testing.T) {
