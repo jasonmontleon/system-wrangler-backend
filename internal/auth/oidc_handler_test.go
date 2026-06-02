@@ -247,12 +247,7 @@ func TestOIDCCallbackClearFailuresNonFatal(t *testing.T) {
 
 func TestOIDCCallbackProvisionsUser(t *testing.T) {
 	fake := &fakeOIDC{claims: OIDCClaims{Username: "newcomer", Email: "n@x.io", Nonce: "n"}}
-	svc, store := newOIDCService(t, fake, &OIDCConfig{Provision: true, DefaultRole: "auditor"})
-	var grantedTo string
-	svc.OIDCProvision = func(_ context.Context, userID string) error {
-		grantedTo = userID
-		return nil
-	}
+	svc, store := newOIDCService(t, fake, &OIDCConfig{Provision: true})
 
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodGet, "/api/auth/oidc/callback?state=S1&code=c", nil)
@@ -265,37 +260,17 @@ func TestOIDCCallbackProvisionsUser(t *testing.T) {
 	if store.count != 1 {
 		t.Errorf("store count = %d, want 1 provisioned user", store.count)
 	}
-	if grantedTo != "newcomer-id" {
-		t.Errorf("provision hook granted to %q, want newcomer-id", grantedTo)
-	}
+	// The provisioned user is created with no roles — RBAC grants are an
+	// admin's job afterward. The auth store doesn't track roles, so the
+	// contract we assert here is just "created + signed in".
 	if _, ok := hasCookie(w.Result().Cookies(), CookieName); !ok {
 		t.Error("session cookie not issued for provisioned user")
 	}
 }
 
-func TestOIDCCallbackProvisionRoleError(t *testing.T) {
-	fake := &fakeOIDC{claims: OIDCClaims{Username: "newcomer", Nonce: "n"}}
-	svc, _ := newOIDCService(t, fake, &OIDCConfig{Provision: true, DefaultRole: "auditor"})
-	svc.OIDCProvision = func(_ context.Context, _ string) error {
-		return errors.New("grant failed")
-	}
-
-	w := httptest.NewRecorder()
-	r := httptest.NewRequest(http.MethodGet, "/api/auth/oidc/callback?state=S1&code=c", nil)
-	r.AddCookie(signState(t, svc, "S1", "n", "v"))
-	svc.handleOIDCCallback(w, r)
-
-	if w.Header().Get("Location") != oidcErrorRedirect {
-		t.Errorf("role-grant failure should refuse login, got %q", w.Header().Get("Location"))
-	}
-	if _, ok := hasCookie(w.Result().Cookies(), CookieName); ok {
-		t.Error("session cookie should not be issued when role grant fails")
-	}
-}
-
 func TestOIDCCallbackProvisionCreateError(t *testing.T) {
 	fake := &fakeOIDC{claims: OIDCClaims{Username: "newcomer", Nonce: "n"}}
-	svc, store := newOIDCService(t, fake, &OIDCConfig{Provision: true, DefaultRole: "auditor"})
+	svc, store := newOIDCService(t, fake, &OIDCConfig{Provision: true})
 	store.failOn = "Create"
 	store.err = errors.New("insert failed")
 

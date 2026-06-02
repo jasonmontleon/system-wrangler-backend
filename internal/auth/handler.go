@@ -72,16 +72,11 @@ type Service struct {
 	OIDC OIDCAuthenticator
 	// OIDCConfig carries the parsed SSO settings (username claim,
 	// provisioning policy, display name). Non-nil whenever OIDC is.
-	OIDCConfig *OIDCConfig
-	// OIDCProvision grants a freshly auto-provisioned SSO user their
-	// default role. Injected from cmd/server (which can import rbac
-	// without the cycle the auth package would hit). Only called when
-	// OIDCConfig.Provision is true and a new row was created.
-	OIDCProvision func(ctx context.Context, userID string) error
-	SessionTTL    time.Duration
-	SecureCookie  bool
-	Now           func() time.Time
-	NewID         func() string
+	OIDCConfig   *OIDCConfig
+	SessionTTL   time.Duration
+	SecureCookie bool
+	Now          func() time.Time
+	NewID        func() string
 }
 
 // Lockout policy constants. After LockoutThreshold consecutive failed

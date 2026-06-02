@@ -146,12 +146,11 @@ func (s *Service) resolveOIDCUser(r *http.Request, idc OIDCClaims) (User, bool) 
 }
 
 // provisionOIDCUser creates a password-less local account for a
-// first-time SSO user and grants it the configured default role. The
-// account gets a bcrypt hash of random bytes so the column's NOT NULL
-// holds and no password can ever verify (an admin password-reset can
-// later set a real one). Role-grant failure is fatal to the login: a user
-// with zero roles can't see anything, so better to refuse than to strand
-// them in a roleless state.
+// first-time SSO user. The account gets a bcrypt hash of random bytes so
+// the column's NOT NULL holds and no password can ever verify (an admin
+// password-reset can later set a real one). It is created with NO roles —
+// exactly like an admin-created user — so it can authenticate but can't
+// see or do anything privileged until an admin grants a role.
 func (s *Service) provisionOIDCUser(r *http.Request, idc OIDCClaims) (User, bool) {
 	hash, err := HashPassword(s.NewID())
 	if err != nil {
@@ -162,12 +161,6 @@ func (s *Service) provisionOIDCUser(r *http.Request, idc OIDCClaims) (User, bool
 	if err != nil {
 		slog.Error("auth oidc provision create", "err", err)
 		return User{}, false
-	}
-	if s.OIDCProvision != nil {
-		if err := s.OIDCProvision(r.Context(), u.ID); err != nil {
-			slog.Error("auth oidc provision role", "err", err, "user_id", u.ID)
-			return User{}, false
-		}
 	}
 	d := audit.NewDetail()
 	_ = d.SetSafe("source", "oidc")

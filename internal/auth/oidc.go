@@ -24,12 +24,10 @@ const (
 	envOIDCScopes        = "SW_OIDC_SCOPES"
 	envOIDCUsernameClaim = "SW_OIDC_USERNAME_CLAIM"
 	envOIDCProvision     = "SW_OIDC_PROVISION"
-	envOIDCDefaultRole   = "SW_OIDC_DEFAULT_ROLE"
 	envOIDCDisplayName   = "SW_OIDC_DISPLAY_NAME"
 
 	defaultOIDCScopes        = "openid profile email"
 	defaultOIDCUsernameClaim = "preferred_username"
-	defaultOIDCDefaultRole   = "auditor"
 	defaultOIDCDisplayName   = "SSO"
 )
 
@@ -41,9 +39,10 @@ const (
 // auth package stays free of network dependencies and is unit-testable
 // with a fake.
 //
-// DefaultRole is kept as an opaque string here on purpose: validating it
-// against the rbac package would create an import cycle (rbac already
-// imports auth), so cmd/server validates it at startup instead.
+// Provisioned users are created with no roles — exactly like a user an
+// admin creates by hand — and an admin grants roles afterward. There is
+// deliberately no "default role" knob: a fresh account should not carry
+// any access until someone decides what it should have.
 type OIDCConfig struct {
 	Issuer        string
 	ClientID      string
@@ -52,7 +51,6 @@ type OIDCConfig struct {
 	Scopes        []string
 	UsernameClaim string
 	Provision     bool
-	DefaultRole   string
 	DisplayName   string
 }
 
@@ -73,7 +71,6 @@ func LoadOIDCConfig(getenv func(string) string) (*OIDCConfig, error) {
 		RedirectURL:   strings.TrimSpace(getenv(envOIDCRedirectURL)),
 		UsernameClaim: strings.TrimSpace(getenv(envOIDCUsernameClaim)),
 		Provision:     truthyEnv(getenv(envOIDCProvision)),
-		DefaultRole:   strings.TrimSpace(getenv(envOIDCDefaultRole)),
 		DisplayName:   strings.TrimSpace(getenv(envOIDCDisplayName)),
 	}
 	missing := make([]string, 0, 4)
@@ -96,9 +93,6 @@ func LoadOIDCConfig(getenv func(string) string) (*OIDCConfig, error) {
 	cfg.Scopes = parseScopes(getenv(envOIDCScopes))
 	if cfg.UsernameClaim == "" {
 		cfg.UsernameClaim = defaultOIDCUsernameClaim
-	}
-	if cfg.DefaultRole == "" {
-		cfg.DefaultRole = defaultOIDCDefaultRole
 	}
 	if cfg.DisplayName == "" {
 		cfg.DisplayName = defaultOIDCDisplayName

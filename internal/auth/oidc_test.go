@@ -43,9 +43,6 @@ func TestLoadOIDCConfigComplete(t *testing.T) {
 	if cfg.UsernameClaim != defaultOIDCUsernameClaim {
 		t.Errorf("username claim = %q, want default %q", cfg.UsernameClaim, defaultOIDCUsernameClaim)
 	}
-	if cfg.DefaultRole != defaultOIDCDefaultRole {
-		t.Errorf("default role = %q, want %q", cfg.DefaultRole, defaultOIDCDefaultRole)
-	}
 	if cfg.DisplayName != defaultOIDCDisplayName {
 		t.Errorf("display name = %q, want %q", cfg.DisplayName, defaultOIDCDisplayName)
 	}
@@ -68,13 +65,12 @@ func TestLoadOIDCConfigOverrides(t *testing.T) {
 		envOIDCScopes:        "openid groups",
 		envOIDCUsernameClaim: "email",
 		envOIDCProvision:     "true",
-		envOIDCDefaultRole:   "operator",
 		envOIDCDisplayName:   "Acme SSO",
 	}))
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
-	if cfg.UsernameClaim != "email" || cfg.DefaultRole != "operator" || cfg.DisplayName != "Acme SSO" {
+	if cfg.UsernameClaim != "email" || cfg.DisplayName != "Acme SSO" {
 		t.Errorf("overrides not applied: %+v", cfg)
 	}
 	if !cfg.Provision {

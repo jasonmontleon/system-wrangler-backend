@@ -224,9 +224,6 @@ func run(ctx context.Context, args []string, getenv func(string) string) error {
 		return fmt.Errorf("oidc auth: %w", err)
 	}
 	if oidcCfg != nil {
-		if !rbac.Role(oidcCfg.DefaultRole).IsValid() {
-			return fmt.Errorf("oidc auth: SW_OIDC_DEFAULT_ROLE=%q is not a valid role (admin, operator, or auditor)", oidcCfg.DefaultRole)
-		}
 		// Discovery is a network round trip to the IdP. We give it a short
 		// budget and, on failure, log loudly and start with SSO disabled
 		// rather than crash: System Wrangler is often the first thing
@@ -239,14 +236,10 @@ func run(ctx context.Context, args []string, getenv func(string) string) error {
 			slog.Error("oidc discovery failed — single sign-on disabled, local login still available",
 				"issuer", oidcCfg.Issuer, "err", derr)
 		} else {
-			role := rbac.Role(oidcCfg.DefaultRole)
 			authSvc.OIDC = auth.NewOIDCAuthenticator(provider, oidcCfg)
 			authSvc.OIDCConfig = oidcCfg
-			authSvc.OIDCProvision = func(_ context.Context, userID string) error {
-				return rbacStore.Grant(rbac.Assignment{UserID: userID, Role: role})
-			}
 			slog.Info("OpenID Connect single sign-on enabled",
-				"issuer", oidcCfg.Issuer, "provision", oidcCfg.Provision, "default_role", oidcCfg.DefaultRole)
+				"issuer", oidcCfg.Issuer, "provision", oidcCfg.Provision)
 		}
 	}
 
