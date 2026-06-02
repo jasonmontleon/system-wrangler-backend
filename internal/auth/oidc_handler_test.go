@@ -63,7 +63,7 @@ func signState(t *testing.T, svc *Service, state, nonce, verifier string) *http.
 	if err != nil {
 		t.Fatalf("sign state: %v", err)
 	}
-	return &http.Cookie{Name: OIDCStateCookie, Value: tok}
+	return &http.Cookie{Name: OIDCStateCookie, Value: tok} //nolint:gosec // G124: request cookie — only Name/Value are transmitted
 }
 
 func hasCookie(cookies []*http.Cookie, name string) (*http.Cookie, bool) {
