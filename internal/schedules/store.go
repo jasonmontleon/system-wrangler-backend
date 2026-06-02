@@ -39,4 +39,15 @@ type Store interface {
 	// Due returns enabled schedules whose NextRunAt is at or before
 	// `now`. Phase 2's ticker calls this once per minute.
 	Due(now time.Time) ([]Schedule, error)
+
+	// ReconcileMissed advances enabled schedules whose NextRunAt slipped
+	// further into the past than `grace` — almost always because the
+	// server was down across one or more fire times — to their next
+	// future occurrence, without running them. It returns the schedules
+	// it rescheduled (carrying the missed NextRunAt) so the caller can
+	// log the skip. This is the misfire policy that stops a fleet-wide
+	// spike of catch-up runs after an outage: a missed schedule resumes
+	// at its next normal time rather than firing the moment the server
+	// returns.
+	ReconcileMissed(now time.Time, grace time.Duration) ([]Schedule, error)
 }

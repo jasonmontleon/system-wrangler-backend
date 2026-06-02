@@ -300,6 +300,73 @@ func TestDueExcludesFutureSchedules(t *testing.T) {
 	}
 }
 
+func TestReconcileMissedReschedulesStaleSchedulesWithoutRunning(t *testing.T) {
+	s, _ := newStore(t)
+	s.Now = fixedClock(t, time.Date(2026, 5, 31, 12, 0, 0, 0, time.UTC))
+	sch, _ := s.Create(validInput(), "user-1")
+	orig := *sch.NextRunAt
+
+	// Simulate a long outage: "now" is two hours past the missed fire,
+	// well beyond any reasonable grace.
+	now := orig.Add(2 * time.Hour)
+	missed, err := s.ReconcileMissed(now, 2*time.Minute)
+	if err != nil {
+		t.Fatalf("ReconcileMissed: %v", err)
+	}
+	if len(missed) != 1 || missed[0].ID != sch.ID {
+		t.Fatalf("ReconcileMissed returned %+v, want only %s", missed, sch.ID)
+	}
+	// The returned schedule carries the missed (pre-advance) fire time
+	// so the caller can log it.
+	if missed[0].NextRunAt == nil || !missed[0].NextRunAt.Equal(orig) {
+		t.Errorf("returned NextRunAt = %v, want missed time %v", missed[0].NextRunAt, orig)
+	}
+
+	reloaded, err := s.Get(sch.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	// Persisted NextRunAt advanced strictly past "now" — the run did
+	// not fire, it simply resumes at its next normal occurrence.
+	if reloaded.NextRunAt == nil || !reloaded.NextRunAt.After(now) {
+		t.Errorf("reloaded NextRunAt = %v, want a time after %v", reloaded.NextRunAt, now)
+	}
+	// A missed run must not stamp last_run_at / last_status — it never ran.
+	if reloaded.LastRunAt != nil || reloaded.LastStatus != nil {
+		t.Errorf("missed reconcile must not touch last_run_at/last_status, got %v / %v",
+			reloaded.LastRunAt, reloaded.LastStatus)
+	}
+}
+
+func TestReconcileMissedLeavesWithinGraceAndDisabledAlone(t *testing.T) {
+	s, _ := newStore(t)
+	s.Now = fixedClock(t, time.Date(2026, 5, 31, 12, 0, 0, 0, time.UTC))
+	sch, _ := s.Create(validInput(), "user-1")
+	orig := *sch.NextRunAt
+	disabledIn := validInput()
+	disabledIn.Enabled = false
+	disabled, _ := s.Create(disabledIn, "user-1")
+
+	// One minute late is inside the two-minute grace window: not missed.
+	now := orig.Add(time.Minute)
+	missed, err := s.ReconcileMissed(now, 2*time.Minute)
+	if err != nil {
+		t.Fatalf("ReconcileMissed: %v", err)
+	}
+	if len(missed) != 0 {
+		t.Errorf("ReconcileMissed returned %+v, want none within grace", missed)
+	}
+	reloaded, _ := s.Get(sch.ID)
+	if reloaded.NextRunAt == nil || !reloaded.NextRunAt.Equal(orig) {
+		t.Errorf("within-grace NextRunAt = %v, want unchanged %v", reloaded.NextRunAt, orig)
+	}
+	// A disabled schedule has a nil NextRunAt and is never reconciled.
+	rd, _ := s.Get(disabled.ID)
+	if rd.NextRunAt != nil {
+		t.Errorf("disabled schedule NextRunAt = %v, want nil", rd.NextRunAt)
+	}
+}
+
 func TestListRunsRespectsLimitAndOrder(t *testing.T) {
 	s, _ := newStore(t)
 	sch, _ := s.Create(validInput(), "user-1")
@@ -412,6 +479,9 @@ func TestStoreMethodsSurfaceClosedDBError(t *testing.T) {
 	}
 	if _, err := s.Due(time.Now()); err == nil {
 		t.Error("Due on closed DB: expected error")
+	}
+	if _, err := s.ReconcileMissed(time.Now(), time.Minute); err == nil {
+		t.Error("ReconcileMissed on closed DB: expected error")
 	}
 }
 

@@ -372,6 +372,60 @@ func (s *SQLiteStore) Due(now time.Time) ([]Schedule, error) {
 	return out, nil
 }
 
+// ReconcileMissed advances enabled schedules whose NextRunAt fell more
+// than `grace` before `now` to their next future occurrence, without
+// running them, and returns the rescheduled schedules carrying the
+// missed NextRunAt. See the Store interface for why this exists. The
+// scan happens before any write so the cursor is closed before the
+// per-row updates run on the same connection.
+func (s *SQLiteStore) ReconcileMissed(now time.Time, grace time.Duration) ([]Schedule, error) {
+	cutoff := now.UTC().Add(-grace)
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, fmt.Errorf("schedules: reconcile begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	rows, err := tx.Query(
+		`SELECT `+columns+` FROM schedules WHERE enabled = 1 AND next_run_at IS NOT NULL AND next_run_at < ? ORDER BY next_run_at, id`,
+		cutoff.UnixNano(),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("schedules: reconcile select: %w", err)
+	}
+	missed := []Schedule{}
+	for rows.Next() {
+		sch, err := scanSchedule(rows)
+		if err != nil {
+			_ = rows.Close()
+			return nil, fmt.Errorf("schedules: scan missed: %w", err)
+		}
+		missed = append(missed, sch)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return nil, fmt.Errorf("schedules: reconcile rows: %w", err)
+	}
+	_ = rows.Close()
+
+	for _, sch := range missed {
+		next, err := computeNext(sch.CronExpr, sch.Timezone, now.UTC())
+		if err != nil {
+			return nil, fmt.Errorf("schedules: reconcile compute next: %w", err)
+		}
+		if _, err := tx.Exec(
+			`UPDATE schedules SET next_run_at = ? WHERE id = ?`,
+			next.UnixNano(), sch.ID,
+		); err != nil {
+			return nil, fmt.Errorf("schedules: reconcile update: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("schedules: reconcile commit: %w", err)
+	}
+	return missed, nil
+}
+
 const columns = `id, name, cron_expr, timezone, run_check, run_apply, reboot_after_apply,
                   target_kind, target_value, enabled, next_run_at, last_run_at, last_status,
                   created_by, created_at, updated_at`

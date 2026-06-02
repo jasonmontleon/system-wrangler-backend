@@ -47,6 +47,52 @@ func TestTickerFiresDueSchedulesOnTick(t *testing.T) {
 	}
 }
 
+func TestTickerReschedulesMissedRunsInsteadOfFiring(t *testing.T) {
+	o, store := newFiringOrchestrator(t)
+	o.Systems = fakeSysStore{systems: []systems.System{{ID: "s1"}}}
+	o.Registry = fakeRegistry{defs: []updaters.Definition{{ID: "dnf"}}}
+	o.Updaters = fakeAvailStore{rows: []updaters.Availability{{UpdaterID: "dnf", Enabled: true}}}
+	var fired atomic.Int32
+	o.Runner = &fakeRunner{
+		check: func(string, string) (updaters.RunResult, error) {
+			fired.Add(1)
+			return ok()
+		},
+	}
+	sch, err := store.Create(validInput(), "user-1")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	// Pretend the server was down for an hour past the fire time — far
+	// beyond the grace window, so this is a missed run, not a late one.
+	staleNow := sch.NextRunAt.Add(time.Hour)
+	tk := &Ticker{
+		Store:        store,
+		Orchestrator: o,
+		Interval:     50 * time.Millisecond,
+		MisfireGrace: 2 * time.Minute,
+		Now:          func() time.Time { return staleNow },
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+	defer cancel()
+	tk.Run(ctx)
+
+	if fired.Load() != 0 {
+		t.Errorf("missed schedule fired %d times, want 0 (no catch-up spike)", fired.Load())
+	}
+	reloaded, err := store.Get(sch.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if reloaded.NextRunAt == nil || !reloaded.NextRunAt.After(staleNow) {
+		t.Errorf("missed schedule NextRunAt = %v, want rescheduled past %v", reloaded.NextRunAt, staleNow)
+	}
+	// It never ran, so last_run_at stays unset.
+	if reloaded.LastRunAt != nil {
+		t.Errorf("missed schedule stamped last_run_at = %v, want nil", reloaded.LastRunAt)
+	}
+}
+
 func TestTickerDoesNothingWhenNothingDue(t *testing.T) {
 	o, store := newFiringOrchestrator(t)
 	o.Systems = fakeSysStore{}
