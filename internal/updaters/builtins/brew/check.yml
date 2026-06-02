@@ -15,12 +15,12 @@
         cmd: brew outdated --verbose
       register: brew_pending
       changed_when: false
-    - name: Extract name|old|new tuples (brew outdated --verbose prints "name (cur) < new")
+    - name: Extract name|old|new tuples (brew outdated --verbose prints "name (cur) <|!= new")
       ansible.builtin.set_fact:
         sw_pending_packages: >-
           {{ brew_pending.stdout_lines
-             | select('match', '^\S+\s+\([^)]+\)\s+<\s+\S+')
-             | map('regex_replace', '^(\S+)\s+\(([^)]+)\)\s+<\s+(\S+).*$', '\1|\2|\3')
+             | select('match', '^\S+\s+\([^)]+\)\s+\S+\s+\S+')
+             | map('regex_replace', '^(\S+)\s+\(([^)]+)\)\s+\S+\s+(\S+).*$', '\1|\2|\3')
              | list }}
     - name: Surface count to the run log
       ansible.builtin.debug:

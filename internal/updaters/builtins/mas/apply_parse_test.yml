@@ -1,0 +1,43 @@
+- name: Test mas apply name->id targeting resolution
+  hosts: localhost
+  gather_facts: false
+  vars:
+    mas_outdated_typical:
+      stdout_lines:
+        - "1352778147  Bitwarden  (2026.4.0 -> 2026.5.0)"
+        - " 640199958  Developer  (11.0     -> 11.0.1)"
+        - "1616831348  Affinity Photo 2  (2.0.4 -> 2.0.5)"
+    sw_targeted_packages:
+      - "Bitwarden"
+      - "Affinity Photo 2"
+  tasks:
+    - name: Keep only the outdated lines (mas prints "id  Name (cur -> new)")
+      ansible.builtin.set_fact:
+        sw_mas_lines: >-
+          {{ mas_outdated_typical.stdout_lines
+             | select('match', '^\s*[0-9]+\s+.+\(\s*\S+\s*->\s*\S+\s*\)')
+             | list }}
+    - name: Map display name -> App Store id
+      ansible.builtin.set_fact:
+        sw_mas_name_to_id: >-
+          {{ dict(
+               (sw_mas_lines | map('regex_replace', '^\s*[0-9]+\s+(.+?)\s+\(\s*\S+\s*->\s*\S+\s*\).*$', '\1'))
+               | zip(sw_mas_lines | map('regex_replace', '^\s*([0-9]+)\s+.+$', '\1'))
+             ) }}
+    - name: Narrow to the targeted apps' ids
+      ansible.builtin.set_fact:
+        sw_mas_target_ids: >-
+          {{ sw_targeted_packages
+             | select('in', sw_mas_name_to_id)
+             | map('extract', sw_mas_name_to_id)
+             | list }}
+    - name: Assert resolution maps display names to numeric ids in targeted order
+      ansible.builtin.assert:
+        that:
+          - sw_mas_target_ids == ['1352778147', '1616831348']
+        fail_msg: "sw_mas_target_ids={{ sw_mas_target_ids }}"
+    - name: Assert a name no longer outdated is dropped (not passed to mas upgrade)
+      ansible.builtin.assert:
+        that:
+          - "['Bitwarden', 'GoneApp'] | select('in', sw_mas_name_to_id) | map('extract', sw_mas_name_to_id) | list == ['1352778147']"
+        fail_msg: "unexpected resolution for a stale target"

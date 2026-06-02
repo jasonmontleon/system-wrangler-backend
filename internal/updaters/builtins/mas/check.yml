@@ -10,12 +10,12 @@
         cmd: mas outdated
       register: mas_pending
       changed_when: false
-    - name: Extract name|old|new tuples (mas prints "id Name (cur) -> (new)")
+    - name: Extract name|old|new tuples (mas prints "id  Name (cur -> new)")
       ansible.builtin.set_fact:
         sw_pending_packages: >-
           {{ mas_pending.stdout_lines
-             | select('match', '^[0-9]+\s+.+\s+\([^)]+\)\s+->\s+\([^)]+\)')
-             | map('regex_replace', '^[0-9]+\s+(.+?)\s+\(([^)]+)\)\s+->\s+\(([^)]+)\).*$', '\1|\2|\3')
+             | select('match', '^\s*[0-9]+\s+.+\(\s*\S+\s*->\s*\S+\s*\)')
+             | map('regex_replace', '^\s*[0-9]+\s+(.+?)\s+\(\s*(\S+)\s*->\s*(\S+)\s*\).*$', '\1|\2|\3')
              | list }}
     - name: Surface count to the run log
       ansible.builtin.debug:

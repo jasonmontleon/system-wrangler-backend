@@ -7,11 +7,46 @@
   vars:
     sw_targeted_packages: []
   tasks:
-    - name: Compose the mas command (all-pending vs targeted app IDs)
+    - name: Resolve targeted display names to App Store ids
+      when: sw_targeted_packages | length > 0
+      block:
+        - name: Query mas-cli for outdated apps  # noqa: command-instead-of-module
+          ansible.builtin.command:
+            cmd: mas outdated
+          register: mas_outdated
+          changed_when: false
+        - name: Keep only the outdated lines (mas prints "id  Name (cur -> new)")
+          ansible.builtin.set_fact:
+            sw_mas_lines: >-
+              {{ mas_outdated.stdout_lines
+                 | select('match', '^\s*[0-9]+\s+.+\(\s*\S+\s*->\s*\S+\s*\)')
+                 | list }}
+        - name: Map display name -> App Store id
+          ansible.builtin.set_fact:
+            sw_mas_name_to_id: >-
+              {{ dict(
+                   (sw_mas_lines | map('regex_replace', '^\s*[0-9]+\s+(.+?)\s+\(\s*\S+\s*->\s*\S+\s*\).*$', '\1'))
+                   | zip(sw_mas_lines | map('regex_replace', '^\s*([0-9]+)\s+.+$', '\1'))
+                 ) }}
+        - name: Narrow to the targeted apps' ids
+          ansible.builtin.set_fact:
+            sw_mas_target_ids: >-
+              {{ sw_targeted_packages
+                 | select('in', sw_mas_name_to_id)
+                 | map('extract', sw_mas_name_to_id)
+                 | list }}
+
+    - name: Skip when targeted apps are no longer outdated
+      ansible.builtin.meta: end_host
+      when:
+        - sw_targeted_packages | length > 0
+        - sw_mas_target_ids | default([]) | length == 0
+
+    - name: Compose the mas command (all-pending vs targeted ids)
       ansible.builtin.set_fact:
         sw_mas_cmd: >-
           {%- if sw_targeted_packages | length > 0 -%}
-          mas upgrade {{ sw_targeted_packages | join(' ') }}
+          mas upgrade {{ sw_mas_target_ids | join(' ') }}
           {%- else -%}
           mas upgrade
           {%- endif -%}

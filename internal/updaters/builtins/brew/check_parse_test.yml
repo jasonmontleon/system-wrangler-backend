@@ -8,6 +8,7 @@
         - "node (18.10.0_1) < 18.10.1"
         - "openssl (3.0.10, 3.0.9) < 3.1.2"
         - "git-lfs (3.4.0) < 3.4.1 [pinned at 3.4.0]"
+        - "claude-code (2.1.142) != 2.1.150"
     brew_pending_empty:
       stdout_lines: []
   tasks:
@@ -15,20 +16,20 @@
       ansible.builtin.set_fact:
         typical_pkgs: >-
           {{ brew_pending_typical.stdout_lines
-             | select('match', '^\S+\s+\([^)]+\)\s+<\s+\S+')
-             | map('regex_replace', '^(\S+)\s+\(([^)]+)\)\s+<\s+(\S+).*$', '\1|\2|\3')
+             | select('match', '^\S+\s+\([^)]+\)\s+\S+\s+\S+')
+             | map('regex_replace', '^(\S+)\s+\(([^)]+)\)\s+\S+\s+(\S+).*$', '\1|\2|\3')
              | list }}
     - name: Assert typical extracts name|old|new tuples
       ansible.builtin.assert:
         that:
-          - typical_pkgs == ['foo|1.0.0|1.0.1', 'node|18.10.0_1|18.10.1', 'openssl|3.0.10, 3.0.9|3.1.2', 'git-lfs|3.4.0|3.4.1']
+          - typical_pkgs == ['foo|1.0.0|1.0.1', 'node|18.10.0_1|18.10.1', 'openssl|3.0.10, 3.0.9|3.1.2', 'git-lfs|3.4.0|3.4.1', 'claude-code|2.1.142|2.1.150']
         fail_msg: "typical_pkgs={{ typical_pkgs }}"
     - name: Parse empty brew outdated --verbose output
       ansible.builtin.set_fact:
         empty_pkgs: >-
           {{ brew_pending_empty.stdout_lines
-             | select('match', '^\S+\s+\([^)]+\)\s+<\s+\S+')
-             | map('regex_replace', '^(\S+)\s+\(([^)]+)\)\s+<\s+(\S+).*$', '\1|\2|\3')
+             | select('match', '^\S+\s+\([^)]+\)\s+\S+\s+\S+')
+             | map('regex_replace', '^(\S+)\s+\(([^)]+)\)\s+\S+\s+(\S+).*$', '\1|\2|\3')
              | list }}
     - name: Assert empty produces empty list
       ansible.builtin.assert:
