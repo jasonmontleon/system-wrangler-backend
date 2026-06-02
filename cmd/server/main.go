@@ -735,6 +735,9 @@ func populateMux(runCtx context.Context, mux router.Mux, db *sql.DB, store syste
 		scheduleTicker := &schedules.Ticker{
 			Store:        scheduleStore,
 			Orchestrator: scheduleOrchestrator,
+			GraceFn: func() time.Duration {
+				return time.Duration(settings.ScheduleMisfireGraceSeconds(settingsStore)) * time.Second
+			},
 		}
 		go scheduleTicker.Run(runCtx)
 		updaterHandler := &updaters.Handler{

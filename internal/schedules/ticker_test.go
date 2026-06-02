@@ -93,6 +93,50 @@ func TestTickerReschedulesMissedRunsInsteadOfFiring(t *testing.T) {
 	}
 }
 
+func TestTickerGraceFnOverridesMisfireField(t *testing.T) {
+	o, store := newFiringOrchestrator(t)
+	o.Systems = fakeSysStore{systems: []systems.System{{ID: "s1"}}}
+	o.Registry = fakeRegistry{defs: []updaters.Definition{{ID: "dnf"}}}
+	o.Updaters = fakeAvailStore{rows: []updaters.Availability{{UpdaterID: "dnf", Enabled: true}}}
+	var fired atomic.Int32
+	o.Runner = &fakeRunner{
+		check: func(string, string) (updaters.RunResult, error) {
+			fired.Add(1)
+			return ok()
+		},
+	}
+	sch, err := store.Create(validInput(), "user-1")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	// The fire time is 90s in the past. The field would treat that as
+	// within grace (2m default), but GraceFn returns a tight 30s window
+	// that takes precedence — so this is a missed run and must not fire.
+	staleNow := sch.NextRunAt.Add(90 * time.Second)
+	tk := &Ticker{
+		Store:        store,
+		Orchestrator: o,
+		Interval:     50 * time.Millisecond,
+		MisfireGrace: 2 * time.Minute,
+		GraceFn:      func() time.Duration { return 30 * time.Second },
+		Now:          func() time.Time { return staleNow },
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	tk.Run(ctx)
+
+	if fired.Load() != 0 {
+		t.Errorf("GraceFn window should treat the run as missed, fired=%d", fired.Load())
+	}
+	reloaded, err := store.Get(sch.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if reloaded.NextRunAt == nil || !reloaded.NextRunAt.After(staleNow) {
+		t.Errorf("missed schedule NextRunAt = %v, want rescheduled past %v", reloaded.NextRunAt, staleNow)
+	}
+}
+
 func TestTickerDoesNothingWhenNothingDue(t *testing.T) {
 	o, store := newFiringOrchestrator(t)
 	o.Systems = fakeSysStore{}

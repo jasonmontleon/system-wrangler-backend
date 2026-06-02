@@ -120,6 +120,22 @@ func SetProbeSuccessThreshold(store Store, n int) error {
 		MinProbeSuccessThreshold, MaxProbeSuccessThreshold, "probe_success_threshold")
 }
 
+// ScheduleMisfireGraceSeconds returns how late a scheduled run may
+// fire before it is treated as missed and rescheduled, falling back to
+// DefaultScheduleMisfireGraceSeconds on unset/unparseable/out-of-range
+// values. The schedule ticker reads this on every tick so a change
+// takes effect at the next cycle without a restart.
+func ScheduleMisfireGraceSeconds(store Store) int {
+	return clampedSetting(store, KeyScheduleMisfireGraceSeconds,
+		DefaultScheduleMisfireGraceSeconds, MinScheduleMisfireGraceSeconds, MaxScheduleMisfireGraceSeconds)
+}
+
+// SetScheduleMisfireGraceSeconds validates and persists the grace.
+func SetScheduleMisfireGraceSeconds(store Store, n int) error {
+	return setBoundedSetting(store, KeyScheduleMisfireGraceSeconds, n,
+		MinScheduleMisfireGraceSeconds, MaxScheduleMisfireGraceSeconds, "schedule_misfire_grace_seconds")
+}
+
 // clampedSetting reads key, falls back to defaultValue on
 // unset/unparseable/below-min, and caps to max. Shared by the
 // three new probe accessors so each stays a one-liner.

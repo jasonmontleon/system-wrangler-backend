@@ -8,6 +8,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -216,11 +217,73 @@ func TestListSurfacesProbeDefaults(t *testing.T) {
 		KeyProbeIntervalSeconds,
 		KeyProbeFailureThreshold,
 		KeyProbeSuccessThreshold,
+		KeyScheduleMisfireGraceSeconds,
 	} {
 		if _, ok := got.Settings[key]; !ok {
 			t.Errorf("%s missing from list response", key)
 		}
 	}
+	if got.Settings[KeyScheduleMisfireGraceSeconds] != strconv.Itoa(DefaultScheduleMisfireGraceSeconds) {
+		t.Errorf("schedule_misfire_grace_seconds = %q, want default %d",
+			got.Settings[KeyScheduleMisfireGraceSeconds], DefaultScheduleMisfireGraceSeconds)
+	}
+}
+
+func TestPutScheduleMisfireGrace(t *testing.T) {
+	t.Run("ok", func(t *testing.T) {
+		h, srv := newHandlerSrv(t, true)
+		req, _ := http.NewRequest(
+			http.MethodPut,
+			srv.URL+"/api/admin/settings/"+KeyScheduleMisfireGraceSeconds,
+			strings.NewReader(`{"value":"300"}`),
+		)
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("put: %v", err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		if resp.StatusCode != http.StatusNoContent {
+			t.Fatalf("status = %d, want 204", resp.StatusCode)
+		}
+		if v, _ := h.Store.Get(KeyScheduleMisfireGraceSeconds); v != "300" {
+			t.Errorf("stored = %q, want 300", v)
+		}
+	})
+	t.Run("bad_integer", func(t *testing.T) {
+		_, srv := newHandlerSrv(t, true)
+		req, _ := http.NewRequest(
+			http.MethodPut,
+			srv.URL+"/api/admin/settings/"+KeyScheduleMisfireGraceSeconds,
+			strings.NewReader(`{"value":"soon"}`),
+		)
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("put: %v", err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("status = %d, want 400", resp.StatusCode)
+		}
+	})
+	t.Run("below_min", func(t *testing.T) {
+		_, srv := newHandlerSrv(t, true)
+		req, _ := http.NewRequest(
+			http.MethodPut,
+			srv.URL+"/api/admin/settings/"+KeyScheduleMisfireGraceSeconds,
+			strings.NewReader(`{"value":"30"}`),
+		)
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("put: %v", err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("status = %d, want 400", resp.StatusCode)
+		}
+	})
 }
 
 func TestPutHappyPath(t *testing.T) {

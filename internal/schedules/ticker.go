@@ -28,10 +28,15 @@ type Ticker struct {
 
 	// Interval is how often Run pulses the due-list. Default 1 minute.
 	Interval time.Duration
-	// MisfireGrace bounds how late a due schedule may still fire before
-	// it is treated as missed and rescheduled without running. Default
-	// DefaultMisfireGrace.
+	// MisfireGrace is the fallback grace used when GraceFn is nil
+	// (mostly tests). Defaults to DefaultMisfireGrace when unset.
 	MisfireGrace time.Duration
+	// GraceFn, when non-nil, is consulted each tick for the live
+	// misfire grace, so a settings change takes effect on the next
+	// cycle without a restart. Bound to
+	// settings.ScheduleMisfireGraceSeconds in cmd/server/main.go.
+	// Returning <= 0 falls back to MisfireGrace.
+	GraceFn func() time.Duration
 	// Now overrides the clock for tests. Default time.Now.
 	Now func() time.Time
 }
@@ -46,9 +51,6 @@ func (t *Ticker) Run(ctx context.Context) {
 	interval := t.Interval
 	if interval <= 0 {
 		interval = time.Minute
-	}
-	if t.MisfireGrace <= 0 {
-		t.MisfireGrace = DefaultMisfireGrace
 	}
 	now := t.Now
 	if now == nil {
@@ -67,16 +69,27 @@ func (t *Ticker) Run(ctx context.Context) {
 	}
 }
 
+// resolveGrace returns the live misfire grace: GraceFn (if set and
+// positive), else the MisfireGrace fallback, else DefaultMisfireGrace.
+func (t *Ticker) resolveGrace() time.Duration {
+	if t.GraceFn != nil {
+		if g := t.GraceFn(); g > 0 {
+			return g
+		}
+	}
+	if t.MisfireGrace > 0 {
+		return t.MisfireGrace
+	}
+	return DefaultMisfireGrace
+}
+
 // tick first reschedules any schedules missed while the server was
 // down (so they don't all fire at once on restart), then walks
 // Due(now) and fans the fires off into goroutines so a slow schedule
 // can't block the ticker. Per-schedule advisory locking inside
 // Orchestrator.Fire protects against overlap; here we just dispatch.
 func (t *Ticker) tick(ctx context.Context, now time.Time) {
-	grace := t.MisfireGrace
-	if grace <= 0 {
-		grace = DefaultMisfireGrace
-	}
+	grace := t.resolveGrace()
 	// Reschedule missed runs before reading the due-list: any schedule
 	// whose fire time slipped past the grace window is pushed to its
 	// next future occurrence here, so Due(now) below returns only the

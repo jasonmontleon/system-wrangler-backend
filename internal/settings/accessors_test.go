@@ -195,3 +195,45 @@ func TestProbeFailureThresholdNilStore(t *testing.T) {
 		t.Fatalf("got %d, want %d", got, DefaultProbeSuccessThreshold)
 	}
 }
+
+func TestScheduleMisfireGraceSeconds(t *testing.T) {
+	if got := ScheduleMisfireGraceSeconds(nil); got != DefaultScheduleMisfireGraceSeconds {
+		t.Fatalf("nil store = %d, want default %d", got, DefaultScheduleMisfireGraceSeconds)
+	}
+	if got := ScheduleMisfireGraceSeconds(newFakeStore()); got != DefaultScheduleMisfireGraceSeconds {
+		t.Fatalf("unset = %d, want default %d", got, DefaultScheduleMisfireGraceSeconds)
+	}
+
+	f := newFakeStore()
+	f.values[KeyScheduleMisfireGraceSeconds] = strconv.Itoa(MinScheduleMisfireGraceSeconds - 1)
+	if got := ScheduleMisfireGraceSeconds(f); got != DefaultScheduleMisfireGraceSeconds {
+		t.Errorf("below min = %d, want default %d", got, DefaultScheduleMisfireGraceSeconds)
+	}
+	f.values[KeyScheduleMisfireGraceSeconds] = strconv.Itoa(MaxScheduleMisfireGraceSeconds + 100)
+	if got := ScheduleMisfireGraceSeconds(f); got != MaxScheduleMisfireGraceSeconds {
+		t.Errorf("above max = %d, want clamp %d", got, MaxScheduleMisfireGraceSeconds)
+	}
+	f.values[KeyScheduleMisfireGraceSeconds] = "300"
+	if got := ScheduleMisfireGraceSeconds(f); got != 300 {
+		t.Errorf("valid = %d, want 300", got)
+	}
+}
+
+func TestSetScheduleMisfireGraceSeconds(t *testing.T) {
+	f := newFakeStore()
+	if err := SetScheduleMisfireGraceSeconds(f, 300); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if got := ScheduleMisfireGraceSeconds(f); got != 300 {
+		t.Fatalf("round-trip = %d, want 300", got)
+	}
+	if err := SetScheduleMisfireGraceSeconds(f, MinScheduleMisfireGraceSeconds-1); !errors.Is(err, ErrInvalid) {
+		t.Errorf("below-min err = %v, want ErrInvalid", err)
+	}
+	if err := SetScheduleMisfireGraceSeconds(f, MaxScheduleMisfireGraceSeconds+1); !errors.Is(err, ErrInvalid) {
+		t.Errorf("above-max err = %v, want ErrInvalid", err)
+	}
+	if err := SetScheduleMisfireGraceSeconds(nil, 120); err == nil {
+		t.Errorf("nil store err = nil, want error")
+	}
+}

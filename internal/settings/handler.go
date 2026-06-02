@@ -82,6 +82,9 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 	if _, ok := all[KeyProbeSuccessThreshold]; !ok {
 		all[KeyProbeSuccessThreshold] = strconv.Itoa(ProbeSuccessThreshold(h.Store))
 	}
+	if _, ok := all[KeyScheduleMisfireGraceSeconds]; !ok {
+		all[KeyScheduleMisfireGraceSeconds] = strconv.Itoa(ScheduleMisfireGraceSeconds(h.Store))
+	}
 	writeJSON(w, http.StatusOK, settingsResponseDTO{Settings: all})
 }
 
@@ -146,6 +149,10 @@ func (h *Handler) put(w http.ResponseWriter, r *http.Request) {
 		}
 	case KeyProbeSuccessThreshold:
 		if err := h.setIntFromBody(w, in.Value, key, SetProbeSuccessThreshold); err != nil {
+			return
+		}
+	case KeyScheduleMisfireGraceSeconds:
+		if err := h.setIntFromBody(w, in.Value, key, SetScheduleMisfireGraceSeconds); err != nil {
 			return
 		}
 	default:

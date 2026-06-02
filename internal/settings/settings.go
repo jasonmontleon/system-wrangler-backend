@@ -107,6 +107,29 @@ const MinProbeSuccessThreshold = 1
 // MaxProbeSuccessThreshold mirrors the failure-side cap.
 const MaxProbeSuccessThreshold = 10
 
+// KeyScheduleMisfireGraceSeconds is how late a scheduled run may fire
+// before the ticker treats it as missed and reschedules it to its next
+// occurrence without running. This is what stops a fleet-wide spike of
+// catch-up runs when the server comes back from an outage. Stored as a
+// string-encoded integer number of seconds.
+const KeyScheduleMisfireGraceSeconds = "schedule_misfire_grace_seconds"
+
+// DefaultScheduleMisfireGraceSeconds is two minutes: generous enough to
+// absorb tick jitter and a quick redeploy (which should still fire)
+// while skipping the longer outages that would otherwise pile work up.
+const DefaultScheduleMisfireGraceSeconds = 120
+
+// MinScheduleMisfireGraceSeconds is one ticker interval (60s). Below
+// this, a schedule that came due just before a tick could be skipped
+// even on a healthy server, because the tick that evaluates it runs up
+// to one interval after the fire time.
+const MinScheduleMisfireGraceSeconds = 60
+
+// MaxScheduleMisfireGraceSeconds caps at one hour. A grace wider than
+// that starts to defeat the purpose — long outages would again trigger
+// the catch-up spike the setting exists to prevent.
+const MaxScheduleMisfireGraceSeconds = 3600
+
 // ErrNotFound is returned by Store.Get when no row exists for the
 // requested key. Typed accessors translate this to the matching
 // default rather than propagating the error.
