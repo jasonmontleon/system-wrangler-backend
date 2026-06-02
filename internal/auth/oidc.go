@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	neturl "net/url"
 	"strings"
 
 	"github.com/coreos/go-oidc/v3/oidc"
@@ -147,6 +148,12 @@ type OIDCAuthenticator interface {
 	// tokens, verifies the ID token's signature and standard claims, and
 	// returns the extracted claim set.
 	Exchange(ctx context.Context, code, pkceVerifier string) (OIDCClaims, error)
+	// EndSessionURL returns the IdP's RP-initiated logout URL (its
+	// end_session_endpoint with client_id + post_logout_redirect_uri), so
+	// logging out of System Wrangler can also end the upstream IdP session.
+	// ok is false when the provider didn't advertise an end_session_endpoint
+	// — then logout just clears the local session.
+	EndSessionURL() (url string, ok bool)
 }
 
 // idTokenVerifier is the slice of *oidc.IDTokenVerifier the authenticator
@@ -163,11 +170,25 @@ type oidcAuthenticator struct {
 	oauth         *oauth2.Config
 	verifier      idTokenVerifier
 	usernameClaim string
+	// endSession is the IdP's end_session_endpoint (from discovery), or ""
+	// when the provider doesn't advertise one. postLogout is where the IdP
+	// sends the browser back after ending its session — the app origin
+	// derived from the redirect URL.
+	endSession string
+	postLogout string
 }
 
 // NewOIDCAuthenticator wires a real authenticator from a discovered
 // provider. Constructed in cmd/server after oidc.NewProvider succeeds.
 func NewOIDCAuthenticator(provider *oidc.Provider, cfg *OIDCConfig) OIDCAuthenticator {
+	// The end_session_endpoint isn't part of oauth2.Endpoint; pull it from
+	// the raw discovery document. A provider without one simply doesn't
+	// support RP-initiated logout, which we degrade to "clear local session
+	// only."
+	var disco struct {
+		EndSessionEndpoint string `json:"end_session_endpoint"`
+	}
+	_ = provider.Claims(&disco)
 	return &oidcAuthenticator{
 		oauth: &oauth2.Config{
 			ClientID:     cfg.ClientID,
@@ -178,6 +199,8 @@ func NewOIDCAuthenticator(provider *oidc.Provider, cfg *OIDCConfig) OIDCAuthenti
 		},
 		verifier:      provider.Verifier(&oidc.Config{ClientID: cfg.ClientID}),
 		usernameClaim: cfg.UsernameClaim,
+		endSession:    disco.EndSessionEndpoint,
+		postLogout:    originOf(cfg.RedirectURL),
 	}
 }
 
@@ -186,6 +209,37 @@ func (a *oidcAuthenticator) AuthCodeURL(state, nonce, pkceVerifier string) strin
 		oidc.Nonce(nonce),
 		oauth2.S256ChallengeOption(pkceVerifier),
 	)
+}
+
+// EndSessionURL builds the RP-initiated logout URL. Keycloak (and the OIDC
+// spec) accept client_id + post_logout_redirect_uri in lieu of an
+// id_token_hint, which is why we don't need to persist the ID token. The
+// post_logout_redirect_uri must be registered on the IdP client.
+func (a *oidcAuthenticator) EndSessionURL() (string, bool) {
+	if a.endSession == "" {
+		return "", false
+	}
+	q := neturl.Values{}
+	q.Set("client_id", a.oauth.ClientID)
+	if a.postLogout != "" {
+		q.Set("post_logout_redirect_uri", a.postLogout)
+	}
+	sep := "?"
+	if strings.Contains(a.endSession, "?") {
+		sep = "&"
+	}
+	return a.endSession + sep + q.Encode(), true
+}
+
+// originOf returns scheme://host/ for a URL, or "" if it can't be parsed.
+// Used to turn the OIDC redirect URL into a post-logout landing page (the
+// SPA login screen at the app root).
+func originOf(rawurl string) string {
+	u, err := neturl.Parse(rawurl)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return ""
+	}
+	return u.Scheme + "://" + u.Host + "/"
 }
 
 // errNoIDToken is returned when the token endpoint's response omits the

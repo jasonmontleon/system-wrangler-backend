@@ -251,7 +251,7 @@ func (s *Service) logLoginFailed(ctx context.Context, attemptedUsername, reason 
 // the time we reach this function the user has proven they're the
 // account holder, so any stale failure history is meaningless.
 func (s *Service) finishLogin(w http.ResponseWriter, r *http.Request, u User, method string) {
-	if err := s.issueCookie(w, r, u.ID); err != nil {
+	if err := s.issueCookie(w, r, u.ID, false); err != nil {
 		writeError(w, http.StatusInternalServerError, "session failed")
 		slog.Error("auth login cookie", "err", err)
 		return
@@ -335,7 +335,7 @@ func (s *Service) handleSetup(w http.ResponseWriter, r *http.Request) {
 		slog.Error("auth setup create", "err", err)
 		return
 	}
-	if err := s.issueCookie(w, r, u.ID); err != nil {
+	if err := s.issueCookie(w, r, u.ID, false); err != nil {
 		writeError(w, http.StatusInternalServerError, "session failed")
 		slog.Error("auth setup cookie", "err", err)
 		return
@@ -586,15 +586,17 @@ func (s *Service) handleLogout(w http.ResponseWriter, r *http.Request) {
 	// a logout. The trusted-device cookie is *not* cleared here — that's the
 	// whole point of "remember this browser": survives logout/login.
 	s.clearChallengeCookie(w)
+	// Read the session cookie's claims once: SID identifies the row to
+	// revoke, and the OIDC flag decides whether to end the upstream IdP
+	// session too.
+	claims, _ := s.sessionClaims(r)
 	// Delete the server-side session row so a captured cookie can't be
 	// replayed after logout. Best-effort: the cookie is already cleared,
 	// and the next request with a stale cookie fails the live-session
 	// check anyway.
-	if hadSession && s.Sessions != nil {
-		if sid := s.currentSessionID(r); sid != "" {
-			if err := s.Sessions.RevokeSession(sid, u.ID); err != nil && !errors.Is(err, ErrSessionNotFound) {
-				slog.Warn("auth logout revoke session", "err", err, "user_id", u.ID)
-			}
+	if hadSession && s.Sessions != nil && claims.SID != "" {
+		if err := s.Sessions.RevokeSession(claims.SID, u.ID); err != nil && !errors.Is(err, ErrSessionNotFound) {
+			slog.Warn("auth logout revoke session", "err", err, "user_id", u.ID)
 		}
 	}
 	if hadSession {
@@ -611,7 +613,32 @@ func (s *Service) handleLogout(w http.ResponseWriter, r *http.Request) {
 			TargetLabel: u.Username,
 		})
 	}
+	// For an SSO session, hand the SPA the IdP's RP-initiated logout URL so
+	// it can navigate there and end the upstream session — otherwise the
+	// IdP's own session would silently re-authenticate the user on the next
+	// "Sign in with SSO" click. Falls through to 204 when the session wasn't
+	// OIDC or the provider advertises no end_session_endpoint.
+	if hadSession && claims.OIDC && s.OIDC != nil {
+		if logoutURL, ok := s.OIDC.EndSessionURL(); ok {
+			writeJSON(w, http.StatusOK, map[string]string{"logoutUrl": logoutURL})
+			return
+		}
+	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// sessionClaims returns the verified claims from the request's session
+// cookie, or ok=false when there's no cookie or it doesn't verify.
+func (s *Service) sessionClaims(r *http.Request) (TokenClaims, bool) {
+	c, err := r.Cookie(CookieName)
+	if err != nil {
+		return TokenClaims{}, false
+	}
+	claims, err := VerifyToken(s.Secret, s.Now(), PurposeSession, c.Value)
+	if err != nil {
+		return TokenClaims{}, false
+	}
+	return claims, true
 }
 
 type profileRequest struct {
@@ -787,9 +814,9 @@ func (s *Service) currentSessionID(r *http.Request) string {
 	return claims.SID
 }
 
-func (s *Service) issueCookie(w http.ResponseWriter, r *http.Request, userID string) error {
+func (s *Service) issueCookie(w http.ResponseWriter, r *http.Request, userID string, oidcSession bool) error {
 	expires := s.Now().Add(s.SessionTTL)
-	claims := TokenClaims{UID: userID}
+	claims := TokenClaims{UID: userID, OIDC: oidcSession}
 	if s.Sessions != nil {
 		sid := s.NewID()
 		now := s.Now().UTC()

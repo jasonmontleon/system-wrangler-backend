@@ -23,6 +23,8 @@ type fakeOIDC struct {
 	exchangeErr error
 	gotCode     string
 	gotExchVer  string
+
+	endSessionURL string // when set, EndSessionURL returns it with ok=true
 }
 
 func (f *fakeOIDC) AuthCodeURL(state, nonce, pkceVerifier string) string {
@@ -36,6 +38,13 @@ func (f *fakeOIDC) Exchange(_ context.Context, code, verifier string) (OIDCClaim
 		return OIDCClaims{}, f.exchangeErr
 	}
 	return f.claims, nil
+}
+
+func (f *fakeOIDC) EndSessionURL() (string, bool) {
+	if f.endSessionURL == "" {
+		return "", false
+	}
+	return f.endSessionURL, true
 }
 
 func newOIDCService(t *testing.T, fake OIDCAuthenticator, cfg *OIDCConfig) (*Service, *stubUserStore) {
@@ -362,6 +371,75 @@ func TestRegisterOIDCMountsRoutes(t *testing.T) {
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusFound {
 		t.Errorf("status = %d, want 302 (route mounted)", resp.StatusCode)
+	}
+}
+
+// signSessionCookie mints a session cookie, optionally flagged as having
+// come in via OIDC, for driving handleLogout.
+func signSessionCookie(t *testing.T, svc *Service, userID string, oidc bool) *http.Cookie {
+	t.Helper()
+	tok, err := SignToken(svc.Secret, PurposeSession,
+		TokenClaims{UID: userID, OIDC: oidc}, svc.Now().Add(svc.SessionTTL))
+	if err != nil {
+		t.Fatalf("sign session: %v", err)
+	}
+	return &http.Cookie{Name: CookieName, Value: tok}
+}
+
+func TestLogoutOIDCReturnsLogoutURL(t *testing.T) {
+	fake := &fakeOIDC{endSessionURL: "https://idp.example.com/logout?client_id=x"}
+	svc, store := newOIDCService(t, fake, &OIDCConfig{})
+	store.put(User{ID: "alice-id", Username: "alice"})
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/api/auth/logout", nil)
+	r.AddCookie(signSessionCookie(t, svc, "alice-id", true))
+	svc.handleLogout(w, r)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	var body map[string]string
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body["logoutUrl"] != fake.endSessionURL {
+		t.Errorf("logoutUrl = %q, want %q", body["logoutUrl"], fake.endSessionURL)
+	}
+	// Session cookie still gets cleared.
+	if c, ok := hasCookie(w.Result().Cookies(), CookieName); !ok || c.MaxAge >= 0 {
+		t.Errorf("session cookie not cleared: %+v", c)
+	}
+}
+
+func TestLogoutLocalSessionNoLogoutURL(t *testing.T) {
+	fake := &fakeOIDC{endSessionURL: "https://idp/logout"}
+	svc, store := newOIDCService(t, fake, &OIDCConfig{})
+	store.put(User{ID: "alice-id", Username: "alice"})
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/api/auth/logout", nil)
+	r.AddCookie(signSessionCookie(t, svc, "alice-id", false)) // not an OIDC session
+	svc.handleLogout(w, r)
+
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204 for a local-login session", w.Code)
+	}
+}
+
+func TestLogoutOIDCNoEndSessionEndpoint(t *testing.T) {
+	// OIDC session, but the provider advertises no end_session_endpoint.
+	fake := &fakeOIDC{} // endSessionURL == "" → EndSessionURL ok=false
+	svc, store := newOIDCService(t, fake, &OIDCConfig{})
+	store.put(User{ID: "alice-id", Username: "alice"})
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/api/auth/logout", nil)
+	r.AddCookie(signSessionCookie(t, svc, "alice-id", true))
+	svc.handleLogout(w, r)
+
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204 when no end_session_endpoint", w.Code)
 	}
 }
 

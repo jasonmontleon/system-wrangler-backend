@@ -187,6 +187,7 @@ func (stubOIDCAuth) AuthCodeURL(_, _, _ string) string { return "" }
 func (stubOIDCAuth) Exchange(_ context.Context, _, _ string) (auth.OIDCClaims, error) {
 	return auth.OIDCClaims{}, nil
 }
+func (stubOIDCAuth) EndSessionURL() (string, bool) { return "", false }
 
 // recordingMux satisfies router.Mux by logging every pattern instead
 // of routing requests. Patterns are normalized to "METHOD /path" with

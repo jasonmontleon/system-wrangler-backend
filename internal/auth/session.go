@@ -92,6 +92,11 @@ type TokenClaims struct {
 	// Nonce field above. Empty on every other purpose.
 	State    string `json:"ost,omitempty"`
 	Verifier string `json:"pkv,omitempty"`
+	// OIDC marks a session-purpose token whose login came in via single
+	// sign-on. Logout uses it to decide whether to also end the upstream
+	// IdP session (RP-initiated logout); local-password sessions just
+	// clear the cookie.
+	OIDC bool `json:"oidc,omitempty"`
 }
 
 type tokenPayload struct {

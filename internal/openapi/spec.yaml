@@ -268,9 +268,24 @@ paths:
     post:
       tags: [auth]
       summary: Clear the session cookie. Idempotent.
+      description: |
+        Clears the local session. For a session that was established via
+        OIDC single sign-on, returns 200 with a logoutUrl the SPA should
+        navigate to so the upstream IdP session is ended too (RP-initiated
+        logout); otherwise returns 204.
       security: []
       responses:
-        "204": { description: Logged out. }
+        "200":
+          description: Logged out; navigate to logoutUrl to end the IdP session.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [logoutUrl]
+                properties:
+                  logoutUrl:
+                    type: string
+        "204": { description: Logged out (local session only). }
 
   /api/auth/oidc/login:
     get:

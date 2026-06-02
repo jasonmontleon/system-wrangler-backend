@@ -109,7 +109,7 @@ func (s *Service) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 		s.failOIDC(w, r, "user resolution failed")
 		return
 	}
-	if err := s.issueCookie(w, r, u.ID); err != nil {
+	if err := s.issueCookie(w, r, u.ID, true); err != nil {
 		s.failOIDC(w, r, "session failed")
 		slog.Error("auth oidc cookie", "err", err)
 		return

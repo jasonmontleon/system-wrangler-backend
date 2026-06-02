@@ -230,6 +230,75 @@ func TestOIDCExchangeHappyPath(t *testing.T) {
 	}
 }
 
+func TestEndSessionURL(t *testing.T) {
+	mux := http.NewServeMux()
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"issuer":                 srv.URL,
+			"authorization_endpoint": srv.URL + "/auth",
+			"token_endpoint":         srv.URL + "/token",
+			"jwks_uri":               srv.URL + "/jwks",
+			"end_session_endpoint":   srv.URL + "/logout",
+		})
+	})
+	provider, err := oidc.NewProvider(context.Background(), srv.URL)
+	if err != nil {
+		t.Fatalf("NewProvider: %v", err)
+	}
+	a := NewOIDCAuthenticator(provider, &OIDCConfig{
+		ClientID:    "client-1",
+		RedirectURL: "https://app.example.com:8443/api/auth/oidc/callback",
+		Scopes:      []string{"openid"},
+	})
+
+	got, ok := a.EndSessionURL()
+	if !ok {
+		t.Fatal("EndSessionURL ok=false, want true when end_session_endpoint is advertised")
+	}
+	if !strings.HasPrefix(got, srv.URL+"/logout?") {
+		t.Errorf("EndSessionURL = %q, want it to start with %q", got, srv.URL+"/logout?")
+	}
+	u, err := url.Parse(got)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if u.Query().Get("client_id") != "client-1" {
+		t.Errorf("client_id = %q", u.Query().Get("client_id"))
+	}
+	if u.Query().Get("post_logout_redirect_uri") != "https://app.example.com:8443/" {
+		t.Errorf("post_logout_redirect_uri = %q, want app origin", u.Query().Get("post_logout_redirect_uri"))
+	}
+}
+
+func TestEndSessionURLUnsupported(t *testing.T) {
+	srv := discoveryServer(t, nil) // discovery doc has no end_session_endpoint
+	provider, err := oidc.NewProvider(context.Background(), srv.URL)
+	if err != nil {
+		t.Fatalf("NewProvider: %v", err)
+	}
+	a := NewOIDCAuthenticator(provider, &OIDCConfig{ClientID: "c", RedirectURL: "https://app/cb"})
+	if _, ok := a.EndSessionURL(); ok {
+		t.Error("EndSessionURL ok=true, want false when provider advertises none")
+	}
+}
+
+func TestOriginOf(t *testing.T) {
+	tests := []struct{ in, want string }{
+		{"https://app.example.com:8443/api/auth/oidc/callback", "https://app.example.com:8443/"},
+		{"http://localhost:8080/cb", "http://localhost:8080/"},
+		{"", ""},
+		{"/relative/only", ""},
+		{"::not-a-url", ""},
+	}
+	for _, tt := range tests {
+		if got := originOf(tt.in); got != tt.want {
+			t.Errorf("originOf(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
 func TestOIDCExchangeTokenEndpointError(t *testing.T) {
 	srv := discoveryServer(t, func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "bad request", http.StatusBadRequest)
