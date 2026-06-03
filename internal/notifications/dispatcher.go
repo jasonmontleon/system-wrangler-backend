@@ -46,24 +46,60 @@ func (d *Dispatcher) timeout() time.Duration {
 	return DefaultSendTimeout
 }
 
-// Emit fans each transition out to every enabled channel. It returns
-// promptly: each send runs in a detached goroutine with its own timeout
-// so a slow channel can't stall the evaluator tick.
+// Emit fans each transition out to the channels its rule routes to. It
+// returns promptly: each send runs in a detached goroutine with its own
+// timeout so a slow channel can't stall the evaluator tick. The enabled
+// set and per-rule routing are read once and cached for the batch.
 func (d *Dispatcher) Emit(_ context.Context, transitions []alerts.Transition) {
-	channels, err := d.Store.ListEnabled()
+	enabled, err := d.Store.ListEnabled()
 	if err != nil {
 		slog.Error("notifications: list enabled channels", "err", err)
 		return
 	}
-	if len(channels) == 0 {
+	if len(enabled) == 0 {
 		return
 	}
+	byID := make(map[string]Channel, len(enabled))
+	for _, c := range enabled {
+		byID[c.ID] = c
+	}
+	routingCache := make(map[string]Routing)
 	for _, tr := range transitions {
+		routing, ok := routingCache[tr.Rule.ID]
+		if !ok {
+			routing, err = d.Store.GetRouting(tr.Rule.ID)
+			if err != nil {
+				slog.Error("notifications: get routing", "err", err, "rule_id", tr.Rule.ID)
+				routing = Routing{Mode: RouteModeAll}
+			}
+			routingCache[tr.Rule.ID] = routing
+		}
+		targets := targetsFor(routing, enabled, byID)
+		if len(targets) == 0 {
+			continue
+		}
 		msg := d.message(tr)
-		for _, c := range channels {
+		for _, c := range targets {
 			go d.deliver(c, tr, msg) //nolint:gosec // detached on purpose: delivery outlives the tick
 		}
 	}
+}
+
+// targetsFor resolves a rule's routing to the enabled channels that
+// should receive its transitions. All-mode delivers to every enabled
+// channel; selected-mode delivers to the chosen ids that are still
+// enabled (silently skipping disabled or deleted ones).
+func targetsFor(routing Routing, enabled []Channel, byID map[string]Channel) []Channel {
+	if routing.Mode != RouteModeSelected {
+		return enabled
+	}
+	out := make([]Channel, 0, len(routing.ChannelIDs))
+	for _, id := range routing.ChannelIDs {
+		if c, ok := byID[id]; ok {
+			out = append(out, c)
+		}
+	}
+	return out
 }
 
 // deliver sends one message to one channel and records the outcome.

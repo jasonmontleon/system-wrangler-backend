@@ -19,11 +19,35 @@ import (
 // failStore wraps a real store but forces chosen methods to error.
 type failStore struct {
 	Store
-	failList       bool
-	failUpdate     bool
-	failDelete     bool
-	failDeliveries bool
-	failEnabled    bool
+	failList        bool
+	failUpdate      bool
+	failDelete      bool
+	failDeliveries  bool
+	failEnabled     bool
+	failListRouting bool
+	failSetRouting  bool
+	failGetRouting  bool
+}
+
+func (f failStore) ListRouting() ([]Routing, error) {
+	if f.failListRouting {
+		return nil, errors.New("boom")
+	}
+	return f.Store.ListRouting()
+}
+
+func (f failStore) SetRouting(ruleID string, in RoutingInput) error {
+	if f.failSetRouting {
+		return errors.New("boom")
+	}
+	return f.Store.SetRouting(ruleID, in)
+}
+
+func (f failStore) GetRouting(ruleID string) (Routing, error) {
+	if f.failGetRouting {
+		return Routing{}, errors.New("boom")
+	}
+	return f.Store.GetRouting(ruleID)
 }
 
 func (f failStore) ListEnabled() ([]Channel, error) {
@@ -113,6 +137,34 @@ func TestHandlerDeliveriesStoreError(t *testing.T) {
 	resp := req(t, http.MethodGet, srv.URL+"/api/notifications/deliveries", "")
 	if resp.StatusCode != http.StatusInternalServerError {
 		t.Errorf("deliveries error should 500, got %d", resp.StatusCode)
+	}
+	_ = resp.Body.Close()
+}
+
+func TestHandlerListRoutingStoreError(t *testing.T) {
+	srv := errFixture(t, failStore{Store: newTestStore(t), failListRouting: true})
+	resp := req(t, http.MethodGet, srv.URL+"/api/notifications/routing", "")
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Errorf("list routing error should 500, got %d", resp.StatusCode)
+	}
+	_ = resp.Body.Close()
+}
+
+func TestHandlerSetRoutingStoreError(t *testing.T) {
+	srv := errFixture(t, failStore{Store: newTestStore(t), failSetRouting: true})
+	resp := req(t, http.MethodPut, srv.URL+"/api/notifications/routing/rule-1", `{"mode":"all"}`)
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Errorf("set routing error should 500, got %d", resp.StatusCode)
+	}
+	_ = resp.Body.Close()
+}
+
+func TestHandlerSetRoutingGetError(t *testing.T) {
+	// SetRouting succeeds but the follow-up read fails → 500.
+	srv := errFixture(t, failStore{Store: newTestStore(t), failGetRouting: true})
+	resp := req(t, http.MethodPut, srv.URL+"/api/notifications/routing/rule-1", `{"mode":"all"}`)
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Errorf("get-after-set error should 500, got %d", resp.StatusCode)
 	}
 	_ = resp.Body.Close()
 }

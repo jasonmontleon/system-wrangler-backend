@@ -63,6 +63,20 @@ CREATE TABLE IF NOT EXISTS notification_deliveries (
 ) STRICT;
 
 CREATE INDEX IF NOT EXISTS notification_deliveries_at ON notification_deliveries(at);
+
+CREATE TABLE IF NOT EXISTS alert_rule_routing (
+    rule_id TEXT PRIMARY KEY,
+    mode    TEXT NOT NULL
+) STRICT;
+
+CREATE TABLE IF NOT EXISTS alert_rule_route_channels (
+    rule_id    TEXT NOT NULL,
+    channel_id TEXT NOT NULL,
+    PRIMARY KEY (rule_id, channel_id)
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS alert_rule_route_channels_channel
+    ON alert_rule_route_channels(channel_id);
 `
 
 const channelColumns = `id, name, type, enabled, config,
@@ -216,14 +230,27 @@ func (s *SQLiteStore) Update(id string, in ChannelInput) (Channel, error) {
 }
 
 // Delete removes a channel. Its delivery history is kept (denormalized),
-// so an operator can still audit what a since-deleted channel sent.
+// so an operator can still audit what a since-deleted channel sent. The
+// channel is also dropped from every rule's routing selection in the same
+// transaction so no rule routes to a channel that no longer exists.
 func (s *SQLiteStore) Delete(id string) error {
-	res, err := s.db.Exec(`DELETE FROM notification_channels WHERE id = ?`, id)
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("notifications: delete begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	res, err := tx.Exec(`DELETE FROM notification_channels WHERE id = ?`, id)
 	if err != nil {
 		return fmt.Errorf("notifications: delete: %w", err)
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
 		return ErrNotFound
+	}
+	if _, err := tx.Exec(`DELETE FROM alert_rule_route_channels WHERE channel_id = ?`, id); err != nil {
+		return fmt.Errorf("notifications: delete route memberships: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("notifications: delete commit: %w", err)
 	}
 	return nil
 }
@@ -286,6 +313,120 @@ func (s *SQLiteStore) ListDeliveries(limit int) ([]Delivery, error) {
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("notifications: list deliveries rows: %w", err)
+	}
+	return out, nil
+}
+
+// GetRouting returns the routing for one rule. When the rule has no mode
+// row it reports the default all-channels routing rather than an error.
+func (s *SQLiteStore) GetRouting(ruleID string) (Routing, error) {
+	var mode string
+	err := s.db.QueryRow(`SELECT mode FROM alert_rule_routing WHERE rule_id = ?`, ruleID).Scan(&mode)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Routing{RuleID: ruleID, Mode: RouteModeAll}, nil
+	}
+	if err != nil {
+		return Routing{}, fmt.Errorf("notifications: get routing: %w", err)
+	}
+	r := Routing{RuleID: ruleID, Mode: RouteMode(mode)}
+	if r.Mode == RouteModeSelected {
+		ids, err := s.routeChannelIDs(ruleID)
+		if err != nil {
+			return Routing{}, err
+		}
+		r.ChannelIDs = ids
+	}
+	return r, nil
+}
+
+func (s *SQLiteStore) routeChannelIDs(ruleID string) ([]string, error) {
+	rows, err := s.db.Query(
+		`SELECT channel_id FROM alert_rule_route_channels WHERE rule_id = ? ORDER BY channel_id`, ruleID)
+	if err != nil {
+		return nil, fmt.Errorf("notifications: route channels: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	out := []string{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("notifications: scan route channel: %w", err)
+		}
+		out = append(out, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("notifications: route channels rows: %w", err)
+	}
+	return out, nil
+}
+
+// SetRouting upserts a rule's mode and replaces its channel set in one
+// transaction. An all-mode input clears the channel rows.
+func (s *SQLiteStore) SetRouting(ruleID string, in RoutingInput) error {
+	if ruleID == "" {
+		return fmt.Errorf("%w: ruleId is required", ErrInvalid)
+	}
+	if err := in.Validate(); err != nil {
+		return err
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("notifications: set routing begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.Exec(
+		`INSERT INTO alert_rule_routing (rule_id, mode) VALUES (?, ?)
+		 ON CONFLICT(rule_id) DO UPDATE SET mode = excluded.mode`,
+		ruleID, string(in.Mode),
+	); err != nil {
+		return fmt.Errorf("notifications: upsert routing mode: %w", err)
+	}
+	if _, err := tx.Exec(`DELETE FROM alert_rule_route_channels WHERE rule_id = ?`, ruleID); err != nil {
+		return fmt.Errorf("notifications: clear route channels: %w", err)
+	}
+	for _, cid := range in.ChannelIDs {
+		if _, err := tx.Exec(
+			`INSERT INTO alert_rule_route_channels (rule_id, channel_id) VALUES (?, ?)`, ruleID, cid,
+		); err != nil {
+			return fmt.Errorf("notifications: insert route channel: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("notifications: set routing commit: %w", err)
+	}
+	return nil
+}
+
+// ListRouting returns every rule with an explicit routing row, each with
+// its selected channel ids (empty for all-mode rows).
+func (s *SQLiteStore) ListRouting() ([]Routing, error) {
+	rows, err := s.db.Query(`SELECT rule_id, mode FROM alert_rule_routing ORDER BY rule_id`)
+	if err != nil {
+		return nil, fmt.Errorf("notifications: list routing: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	out := []Routing{}
+	for rows.Next() {
+		var r Routing
+		var mode string
+		if err := rows.Scan(&r.RuleID, &mode); err != nil {
+			return nil, fmt.Errorf("notifications: scan routing: %w", err)
+		}
+		r.Mode = RouteMode(mode)
+		out = append(out, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("notifications: list routing rows: %w", err)
+	}
+	for i := range out {
+		if out[i].Mode != RouteModeSelected {
+			continue
+		}
+		ids, err := s.routeChannelIDs(out[i].RuleID)
+		if err != nil {
+			return nil, err
+		}
+		out[i].ChannelIDs = ids
 	}
 	return out, nil
 }

@@ -22,4 +22,15 @@ type Store interface {
 	// ListDeliveries returns the most recent attempts first, capped at
 	// limit (<= 0 means a sane default applied by the store).
 	ListDeliveries(limit int) ([]Delivery, error)
+
+	// GetRouting returns the routing for a rule. A rule with no stored
+	// routing yields {Mode: RouteModeAll} (never ErrNotFound) so the
+	// dispatcher's default is "deliver to every enabled channel."
+	GetRouting(ruleID string) (Routing, error)
+	// SetRouting upserts a rule's routing, replacing its channel set
+	// atomically. An all-mode input clears any stored channel selection.
+	SetRouting(ruleID string, in RoutingInput) error
+	// ListRouting returns every rule that has an explicit (non-default)
+	// routing row, for the routing matrix.
+	ListRouting() ([]Routing, error)
 }

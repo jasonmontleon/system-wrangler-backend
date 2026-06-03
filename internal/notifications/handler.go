@@ -47,6 +47,8 @@ func (h *Handler) Register(mux router.Mux, mw func(http.Handler) http.Handler) {
 	mux.Handle("DELETE /api/notifications/channels/{id}", mw(http.HandlerFunc(h.delete)))
 	mux.Handle("POST /api/notifications/channels/{id}/test", mw(http.HandlerFunc(h.test)))
 	mux.Handle("GET /api/notifications/deliveries", mw(http.HandlerFunc(h.deliveries)))
+	mux.Handle("GET /api/notifications/routing", mw(http.HandlerFunc(h.listRouting)))
+	mux.Handle("PUT /api/notifications/routing/{ruleId}", mw(http.HandlerFunc(h.setRouting)))
 }
 
 func (h *Handler) gate(w http.ResponseWriter, r *http.Request) bool {
@@ -230,6 +232,53 @@ func (h *Handler) deliveries(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, ds)
+}
+
+func (h *Handler) listRouting(w http.ResponseWriter, r *http.Request) {
+	if !h.gate(w, r) {
+		return
+	}
+	rs, err := h.Store.ListRouting()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "list routing failed")
+		slog.Error("notifications list routing", "err", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, rs)
+}
+
+func (h *Handler) setRouting(w http.ResponseWriter, r *http.Request) {
+	if !h.gate(w, r) {
+		return
+	}
+	ruleID := r.PathValue("ruleId")
+	var in RoutingInput
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&in); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+	if err := h.Store.SetRouting(ruleID, in); err != nil {
+		if errors.Is(err, ErrInvalid) {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "set routing failed")
+		slog.Error("notifications set routing", "err", err)
+		return
+	}
+	out, err := h.Store.GetRouting(ruleID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "get routing failed")
+		slog.Error("notifications get routing", "err", err)
+		return
+	}
+	h.logAudit(r.Context(), audit.Event{
+		Action: "notification_routing.update", Outcome: audit.Success,
+		TargetKind: "alert_rule_routing", TargetID: ruleID, TargetLabel: string(out.Mode),
+	})
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (h *Handler) writeGetErr(w http.ResponseWriter, err error) {

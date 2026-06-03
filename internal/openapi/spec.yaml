@@ -3184,6 +3184,56 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
 
+  /api/notifications/routing:
+    get:
+      tags: [notifications]
+      summary: Per-rule channel routing, explicit rows only (Global Admin).
+      description: |
+        Returns the routing for every rule that has been explicitly
+        routed. A rule absent from this list uses the default — its
+        transitions go to every enabled channel.
+      responses:
+        "200":
+          description: Explicit routing rows.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/RuleRouting"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/notifications/routing/{ruleId}:
+    put:
+      tags: [notifications]
+      summary: Set one rule's channel routing (Global Admin).
+      description: |
+        Sets whether a rule delivers to all enabled channels or to a
+        selected subset. Mode `all` (the default) ignores `channelIds`;
+        mode `selected` delivers only to the listed channels that are
+        still enabled. An empty selection delivers to no channel (the
+        alert still shows on the dashboard). Reset to default with
+        `{"mode":"all"}`.
+      parameters:
+        - { in: path, name: ruleId, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RuleRoutingInput"
+      responses:
+        "200":
+          description: The stored routing after the update.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RuleRouting"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
   /api/metrics/query:
     get:
       tags: [metrics]
@@ -3979,6 +4029,36 @@ components:
       properties:
         ok: { type: boolean }
         error: { type: string }
+
+    RuleRouting:
+      type: object
+      required: [ruleId, mode, channelIds]
+      properties:
+        ruleId: { type: string }
+        mode:
+          type: string
+          enum: [all, selected]
+          description: |
+            `all` delivers to every enabled channel (the default for a
+            rule with no stored routing); `selected` delivers only to the
+            channels in `channelIds` that are still enabled.
+        channelIds:
+          type: array
+          items: { type: string }
+          nullable: true
+          description: Selected channel ids; null/empty in `all` mode.
+
+    RuleRoutingInput:
+      type: object
+      required: [mode]
+      properties:
+        mode:
+          type: string
+          enum: [all, selected]
+        channelIds:
+          type: array
+          items: { type: string }
+          description: Channels to route to in `selected` mode; ignored in `all` mode.
 
     Exclusion:
       type: object
