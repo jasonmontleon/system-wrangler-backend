@@ -23,6 +23,8 @@ RUN dnf update -y \
  && case "$ARCH" in \
         x86_64)  GOARCH=amd64 ;; \
         aarch64) GOARCH=arm64 ;; \
+        s390x)   GOARCH=s390x ;; \
+        ppc64le) GOARCH=ppc64le ;; \
         *) echo "unsupported arch: $ARCH" >&2; exit 1 ;; \
     esac \
  && curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-${GOARCH}.tar.gz" \
