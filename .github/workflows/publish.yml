@@ -170,6 +170,8 @@ jobs:
       - name: Build image for scan
         run: |
           docker buildx build \
+            --pull \
+            --no-cache \
             --build-context frontend=_frontend \
             --tag system-wrangler:ci \
             --load \
@@ -186,6 +188,8 @@ jobs:
       - name: Build frontend-build stage
         run: |
           docker buildx build \
+            --pull \
+            --no-cache \
             --build-context frontend=_frontend \
             --target frontend-build \
             --tag system-wrangler-frontend-build:ci \
@@ -372,5 +376,7 @@ jobs:
             BUILD_DATE=${{ steps.build-args.outputs.build_date }}
           platforms: ${{ steps.platforms.outputs.platforms }}
           push: true
+          pull: true
+          no-cache: true
           tags: ${{ steps.tags.outputs.tags }}
           provenance: false
