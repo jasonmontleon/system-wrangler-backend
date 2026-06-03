@@ -46,43 +46,72 @@ func (d *Dispatcher) timeout() time.Duration {
 	return DefaultSendTimeout
 }
 
-// Emit fans each transition out to the channels its rule routes to. It
-// returns promptly: each send runs in a detached goroutine with its own
-// timeout so a slow channel can't stall the evaluator tick. The enabled
-// set and per-rule routing are read once and cached for the batch.
+// Emit applies the delivery policy to each transition, then fans the ones
+// that should go out now to the channels their rule routes to. It returns
+// promptly: each send runs in a detached goroutine with its own timeout so
+// a slow channel can't stall the evaluator tick. The enabled set, policy,
+// and per-rule routing are read once and cached for the batch.
+//
+// Per severity, the policy mode decides the path: dashboard severities are
+// recorded as suppressed and never sent; quiet severities are deferred
+// (queued for the flusher) while the clock is inside a quiet window and
+// delivered immediately otherwise; always severities ignore quiet hours.
 func (d *Dispatcher) Emit(_ context.Context, transitions []alerts.Transition) {
 	enabled, err := d.Store.ListEnabled()
 	if err != nil {
 		slog.Error("notifications: list enabled channels", "err", err)
 		return
 	}
-	if len(enabled) == 0 {
-		return
+	byID := indexByID(enabled)
+	policy, err := d.Store.GetPolicy()
+	if err != nil {
+		slog.Error("notifications: get policy", "err", err)
+		policy = DefaultPolicy()
 	}
-	byID := make(map[string]Channel, len(enabled))
-	for _, c := range enabled {
-		byID[c.ID] = c
-	}
+	quiet := policy.InQuietHours(d.now())
 	routingCache := make(map[string]Routing)
 	for _, tr := range transitions {
-		routing, ok := routingCache[tr.Rule.ID]
-		if !ok {
-			routing, err = d.Store.GetRouting(tr.Rule.ID)
-			if err != nil {
-				slog.Error("notifications: get routing", "err", err, "rule_id", tr.Rule.ID)
-				routing = Routing{Mode: RouteModeAll}
-			}
-			routingCache[tr.Rule.ID] = routing
-		}
-		targets := targetsFor(routing, enabled, byID)
-		if len(targets) == 0 {
-			continue
-		}
 		msg := d.message(tr)
-		for _, c := range targets {
-			go d.deliver(c, tr, msg) //nolint:gosec // detached on purpose: delivery outlives the tick
+		switch policy.ModeFor(string(tr.Rule.Severity)) {
+		case ModeDashboard:
+			d.recordStatus(msg, DeliverySuppressed)
+			continue
+		case ModeQuiet:
+			if quiet {
+				d.enqueue(tr, msg)
+				continue
+			}
+		case ModeAlways:
+			// fall through to immediate delivery
+		}
+		for _, c := range d.routedTargets(tr.Rule.ID, enabled, byID, routingCache) {
+			go d.deliver(c, msg) //nolint:gosec // detached on purpose: delivery outlives the tick
 		}
 	}
+}
+
+// routedTargets resolves a rule's routing (cached) to the enabled channels
+// that should receive it.
+func (d *Dispatcher) routedTargets(ruleID string, enabled []Channel, byID map[string]Channel, cache map[string]Routing) []Channel {
+	routing, ok := cache[ruleID]
+	if !ok {
+		var err error
+		routing, err = d.Store.GetRouting(ruleID)
+		if err != nil {
+			slog.Error("notifications: get routing", "err", err, "rule_id", ruleID)
+			routing = Routing{Mode: RouteModeAll}
+		}
+		cache[ruleID] = routing
+	}
+	return targetsFor(routing, enabled, byID)
+}
+
+func indexByID(channels []Channel) map[string]Channel {
+	byID := make(map[string]Channel, len(channels))
+	for _, c := range channels {
+		byID[c.ID] = c
+	}
+	return byID
 }
 
 // targetsFor resolves a rule's routing to the enabled channels that
@@ -102,8 +131,33 @@ func targetsFor(routing Routing, enabled []Channel, byID map[string]Channel) []C
 	return out
 }
 
-// deliver sends one message to one channel and records the outcome.
-func (d *Dispatcher) deliver(c Channel, tr alerts.Transition, msg Message) {
+// enqueue defers a transition for the flusher and records a deferred row.
+func (d *Dispatcher) enqueue(tr alerts.Transition, msg Message) {
+	if _, err := d.Store.EnqueuePending(PendingDelivery{
+		RuleID: tr.Rule.ID, RuleName: tr.Rule.Name, SystemID: tr.SystemID,
+		Severity: string(tr.Rule.Severity), Kind: string(tr.Kind), Message: msg, EnqueuedAt: d.now(),
+	}); err != nil {
+		slog.Error("notifications: enqueue pending", "err", err)
+		return
+	}
+	d.recordStatus(msg, DeliveryDeferred)
+}
+
+// recordStatus logs a channel-less delivery row (suppressed or deferred)
+// so the policy's effect on a transition is visible in the delivery log.
+func (d *Dispatcher) recordStatus(msg Message, status DeliveryStatus) {
+	if _, err := d.Store.RecordDelivery(Delivery{
+		Kind: msg.Kind, RuleName: msg.RuleName, SystemID: msg.SystemID,
+		Status: status, At: d.now(),
+	}); err != nil {
+		slog.Error("notifications: record delivery", "err", err)
+	}
+}
+
+// deliver sends one message to one channel and records the outcome. The
+// message carries the kind/rule/system fields the delivery row needs, so
+// it serves both immediate sends and flushed deferred ones.
+func (d *Dispatcher) deliver(c Channel, msg Message) {
 	ctx, cancel := context.WithTimeout(context.Background(), d.timeout())
 	defer cancel()
 	status, errStr := DeliverySuccess, ""
@@ -113,7 +167,7 @@ func (d *Dispatcher) deliver(c Channel, tr alerts.Transition, msg Message) {
 	}
 	if _, err := d.Store.RecordDelivery(Delivery{
 		ChannelID: c.ID, ChannelName: c.Name, ChannelType: c.Type,
-		Kind: string(tr.Kind), RuleName: tr.Rule.Name, SystemID: tr.SystemID,
+		Kind: msg.Kind, RuleName: msg.RuleName, SystemID: msg.SystemID,
 		Status: status, Error: errStr, At: d.now(),
 	}); err != nil {
 		slog.Error("notifications: record delivery", "err", err)

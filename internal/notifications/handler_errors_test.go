@@ -27,6 +27,8 @@ type failStore struct {
 	failListRouting bool
 	failSetRouting  bool
 	failGetRouting  bool
+	failGetPolicy   bool
+	failSetPolicy   bool
 }
 
 func (f failStore) ListRouting() ([]Routing, error) {
@@ -48,6 +50,20 @@ func (f failStore) GetRouting(ruleID string) (Routing, error) {
 		return Routing{}, errors.New("boom")
 	}
 	return f.Store.GetRouting(ruleID)
+}
+
+func (f failStore) GetPolicy() (Policy, error) {
+	if f.failGetPolicy {
+		return Policy{}, errors.New("boom")
+	}
+	return f.Store.GetPolicy()
+}
+
+func (f failStore) SetPolicy(in PolicyInput) error {
+	if f.failSetPolicy {
+		return errors.New("boom")
+	}
+	return f.Store.SetPolicy(in)
 }
 
 func (f failStore) ListEnabled() ([]Channel, error) {
@@ -165,6 +181,33 @@ func TestHandlerSetRoutingGetError(t *testing.T) {
 	resp := req(t, http.MethodPut, srv.URL+"/api/notifications/routing/rule-1", `{"mode":"all"}`)
 	if resp.StatusCode != http.StatusInternalServerError {
 		t.Errorf("get-after-set error should 500, got %d", resp.StatusCode)
+	}
+	_ = resp.Body.Close()
+}
+
+func TestHandlerGetPolicyStoreError(t *testing.T) {
+	srv := errFixture(t, failStore{Store: newTestStore(t), failGetPolicy: true})
+	resp := req(t, http.MethodGet, srv.URL+"/api/notifications/policy", "")
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Errorf("get policy error should 500, got %d", resp.StatusCode)
+	}
+	_ = resp.Body.Close()
+}
+
+func TestHandlerSetPolicyStoreError(t *testing.T) {
+	srv := errFixture(t, failStore{Store: newTestStore(t), failSetPolicy: true})
+	resp := req(t, http.MethodPut, srv.URL+"/api/notifications/policy", `{"timezone":"UTC"}`)
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Errorf("set policy error should 500, got %d", resp.StatusCode)
+	}
+	_ = resp.Body.Close()
+}
+
+func TestHandlerSetPolicyGetError(t *testing.T) {
+	srv := errFixture(t, failStore{Store: newTestStore(t), failGetPolicy: true})
+	resp := req(t, http.MethodPut, srv.URL+"/api/notifications/policy", `{"timezone":"UTC"}`)
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Errorf("get-after-set policy error should 500, got %d", resp.StatusCode)
 	}
 	_ = resp.Body.Close()
 }

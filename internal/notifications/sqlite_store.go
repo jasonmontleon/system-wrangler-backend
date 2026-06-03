@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"system-wrangler-backend/internal/secrets"
@@ -77,6 +78,24 @@ CREATE TABLE IF NOT EXISTS alert_rule_route_channels (
 
 CREATE INDEX IF NOT EXISTS alert_rule_route_channels_channel
     ON alert_rule_route_channels(channel_id);
+
+CREATE TABLE IF NOT EXISTS notification_policy (
+    id     INTEGER PRIMARY KEY CHECK (id = 1),
+    config TEXT NOT NULL
+) STRICT;
+
+CREATE TABLE IF NOT EXISTS notification_pending (
+    id          TEXT PRIMARY KEY,
+    rule_id     TEXT NOT NULL,
+    rule_name   TEXT NOT NULL,
+    system_id   TEXT NOT NULL,
+    severity    TEXT NOT NULL,
+    kind        TEXT NOT NULL,
+    message     TEXT NOT NULL,
+    enqueued_at INTEGER NOT NULL
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS notification_pending_enqueued ON notification_pending(enqueued_at);
 `
 
 const channelColumns = `id, name, type, enabled, config,
@@ -429,6 +448,116 @@ func (s *SQLiteStore) ListRouting() ([]Routing, error) {
 		out[i].ChannelIDs = ids
 	}
 	return out, nil
+}
+
+// GetPolicy returns the singleton delivery policy, or DefaultPolicy when
+// none has been stored yet.
+func (s *SQLiteStore) GetPolicy() (Policy, error) {
+	var cfg string
+	err := s.db.QueryRow(`SELECT config FROM notification_policy WHERE id = 1`).Scan(&cfg)
+	if errors.Is(err, sql.ErrNoRows) {
+		return DefaultPolicy(), nil
+	}
+	if err != nil {
+		return Policy{}, fmt.Errorf("notifications: get policy: %w", err)
+	}
+	var p Policy
+	if err := json.Unmarshal([]byte(cfg), &p); err != nil {
+		return Policy{}, fmt.Errorf("notifications: unmarshal policy: %w", err)
+	}
+	return p, nil
+}
+
+// SetPolicy validates and upserts the singleton policy row.
+func (s *SQLiteStore) SetPolicy(in PolicyInput) error {
+	if err := in.Validate(); err != nil {
+		return err
+	}
+	cfg, err := json.Marshal(in)
+	if err != nil {
+		return fmt.Errorf("notifications: marshal policy: %w", err)
+	}
+	if _, err := s.db.Exec(
+		`INSERT INTO notification_policy (id, config) VALUES (1, ?)
+		 ON CONFLICT(id) DO UPDATE SET config = excluded.config`, string(cfg),
+	); err != nil {
+		return fmt.Errorf("notifications: set policy: %w", err)
+	}
+	return nil
+}
+
+// EnqueuePending appends a deferred delivery row.
+func (s *SQLiteStore) EnqueuePending(d PendingDelivery) (PendingDelivery, error) {
+	if d.ID == "" {
+		d.ID = s.NewID()
+	}
+	if d.EnqueuedAt.IsZero() {
+		d.EnqueuedAt = s.Now().UTC()
+	}
+	msg, err := json.Marshal(d.Message)
+	if err != nil {
+		return PendingDelivery{}, fmt.Errorf("notifications: marshal pending message: %w", err)
+	}
+	if _, err := s.db.Exec(
+		`INSERT INTO notification_pending
+		   (id, rule_id, rule_name, system_id, severity, kind, message, enqueued_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		d.ID, d.RuleID, d.RuleName, d.SystemID, d.Severity, d.Kind, string(msg), d.EnqueuedAt.UnixNano(),
+	); err != nil {
+		return PendingDelivery{}, fmt.Errorf("notifications: enqueue pending: %w", err)
+	}
+	return d, nil
+}
+
+// ListPending returns deferred deliveries oldest first.
+func (s *SQLiteStore) ListPending() ([]PendingDelivery, error) {
+	rows, err := s.db.Query(
+		`SELECT id, rule_id, rule_name, system_id, severity, kind, message, enqueued_at
+		 FROM notification_pending ORDER BY enqueued_at, id`)
+	if err != nil {
+		return nil, fmt.Errorf("notifications: list pending: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	out := []PendingDelivery{}
+	for rows.Next() {
+		var (
+			d    PendingDelivery
+			msg  string
+			atNs int64
+		)
+		if err := rows.Scan(
+			&d.ID, &d.RuleID, &d.RuleName, &d.SystemID, &d.Severity, &d.Kind, &msg, &atNs,
+		); err != nil {
+			return nil, fmt.Errorf("notifications: scan pending: %w", err)
+		}
+		if err := json.Unmarshal([]byte(msg), &d.Message); err != nil {
+			return nil, fmt.Errorf("notifications: unmarshal pending message: %w", err)
+		}
+		d.EnqueuedAt = time.Unix(0, atNs).UTC()
+		out = append(out, d)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("notifications: list pending rows: %w", err)
+	}
+	return out, nil
+}
+
+// DeletePending removes the given pending ids.
+func (s *SQLiteStore) DeletePending(ids []string) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		args[i] = id
+	}
+	//nolint:gosec // G202: the concatenated text is only "?" placeholders; the ids are bound parameters.
+	query := `DELETE FROM notification_pending WHERE id IN (` + placeholders + `)`
+	if _, err := s.db.Exec(query, args...); err != nil {
+		return fmt.Errorf("notifications: delete pending: %w", err)
+	}
+	return nil
 }
 
 type rowScanner interface {

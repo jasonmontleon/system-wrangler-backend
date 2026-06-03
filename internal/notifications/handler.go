@@ -49,6 +49,8 @@ func (h *Handler) Register(mux router.Mux, mw func(http.Handler) http.Handler) {
 	mux.Handle("GET /api/notifications/deliveries", mw(http.HandlerFunc(h.deliveries)))
 	mux.Handle("GET /api/notifications/routing", mw(http.HandlerFunc(h.listRouting)))
 	mux.Handle("PUT /api/notifications/routing/{ruleId}", mw(http.HandlerFunc(h.setRouting)))
+	mux.Handle("GET /api/notifications/policy", mw(http.HandlerFunc(h.getPolicy)))
+	mux.Handle("PUT /api/notifications/policy", mw(http.HandlerFunc(h.setPolicy)))
 }
 
 func (h *Handler) gate(w http.ResponseWriter, r *http.Request) bool {
@@ -277,6 +279,52 @@ func (h *Handler) setRouting(w http.ResponseWriter, r *http.Request) {
 	h.logAudit(r.Context(), audit.Event{
 		Action: "notification_routing.update", Outcome: audit.Success,
 		TargetKind: "alert_rule_routing", TargetID: ruleID, TargetLabel: string(out.Mode),
+	})
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (h *Handler) getPolicy(w http.ResponseWriter, r *http.Request) {
+	if !h.gate(w, r) {
+		return
+	}
+	p, err := h.Store.GetPolicy()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "get policy failed")
+		slog.Error("notifications get policy", "err", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, p)
+}
+
+func (h *Handler) setPolicy(w http.ResponseWriter, r *http.Request) {
+	if !h.gate(w, r) {
+		return
+	}
+	var in PolicyInput
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&in); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+	if err := h.Store.SetPolicy(in); err != nil {
+		if errors.Is(err, ErrInvalid) {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "set policy failed")
+		slog.Error("notifications set policy", "err", err)
+		return
+	}
+	out, err := h.Store.GetPolicy()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "get policy failed")
+		slog.Error("notifications get policy", "err", err)
+		return
+	}
+	h.logAudit(r.Context(), audit.Event{
+		Action: "notification_policy.update", Outcome: audit.Success,
+		TargetKind: "notification_policy", TargetID: "policy", TargetLabel: out.Timezone,
 	})
 	writeJSON(w, http.StatusOK, out)
 }

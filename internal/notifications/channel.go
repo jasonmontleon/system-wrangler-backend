@@ -285,6 +285,12 @@ type DeliveryStatus string
 const (
 	DeliverySuccess DeliveryStatus = "success"
 	DeliveryFailed  DeliveryStatus = "failed"
+	// DeliverySuppressed marks a transition that policy kept off the
+	// channels entirely (a dashboard-only severity).
+	DeliverySuppressed DeliveryStatus = "suppressed"
+	// DeliveryDeferred marks a transition queued during quiet hours, to be
+	// flushed to channels when the window ends.
+	DeliveryDeferred DeliveryStatus = "deferred"
 )
 
 // Delivery is one historical send attempt, denormalized so it survives
@@ -300,6 +306,21 @@ type Delivery struct {
 	Status      DeliveryStatus `json:"status"`
 	Error       string         `json:"error,omitempty"`
 	At          time.Time      `json:"at"`
+}
+
+// PendingDelivery is one transition deferred during quiet hours, holding
+// the snapshot Message so the flusher can deliver it verbatim when the
+// window ends. Channels are re-resolved from the rule's current routing at
+// flush time, not stored here.
+type PendingDelivery struct {
+	ID         string
+	RuleID     string
+	RuleName   string
+	SystemID   string
+	Severity   string
+	Kind       string // fired | resolved
+	Message    Message
+	EnqueuedAt time.Time
 }
 
 func newUUID() string {

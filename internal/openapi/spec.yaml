@@ -3234,6 +3234,45 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
 
+  /api/notifications/policy:
+    get:
+      tags: [notifications]
+      summary: Global delivery policy — severity modes + quiet hours (Global Admin).
+      responses:
+        "200":
+          description: The delivery policy (defaults applied when none is stored).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotificationPolicy"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    put:
+      tags: [notifications]
+      summary: Replace the global delivery policy (Global Admin).
+      description: |
+        Sets the per-severity delivery mode (`dashboard` = never sent to
+        channels, `quiet` = deferred while in a quiet window then flushed,
+        `always` = sent immediately) and the quiet-hours schedule (a list
+        of windows under one IANA timezone). Quiet hours never gate the
+        dashboard.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/NotificationPolicyInput"
+      responses:
+        "200":
+          description: The stored policy after the update.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotificationPolicy"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
   /api/metrics/query:
     get:
       tags: [metrics]
@@ -4059,6 +4098,54 @@ components:
           type: array
           items: { type: string }
           description: Channels to route to in `selected` mode; ignored in `all` mode.
+
+    QuietWindow:
+      type: object
+      required: [days, start, end]
+      properties:
+        days:
+          type: array
+          items: { type: integer, minimum: 0, maximum: 6 }
+          description: Weekdays the window applies to (0=Sunday); empty = every day.
+        start:
+          type: string
+          description: Window start "HH:MM" in the policy timezone.
+        end:
+          type: string
+          description: Window end "HH:MM"; an end earlier than start wraps past midnight.
+
+    NotificationPolicy:
+      type: object
+      required: [timezone, windows, severities]
+      properties:
+        timezone:
+          type: string
+          description: IANA timezone the quiet windows are evaluated in.
+        windows:
+          type: array
+          items:
+            $ref: "#/components/schemas/QuietWindow"
+        severities:
+          type: object
+          additionalProperties:
+            type: string
+            enum: [dashboard, quiet, always]
+          description: Per-severity (info/warning/critical) delivery mode.
+
+    NotificationPolicyInput:
+      type: object
+      required: [timezone, windows, severities]
+      properties:
+        timezone: { type: string }
+        windows:
+          type: array
+          items:
+            $ref: "#/components/schemas/QuietWindow"
+        severities:
+          type: object
+          additionalProperties:
+            type: string
+            enum: [dashboard, quiet, always]
 
     Exclusion:
       type: object

@@ -33,4 +33,18 @@ type Store interface {
 	// ListRouting returns every rule that has an explicit (non-default)
 	// routing row, for the routing matrix.
 	ListRouting() ([]Routing, error)
+
+	// GetPolicy returns the global delivery policy, or DefaultPolicy when
+	// none is stored (never ErrNotFound).
+	GetPolicy() (Policy, error)
+	// SetPolicy validates and upserts the singleton delivery policy.
+	SetPolicy(in PolicyInput) error
+
+	// EnqueuePending appends a deferred delivery. The store fills id +
+	// timestamp when zero.
+	EnqueuePending(d PendingDelivery) (PendingDelivery, error)
+	// ListPending returns deferred deliveries oldest first.
+	ListPending() ([]PendingDelivery, error)
+	// DeletePending removes the given pending ids (no-op for an empty list).
+	DeletePending(ids []string) error
 }

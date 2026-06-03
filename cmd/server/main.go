@@ -1013,6 +1013,8 @@ func populateMux(runCtx context.Context, mux router.Mux, db *sql.DB, store syste
 			SystemName: systemName,
 		}
 		alertSink = dispatcher
+		// Release deferred (quiet-hours) deliveries once their window ends.
+		go (&notifications.Flusher{Dispatcher: dispatcher}).Run(runCtx)
 		notificationHandler := &notifications.Handler{
 			Store:      notificationStore,
 			Audit:      auditStore,
