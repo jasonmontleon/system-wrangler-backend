@@ -1,6 +1,6 @@
 module system-wrangler-backend
 
-go 1.25.11
+go 1.26.4
 
 require (
 	github.com/coreos/go-oidc/v3 v3.18.0
