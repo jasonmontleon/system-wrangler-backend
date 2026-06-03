@@ -321,7 +321,7 @@ jobs:
         if: github.server_url == 'https://github.com'
         uses: docker/setup-qemu-action@v3
         with:
-          platforms: arm64,riscv64,s390x,ppc64le
+          platforms: arm64,s390x,ppc64le
 
       - name: Set up Docker Buildx
         if: github.server_url == 'https://github.com'
@@ -332,7 +332,7 @@ jobs:
         run: |
           set -euo pipefail
           if [ "${{ github.server_url }}" = "https://github.com" ]; then
-            echo "platforms=linux/amd64,linux/arm64,linux/riscv64,linux/s390x,linux/ppc64le" >> "$GITHUB_OUTPUT"
+            echo "platforms=linux/amd64,linux/arm64,linux/s390x,linux/ppc64le" >> "$GITHUB_OUTPUT"
           else
             arch=$(uname -m | sed -e 's/x86_64/amd64/' -e 's/aarch64/arm64/')
             echo "platforms=linux/${arch}" >> "$GITHUB_OUTPUT"
