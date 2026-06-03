@@ -47,4 +47,24 @@ type Store interface {
 	ListPending() ([]PendingDelivery, error)
 	// DeletePending removes the given pending ids (no-op for an empty list).
 	DeletePending(ids []string) error
+
+	// Per-user (personal) delivery path. Every method is owner-scoped to
+	// userID; a row owned by another user is invisible (ErrNotFound).
+	CreateUserChannel(userID string, in ChannelInput) (Channel, error)
+	GetUserChannel(userID, id string) (Channel, error)
+	ListUserChannels(userID string) ([]Channel, error)
+	ListEnabledUserChannels(userID string) ([]Channel, error)
+	UpdateUserChannel(userID, id string, in ChannelInput) (Channel, error)
+	DeleteUserChannel(userID, id string) error
+
+	GetSubscription(userID string) (Subscription, error)
+	SetSubscription(userID string, in Subscription) error
+	// ListSubscriptions returns every stored subscription (for the resolver).
+	ListSubscriptions() ([]UserSubscription, error)
+
+	GetUserPolicy(userID string) (Policy, error)
+	SetUserPolicy(userID string, in PolicyInput) error
+
+	// ListUserDeliveries returns one user's personal delivery log.
+	ListUserDeliveries(userID string, limit int) ([]Delivery, error)
 }

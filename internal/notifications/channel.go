@@ -306,6 +306,9 @@ type Delivery struct {
 	Status      DeliveryStatus `json:"status"`
 	Error       string         `json:"error,omitempty"`
 	At          time.Time      `json:"at"`
+	// UserID is empty for shared/global deliveries and set for a personal
+	// (per-user) channel delivery, scoping the per-user delivery log.
+	UserID string `json:"-"`
 }
 
 // PendingDelivery is one transition deferred during quiet hours, holding

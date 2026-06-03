@@ -174,9 +174,21 @@ func (d *Dispatcher) deliver(c Channel, msg Message) {
 	}
 }
 
-// Test sends a synthetic notification through one channel synchronously
-// and records it, returning the send error so the caller can report it.
+// Test sends a synthetic notification through one shared channel.
 func (d *Dispatcher) Test(ctx context.Context, c Channel) error {
+	return d.runTest(ctx, c, "")
+}
+
+// TestForUser sends a synthetic notification through one of a user's
+// personal channels, recording the attempt against that user's log.
+func (d *Dispatcher) TestForUser(ctx context.Context, c Channel, userID string) error {
+	return d.runTest(ctx, c, userID)
+}
+
+// runTest sends a synthetic notification through one channel synchronously
+// and records it, returning the send error so the caller can report it.
+// userID is empty for a shared channel and set for a personal one.
+func (d *Dispatcher) runTest(ctx context.Context, c Channel, userID string) error {
 	msg := Message{
 		Subject: "[TEST] System Wrangler notification: " + c.Name,
 		Body:    "This is a test notification from System Wrangler. If you received it, the channel is configured correctly.",
@@ -189,7 +201,7 @@ func (d *Dispatcher) Test(ctx context.Context, c Channel) error {
 	}
 	if _, recErr := d.Store.RecordDelivery(Delivery{
 		ChannelID: c.ID, ChannelName: c.Name, ChannelType: c.Type,
-		Kind: "test", RuleName: "(test)", Status: status, Error: errStr, At: d.now(),
+		Kind: "test", RuleName: "(test)", Status: status, Error: errStr, At: d.now(), UserID: userID,
 	}); recErr != nil {
 		slog.Error("notifications: record test delivery", "err", recErr)
 	}

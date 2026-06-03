@@ -1025,6 +1025,15 @@ func populateMux(runCtx context.Context, mux router.Mux, db *sql.DB, store syste
 			},
 		}
 		notificationHandler.Register(mux, requireUser)
+
+		// Self-service per-user delivery: personal channels, subscription,
+		// and policy, each scoped to the signed-in user.
+		meHandler := &notifications.MeHandler{
+			Store:      notificationStore,
+			Audit:      auditStore,
+			Dispatcher: dispatcher,
+		}
+		meHandler.Register(mux, requireUser)
 	}
 
 	alertEvaluator := &alerts.Evaluator{

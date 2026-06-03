@@ -32,7 +32,28 @@ func NewSQLiteStore(db *sql.DB) (*SQLiteStore, error) {
 	if _, err := db.Exec(schema); err != nil {
 		return nil, fmt.Errorf("notifications: schema: %w", err)
 	}
+	// notification_deliveries predates the per-user path; add user_id to
+	// existing installs (fresh ones get it from the CREATE above). SQLite
+	// has no ADD COLUMN IF NOT EXISTS, so probe first.
+	if err := addColumnIfMissing(db, "notification_deliveries", "user_id",
+		`ALTER TABLE notification_deliveries ADD COLUMN user_id TEXT NOT NULL DEFAULT ''`); err != nil {
+		return nil, fmt.Errorf("notifications: migrate deliveries: %w", err)
+	}
 	return &SQLiteStore{db: db, NewID: newUUID, Now: time.Now}, nil
+}
+
+func addColumnIfMissing(db *sql.DB, table, column, alter string) error {
+	row := db.QueryRow(`SELECT 1 FROM pragma_table_info(?) WHERE name = ?`, table, column)
+	var found int
+	switch err := row.Scan(&found); {
+	case err == nil:
+		return nil // already present
+	case errors.Is(err, sql.ErrNoRows):
+		_, err := db.Exec(alter)
+		return err
+	default:
+		return err
+	}
 }
 
 const schema = `
@@ -60,10 +81,39 @@ CREATE TABLE IF NOT EXISTS notification_deliveries (
     system_id    TEXT NOT NULL,
     status       TEXT NOT NULL,
     error        TEXT,
-    at           INTEGER NOT NULL
+    at           INTEGER NOT NULL,
+    user_id      TEXT NOT NULL DEFAULT ''
 ) STRICT;
 
 CREATE INDEX IF NOT EXISTS notification_deliveries_at ON notification_deliveries(at);
+CREATE INDEX IF NOT EXISTS notification_deliveries_user ON notification_deliveries(user_id);
+
+CREATE TABLE IF NOT EXISTS user_notification_channels (
+    id                TEXT PRIMARY KEY,
+    user_id           TEXT NOT NULL,
+    name              TEXT NOT NULL,
+    type              TEXT NOT NULL,
+    enabled           INTEGER NOT NULL,
+    config            TEXT NOT NULL,
+    secret_ciphertext BLOB,
+    secret_nonce      BLOB,
+    secret_version    INTEGER,
+    created_by        TEXT NOT NULL,
+    created_at        INTEGER NOT NULL,
+    updated_at        INTEGER NOT NULL
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS user_notification_channels_user ON user_notification_channels(user_id);
+
+CREATE TABLE IF NOT EXISTS user_alert_subscription (
+    user_id TEXT PRIMARY KEY,
+    config  TEXT NOT NULL
+) STRICT;
+
+CREATE TABLE IF NOT EXISTS user_notification_policy (
+    user_id TEXT PRIMARY KEY,
+    config  TEXT NOT NULL
+) STRICT;
 
 CREATE TABLE IF NOT EXISTS alert_rule_routing (
     rule_id TEXT PRIMARY KEY,
@@ -179,8 +229,8 @@ func (s *SQLiteStore) ListEnabled() ([]Channel, error) {
 	return s.queryChannels(`SELECT ` + channelColumns + ` FROM notification_channels WHERE enabled = 1 ORDER BY created_at, id`)
 }
 
-func (s *SQLiteStore) queryChannels(query string) ([]Channel, error) {
-	rows, err := s.db.Query(query)
+func (s *SQLiteStore) queryChannels(query string, args ...any) ([]Channel, error) {
+	rows, err := s.db.Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("notifications: list: %w", err)
 	}
@@ -284,25 +334,41 @@ func (s *SQLiteStore) RecordDelivery(d Delivery) (Delivery, error) {
 	}
 	if _, err := s.db.Exec(
 		`INSERT INTO notification_deliveries
-		   (id, channel_id, channel_name, channel_type, kind, rule_name, system_id, status, error, at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		   (id, channel_id, channel_name, channel_type, kind, rule_name, system_id, status, error, at, user_id)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		d.ID, d.ChannelID, d.ChannelName, string(d.ChannelType), d.Kind, d.RuleName,
-		d.SystemID, string(d.Status), nullString(d.Error), d.At.UnixNano(),
+		d.SystemID, string(d.Status), nullString(d.Error), d.At.UnixNano(), d.UserID,
 	); err != nil {
 		return Delivery{}, fmt.Errorf("notifications: record delivery: %w", err)
 	}
 	return d, nil
 }
 
-// ListDeliveries returns the most recent attempts first.
+const deliverySelect = `SELECT id, channel_id, channel_name, channel_type, kind, rule_name, system_id, status, error, at
+	 FROM notification_deliveries`
+
+// ListDeliveries returns the most recent shared (non-personal) attempts
+// first. Personal deliveries are scoped out — see ListUserDeliveries.
 func (s *SQLiteStore) ListDeliveries(limit int) ([]Delivery, error) {
+	return s.queryDeliveries(
+		deliverySelect+` WHERE user_id = '' ORDER BY at DESC, id DESC LIMIT ?`, clampLimit(limit))
+}
+
+// ListUserDeliveries returns the most recent personal attempts for one user.
+func (s *SQLiteStore) ListUserDeliveries(userID string, limit int) ([]Delivery, error) {
+	return s.queryDeliveries(
+		deliverySelect+` WHERE user_id = ? ORDER BY at DESC, id DESC LIMIT ?`, userID, clampLimit(limit))
+}
+
+func clampLimit(limit int) int {
 	if limit <= 0 {
-		limit = defaultDeliveryLimit
+		return defaultDeliveryLimit
 	}
-	rows, err := s.db.Query(
-		`SELECT id, channel_id, channel_name, channel_type, kind, rule_name, system_id, status, error, at
-		 FROM notification_deliveries ORDER BY at DESC, id DESC LIMIT ?`, limit,
-	)
+	return limit
+}
+
+func (s *SQLiteStore) queryDeliveries(query string, args ...any) ([]Delivery, error) {
+	rows, err := s.db.Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("notifications: list deliveries: %w", err)
 	}

@@ -3273,6 +3273,188 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
 
+  /api/notifications/me/channels:
+    get:
+      tags: [notifications]
+      summary: List the caller's personal delivery channels.
+      responses:
+        "200":
+          description: The caller's channels.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/NotificationChannel"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      tags: [notifications]
+      summary: Create a personal delivery channel for the caller.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/NotificationChannelInput"
+      responses:
+        "201":
+          description: Channel created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotificationChannel"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/notifications/me/channels/{id}:
+    get:
+      tags: [notifications]
+      summary: Get one of the caller's personal channels.
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: The channel.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotificationChannel"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [notifications]
+      summary: Update one of the caller's personal channels.
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/NotificationChannelInput"
+      responses:
+        "200":
+          description: The updated channel.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotificationChannel"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [notifications]
+      summary: Delete one of the caller's personal channels.
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+      responses:
+        "204": { description: Deleted. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/notifications/me/channels/{id}/test:
+    post:
+      tags: [notifications]
+      summary: Send a test notification through one of the caller's channels.
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: Test attempt result.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChannelTestResult"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "503":
+          description: Notifications runtime not wired (no secrets vault).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/notifications/me/subscription:
+    get:
+      tags: [notifications]
+      summary: Get the caller's alert subscription.
+      responses:
+        "200":
+          description: The subscription (disabled default when none is set).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotificationSubscription"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    put:
+      tags: [notifications]
+      summary: Set the caller's alert subscription.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/NotificationSubscription"
+      responses:
+        "200":
+          description: The stored subscription.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotificationSubscription"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/notifications/me/policy:
+    get:
+      tags: [notifications]
+      summary: Get the caller's personal delivery policy.
+      responses:
+        "200":
+          description: The personal policy (defaults when none is set).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotificationPolicy"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    put:
+      tags: [notifications]
+      summary: Set the caller's personal delivery policy.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/NotificationPolicyInput"
+      responses:
+        "200":
+          description: The stored personal policy.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotificationPolicy"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/notifications/me/deliveries:
+    get:
+      tags: [notifications]
+      summary: The caller's personal delivery log, most recent first.
+      parameters:
+        - in: query
+          name: limit
+          schema: { type: integer, minimum: 1 }
+      responses:
+        "200":
+          description: Personal delivery log.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/NotificationDelivery"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
   /api/metrics/query:
     get:
       tags: [metrics]
@@ -4146,6 +4328,24 @@ components:
           additionalProperties:
             type: string
             enum: [dashboard, quiet, always]
+
+    NotificationSubscription:
+      type: object
+      required: [enabled, groups, severities]
+      properties:
+        enabled:
+          type: boolean
+          description: Master switch — when false the user receives nothing on personal channels.
+        groups:
+          type: array
+          items: { type: string }
+          description: Group ids to receive alerts for; empty = every group the user can see.
+        severities:
+          type: array
+          items:
+            type: string
+            enum: [info, warning, critical]
+          description: Severities to receive; empty = all.
 
     Exclusion:
       type: object
