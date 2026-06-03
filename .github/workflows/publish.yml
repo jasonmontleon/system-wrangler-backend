@@ -19,10 +19,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache: true
+      - name: Install Go
+        run: |
+          set -euo pipefail
+          go_version=$(awk '/^go /{print $2; exit}' go.mod)
+          arch=$(uname -m | sed -e 's/x86_64/amd64/' -e 's/aarch64/arm64/')
+          mkdir -p "$HOME/sdk"
+          curl -fsSL "https://go.dev/dl/go${go_version}.linux-${arch}.tar.gz" \
+            | tar -C "$HOME/sdk" -xz
+          echo "$HOME/sdk/go/bin" >> "$GITHUB_PATH"
+          echo "$HOME/go/bin" >> "$GITHUB_PATH"
       - run: go build ./...
       - run: go vet ./...
       - name: gofmt
@@ -39,10 +45,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache: true
+      - name: Install Go
+        run: |
+          set -euo pipefail
+          go_version=$(awk '/^go /{print $2; exit}' go.mod)
+          arch=$(uname -m | sed -e 's/x86_64/amd64/' -e 's/aarch64/arm64/')
+          mkdir -p "$HOME/sdk"
+          curl -fsSL "https://go.dev/dl/go${go_version}.linux-${arch}.tar.gz" \
+            | tar -C "$HOME/sdk" -xz
+          echo "$HOME/sdk/go/bin" >> "$GITHUB_PATH"
+          echo "$HOME/go/bin" >> "$GITHUB_PATH"
       - run: go test ./... -race -timeout 30m
 
   coverage-gate:
@@ -50,10 +62,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache: true
+      - name: Install Go
+        run: |
+          set -euo pipefail
+          go_version=$(awk '/^go /{print $2; exit}' go.mod)
+          arch=$(uname -m | sed -e 's/x86_64/amd64/' -e 's/aarch64/arm64/')
+          mkdir -p "$HOME/sdk"
+          curl -fsSL "https://go.dev/dl/go${go_version}.linux-${arch}.tar.gz" \
+            | tar -C "$HOME/sdk" -xz
+          echo "$HOME/sdk/go/bin" >> "$GITHUB_PATH"
+          echo "$HOME/go/bin" >> "$GITHUB_PATH"
       - run: go test ./... -coverprofile=cover.out
       - name: Enforce ≥90% coverage
         run: |
@@ -71,10 +89,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache: true
+      - name: Install Go
+        run: |
+          set -euo pipefail
+          go_version=$(awk '/^go /{print $2; exit}' go.mod)
+          arch=$(uname -m | sed -e 's/x86_64/amd64/' -e 's/aarch64/arm64/')
+          mkdir -p "$HOME/sdk"
+          curl -fsSL "https://go.dev/dl/go${go_version}.linux-${arch}.tar.gz" \
+            | tar -C "$HOME/sdk" -xz
+          echo "$HOME/sdk/go/bin" >> "$GITHUB_PATH"
+          echo "$HOME/go/bin" >> "$GITHUB_PATH"
       - name: Install golangci-lint
         run: |
           mkdir -p "$HOME/bin"
@@ -88,10 +112,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache: true
+      - name: Install Go
+        run: |
+          set -euo pipefail
+          go_version=$(awk '/^go /{print $2; exit}' go.mod)
+          arch=$(uname -m | sed -e 's/x86_64/amd64/' -e 's/aarch64/arm64/')
+          mkdir -p "$HOME/sdk"
+          curl -fsSL "https://go.dev/dl/go${go_version}.linux-${arch}.tar.gz" \
+            | tar -C "$HOME/sdk" -xz
+          echo "$HOME/sdk/go/bin" >> "$GITHUB_PATH"
+          echo "$HOME/go/bin" >> "$GITHUB_PATH"
       - run: go install golang.org/x/vuln/cmd/govulncheck@latest
       - run: govulncheck ./...
 

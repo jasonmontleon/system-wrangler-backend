@@ -26,11 +26,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache: true
+      - name: Install Go
+        run: |
+          set -euo pipefail
+          go_version=$(awk '/^go /{print $2; exit}' go.mod)
+          arch=$(uname -m | sed -e 's/x86_64/amd64/' -e 's/aarch64/arm64/')
+          mkdir -p "$HOME/sdk"
+          curl -fsSL "https://go.dev/dl/go${go_version}.linux-${arch}.tar.gz" \
+            | tar -C "$HOME/sdk" -xz
+          echo "$HOME/sdk/go/bin" >> "$GITHUB_PATH"
+          echo "$HOME/go/bin" >> "$GITHUB_PATH"
 
       - name: Run tests with coverage
         run: go test ./... -coverprofile=cover.out
