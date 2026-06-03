@@ -40,6 +40,7 @@ import (
 	"system-wrangler-backend/internal/holds"
 	"system-wrangler-backend/internal/hostkeys"
 	"system-wrangler-backend/internal/labels"
+	"system-wrangler-backend/internal/notifications"
 	"system-wrangler-backend/internal/rbac"
 	"system-wrangler-backend/internal/schedules"
 	"system-wrangler-backend/internal/secrets"
@@ -149,6 +150,10 @@ func newTestMuxWithStores(t *testing.T) (http.Handler, *audit.Store, *rbac.SQLit
 	if err != nil {
 		t.Fatalf("alerts.NewSQLiteStore: %v", err)
 	}
+	notificationStore, err := notifications.NewSQLiteStore(db)
+	if err != nil {
+		t.Fatalf("notifications.NewSQLiteStore: %v", err)
+	}
 	// Build a real vault so populateMux's `if vault != nil` branches
 	// (credentials key materialise, scrape, secretscan, ansible runner)
 	// wire up. Without this the test mux has half the handlers missing
@@ -167,7 +172,7 @@ func newTestMuxWithStores(t *testing.T) (http.Handler, *audit.Store, *rbac.SQLit
 	svc.Vault = vault
 	svc.Sessions = authStore
 	hub := events.NewHub(nil)
-	return newMux(t.Context(), db, invStore, groupStore, authStore, svc, secret, vault, hub, auditStore, rbacStore, credStore, hostKeyStore, updaterStore, exporterStore, settingsStore, exclusionStore, holdsStore, labelStore, labelStyleStore, dashboardLayoutStore, scheduleStore, alertStore, nil, nil), auditStore, rbacStore
+	return newMux(t.Context(), db, invStore, groupStore, authStore, svc, secret, vault, hub, auditStore, rbacStore, credStore, hostKeyStore, updaterStore, exporterStore, settingsStore, exclusionStore, holdsStore, labelStore, labelStyleStore, dashboardLayoutStore, scheduleStore, alertStore, notificationStore, nil, nil), auditStore, rbacStore
 }
 
 func TestHandleHealth(t *testing.T) {

@@ -3050,6 +3050,140 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
 
+  /api/notifications/channels:
+    get:
+      tags: [notifications]
+      summary: List delivery channels (Global Admin). Secrets are redacted.
+      responses:
+        "200":
+          description: Configured channels.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/NotificationChannel"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      tags: [notifications]
+      summary: Create a delivery channel (Global Admin).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/NotificationChannelInput"
+      responses:
+        "201":
+          description: Channel created. `Location` carries `/api/notifications/channels/{id}`.
+          headers:
+            Location:
+              schema: { type: string }
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotificationChannel"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/notifications/channels/{id}:
+    get:
+      tags: [notifications]
+      summary: One channel by id, secret redacted.
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: The channel.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotificationChannel"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [notifications]
+      summary: Replace a channel (Global Admin). Omit `secret` to keep the stored one.
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/NotificationChannelInput"
+      responses:
+        "200":
+          description: Updated channel.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotificationChannel"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [notifications]
+      summary: Delete a channel (Global Admin). Its delivery history is retained.
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+      responses:
+        "204": { description: Channel deleted. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/notifications/channels/{id}/test:
+    post:
+      tags: [notifications]
+      summary: Send a synthetic test notification through one channel (Global Admin).
+      description: |
+        Delivers a test message synchronously and reports the result. A
+        delivery row is recorded so the attempt appears in the log.
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: Test attempt result (ok plus an error string on failure).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChannelTestResult"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "503":
+          description: Notifications runtime not wired (no secrets vault).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/notifications/deliveries:
+    get:
+      tags: [notifications]
+      summary: Recent delivery attempts, most recent first (Global Admin).
+      parameters:
+        - in: query
+          name: limit
+          schema: { type: integer, minimum: 1 }
+          description: Max rows to return (server-capped to 100 by default).
+      responses:
+        "200":
+          description: Delivery log.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/NotificationDelivery"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
   /api/metrics/query:
     get:
       tags: [metrics]
@@ -3757,6 +3891,94 @@ components:
           enum: [gt, gte, lt, lte]
         threshold: { type: number }
         systemName: { type: string }
+
+    NotificationChannelConfig:
+      type: object
+      description: |
+        Non-secret, type-specific settings. Only the fields relevant to
+        the channel's type are populated. The secret (SMTP password, Slack
+        webhook URL, webhook auth-header value, SMS auth token) is never
+        included here or anywhere in a response.
+      properties:
+        smtpHost: { type: string }
+        smtpPort: { type: integer }
+        username: { type: string }
+        startTLS: { type: boolean }
+        skipVerify: { type: boolean }
+        from: { type: string }
+        to:
+          type: array
+          items: { type: string }
+        url: { type: string }
+        method: { type: string, enum: [POST, PUT] }
+        headerName: { type: string }
+        baseURL: { type: string }
+        accountSID: { type: string }
+
+    NotificationChannel:
+      type: object
+      required: [id, name, type, enabled, config, hasSecret, createdBy, createdAt, updatedAt]
+      properties:
+        id: { type: string }
+        name: { type: string, maxLength: 255 }
+        type:
+          type: string
+          enum: [email, slack, webhook, sms]
+        enabled: { type: boolean }
+        config:
+          $ref: "#/components/schemas/NotificationChannelConfig"
+        hasSecret:
+          type: boolean
+          description: Whether a sealed secret is stored for this channel.
+        createdBy: { type: string }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    NotificationChannelInput:
+      type: object
+      required: [name, type]
+      properties:
+        name: { type: string, maxLength: 255 }
+        type:
+          type: string
+          enum: [email, slack, webhook, sms]
+        enabled: { type: boolean }
+        config:
+          $ref: "#/components/schemas/NotificationChannelConfig"
+        secret:
+          type: string
+          description: |
+            Plaintext secret, sealed server-side. Required on create for
+            slack/sms; optional for email/webhook. On update, omit or leave
+            empty to keep the stored secret.
+
+    NotificationDelivery:
+      type: object
+      required: [id, channelId, channelName, channelType, kind, ruleName, systemId, status, at]
+      properties:
+        id: { type: string }
+        channelId: { type: string }
+        channelName: { type: string }
+        channelType:
+          type: string
+          enum: [email, slack, webhook, sms]
+        kind:
+          type: string
+          description: '"fired", "resolved", or "test".'
+        ruleName: { type: string }
+        systemId: { type: string }
+        status:
+          type: string
+          enum: [success, failed]
+        error: { type: string }
+        at: { type: string, format: date-time }
+
+    ChannelTestResult:
+      type: object
+      required: [ok]
+      properties:
+        ok: { type: boolean }
+        error: { type: string }
 
     Exclusion:
       type: object

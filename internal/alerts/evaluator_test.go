@@ -252,6 +252,57 @@ func TestEvaluateContinuesPastRuleError(t *testing.T) {
 	ev.EvaluateOnce(context.Background()) // must not panic
 }
 
+type recordingSink struct{ batches [][]Transition }
+
+func (s *recordingSink) Emit(_ context.Context, ts []Transition) {
+	s.batches = append(s.batches, ts)
+}
+
+func TestEvaluatorEmitsFiredThenResolved(t *testing.T) {
+	st := newTestStore(t)
+	createRule(t, st, func(in *RuleInput) { in.ForSeconds = 0 })
+	inv := fakeSysStore{systems: []systems.System{{ID: "a", Status: systems.StatusReachable}}}
+	q := &fakeQuerier{values: map[string]float64{"a": 95}}
+	sink := &recordingSink{}
+	ev := &Evaluator{Store: st, Querier: q, Systems: inv, Labels: fakeLabelStore{}, Sink: sink}
+
+	ev.EvaluateOnce(context.Background())
+	if len(sink.batches) != 1 || len(sink.batches[0]) != 1 || sink.batches[0][0].Kind != TransitionFired {
+		t.Fatalf("expected one fired transition, got %+v", sink.batches)
+	}
+	if sink.batches[0][0].SystemID != "a" || sink.batches[0][0].Value != 95 {
+		t.Errorf("fired transition fields wrong: %+v", sink.batches[0][0])
+	}
+
+	// Breach clears → a resolved transition for the firing instance.
+	q.values = map[string]float64{}
+	ev.EvaluateOnce(context.Background())
+	last := sink.batches[len(sink.batches)-1]
+	if len(last) != 1 || last[0].Kind != TransitionResolved || last[0].SystemID != "a" {
+		t.Errorf("expected resolved transition, got %+v", last)
+	}
+}
+
+func TestEvaluatorPendingClearEmitsNoTransition(t *testing.T) {
+	st := newTestStore(t)
+	// for=120s so the breach stays pending; clearing it should not emit a
+	// resolved transition (nobody was ever notified).
+	createRule(t, st, func(in *RuleInput) { in.ForSeconds = 120 })
+	inv := fakeSysStore{systems: []systems.System{{ID: "a", Status: systems.StatusReachable}}}
+	q := &fakeQuerier{values: map[string]float64{"a": 95}}
+	sink := &recordingSink{}
+	ev := &Evaluator{Store: st, Querier: q, Systems: inv, Labels: fakeLabelStore{}, Sink: sink}
+
+	ev.EvaluateOnce(context.Background()) // pending, no transition
+	q.values = map[string]float64{}
+	ev.EvaluateOnce(context.Background()) // clears while pending
+	for _, b := range sink.batches {
+		if len(b) != 0 {
+			t.Errorf("pending lifecycle should emit no transitions, got %+v", b)
+		}
+	}
+}
+
 func TestEvaluateListEnabledError(_ *testing.T) {
 	ev := &Evaluator{Store: errStore{}, Systems: fakeSysStore{}, Labels: fakeLabelStore{}}
 	ev.EvaluateOnce(context.Background()) // must not panic on store error

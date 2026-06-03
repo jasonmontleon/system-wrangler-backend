@@ -30,11 +30,41 @@ type Evaluator struct {
 	// active set changes (instance created, fired, or resolved) so the
 	// SPA refetches. The same nudge pattern as systems.changed.
 	Hub *events.Hub
+	// Sink, if non-nil, receives the fired/resolved transitions from each
+	// evaluation so a downstream consumer (the notifications dispatcher)
+	// can deliver them. Bound in main.go; alerts does not import
+	// notifications.
+	Sink Sink
 	// Now overrides the clock for tests. Default time.Now.
 	Now func() time.Time
 }
 
 const eventAlertsChanged = "alerts.changed"
+
+// TransitionKind labels a state change worth delivering: a system began
+// firing, or a firing/pending system cleared.
+type TransitionKind string
+
+// TransitionKind values.
+const (
+	TransitionFired    TransitionKind = "fired"
+	TransitionResolved TransitionKind = "resolved"
+)
+
+// Transition is one deliverable state change for a (rule, system) pair.
+type Transition struct {
+	Rule     Rule
+	SystemID string
+	Value    float64
+	Kind     TransitionKind
+	At       time.Time
+}
+
+// Sink receives the fired/resolved transitions produced by an
+// evaluation. Implemented by the notifications dispatcher.
+type Sink interface {
+	Emit(ctx context.Context, transitions []Transition)
+}
 
 func (e *Evaluator) now() time.Time {
 	if e.Now != nil {
@@ -54,30 +84,36 @@ func (e *Evaluator) EvaluateOnce(ctx context.Context) {
 	}
 	now := e.now()
 	changed := false
+	var transitions []Transition
 	for _, r := range rules {
-		c, err := e.evaluateRule(ctx, r, now)
+		ts, c, err := e.evaluateRule(ctx, r, now)
 		if err != nil {
 			slog.Warn("alerts: evaluate rule", "err", err, "rule_id", r.ID, "name", r.Name)
 			continue
 		}
 		changed = changed || c
+		transitions = append(transitions, ts...)
 	}
 	if changed && e.Hub != nil {
 		e.Hub.Broadcast(events.Event{Type: eventAlertsChanged})
 	}
+	if len(transitions) > 0 && e.Sink != nil {
+		e.Sink.Emit(ctx, transitions)
+	}
 }
 
-// evaluateRule reconciles one rule. It reports whether the active set
-// changed (a membership add/remove or a pending→firing transition) so
-// the caller can decide whether to broadcast.
-func (e *Evaluator) evaluateRule(ctx context.Context, r Rule, now time.Time) (bool, error) {
+// evaluateRule reconciles one rule. It returns the fired/resolved
+// transitions worth delivering and whether the active set changed (which
+// also covers new-pending instances that produce no transition but still
+// warrant a hub nudge).
+func (e *Evaluator) evaluateRule(ctx context.Context, r Rule, now time.Time) ([]Transition, bool, error) {
 	breaching, err := e.breachingSystems(ctx, r)
 	if err != nil {
-		return false, err
+		return nil, false, err
 	}
 	existing, err := e.Store.InstancesForRule(r.ID)
 	if err != nil {
-		return false, fmt.Errorf("load instances: %w", err)
+		return nil, false, fmt.Errorf("load instances: %w", err)
 	}
 	byID := make(map[string]Instance, len(existing))
 	for _, inst := range existing {
@@ -86,6 +122,7 @@ func (e *Evaluator) evaluateRule(ctx context.Context, r Rule, now time.Time) (bo
 
 	forDur := time.Duration(r.ForSeconds) * time.Second
 	changed := false
+	var transitions []Transition
 
 	for sysID, value := range breaching {
 		inst, ok := byID[sysID]
@@ -102,9 +139,10 @@ func (e *Evaluator) evaluateRule(ctx context.Context, r Rule, now time.Time) (bo
 				inst.State = StateFiring
 				fired := now
 				inst.FiredAt = &fired
+				transitions = append(transitions, fireTransition(r, sysID, value, now))
 			}
 			if err := e.Store.PutInstance(inst); err != nil {
-				return changed, fmt.Errorf("put new instance: %w", err)
+				return transitions, changed, fmt.Errorf("put new instance: %w", err)
 			}
 			changed = true
 			continue
@@ -118,23 +156,35 @@ func (e *Evaluator) evaluateRule(ctx context.Context, r Rule, now time.Time) (bo
 			fired := now
 			inst.FiredAt = &fired
 			changed = true
+			transitions = append(transitions, fireTransition(r, sysID, value, now))
 		}
 		if err := e.Store.PutInstance(inst); err != nil {
-			return changed, fmt.Errorf("update instance: %w", err)
+			return transitions, changed, fmt.Errorf("update instance: %w", err)
 		}
 	}
 
-	// Resolve instances whose system is no longer breaching.
-	for sysID := range byID {
+	// Resolve instances whose system is no longer breaching. Only a
+	// firing instance produces a "resolved" transition — a pending one
+	// that clears never alerted anyone, so there's nothing to resolve.
+	for sysID, inst := range byID {
 		if _, still := breaching[sysID]; still {
 			continue
 		}
 		if err := e.Store.DeleteInstance(r.ID, sysID); err != nil {
-			return changed, fmt.Errorf("resolve instance: %w", err)
+			return transitions, changed, fmt.Errorf("resolve instance: %w", err)
 		}
 		changed = true
+		if inst.State == StateFiring {
+			transitions = append(transitions, Transition{
+				Rule: r, SystemID: sysID, Value: inst.Value, Kind: TransitionResolved, At: now,
+			})
+		}
 	}
-	return changed, nil
+	return transitions, changed, nil
+}
+
+func fireTransition(r Rule, sysID string, value float64, now time.Time) Transition {
+	return Transition{Rule: r, SystemID: sysID, Value: value, Kind: TransitionFired, At: now}
 }
 
 // breachingSystems returns the candidate systems currently in breach of

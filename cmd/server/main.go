@@ -42,6 +42,7 @@ import (
 	"system-wrangler-backend/internal/hostkeys"
 	"system-wrangler-backend/internal/labels"
 	"system-wrangler-backend/internal/metrics"
+	"system-wrangler-backend/internal/notifications"
 	"system-wrangler-backend/internal/openapi"
 	"system-wrangler-backend/internal/promtargets"
 	"system-wrangler-backend/internal/rbac"
@@ -205,6 +206,10 @@ func run(ctx context.Context, args []string, getenv func(string) string) error {
 	if err != nil {
 		return err
 	}
+	notificationStore, err := initStore(db, "notifications", notifications.NewSQLiteStore)
+	if err != nil {
+		return err
+	}
 	dashboardLayoutStoreForCleanup = dashboardLayoutStore
 	trustHeaderCfg, err := auth.LoadTrustHeaderConfig(getenv)
 	if err != nil {
@@ -282,7 +287,7 @@ func run(ctx context.Context, args []string, getenv func(string) string) error {
 		Handler: withRequestMeta(
 			withLogging(
 				auth.CSRF(auditStore)(
-					newMux(runCtx, db, store, groupStore, authStore, authSvc, secret, vault, hub, auditStore, rbacStore, credStore, hostKeyStore, updaterStore, exporterStore, settingsStore, exclusionStore, holdsStore, labelStore, labelStyleStore, dashboardLayoutStore, scheduleStore, alertStore, onCreate, broadcastSystemsChanged),
+					newMux(runCtx, db, store, groupStore, authStore, authSvc, secret, vault, hub, auditStore, rbacStore, credStore, hostKeyStore, updaterStore, exporterStore, settingsStore, exclusionStore, holdsStore, labelStore, labelStyleStore, dashboardLayoutStore, scheduleStore, alertStore, notificationStore, onCreate, broadcastSystemsChanged),
 				),
 			),
 		),
@@ -366,9 +371,9 @@ func run(ctx context.Context, args []string, getenv func(string) string) error {
 	return nil
 }
 
-func newMux(runCtx context.Context, db *sql.DB, store systems.Store, groupStore groups.Store, authStore *auth.SQLiteAuthStore, authSvc *auth.Service, secret []byte, vault *secrets.Vault, hub *events.Hub, auditStore *audit.Store, rbacStore rbac.Store, credStore credentials.Store, hostKeyStore hostkeys.Store, updaterStore updaters.Store, exporterStore exporters.Store, settingsStore settings.Store, exclusionStore exclusions.Store, holdsStore holds.Store, labelStore labels.Store, labelStyleStore labels.StyleStore, dashboardLayoutStore dashboardlayout.Store, scheduleStore schedules.Store, alertStore alerts.Store, onSystemCreate, onSystemDelete func()) *http.ServeMux {
+func newMux(runCtx context.Context, db *sql.DB, store systems.Store, groupStore groups.Store, authStore *auth.SQLiteAuthStore, authSvc *auth.Service, secret []byte, vault *secrets.Vault, hub *events.Hub, auditStore *audit.Store, rbacStore rbac.Store, credStore credentials.Store, hostKeyStore hostkeys.Store, updaterStore updaters.Store, exporterStore exporters.Store, settingsStore settings.Store, exclusionStore exclusions.Store, holdsStore holds.Store, labelStore labels.Store, labelStyleStore labels.StyleStore, dashboardLayoutStore dashboardlayout.Store, scheduleStore schedules.Store, alertStore alerts.Store, notificationStore *notifications.SQLiteStore, onSystemCreate, onSystemDelete func()) *http.ServeMux {
 	mux := http.NewServeMux()
-	populateMux(runCtx, mux, db, store, groupStore, authStore, authSvc, secret, vault, hub, auditStore, rbacStore, credStore, hostKeyStore, updaterStore, exporterStore, settingsStore, exclusionStore, holdsStore, labelStore, labelStyleStore, dashboardLayoutStore, scheduleStore, alertStore, onSystemCreate, onSystemDelete)
+	populateMux(runCtx, mux, db, store, groupStore, authStore, authSvc, secret, vault, hub, auditStore, rbacStore, credStore, hostKeyStore, updaterStore, exporterStore, settingsStore, exclusionStore, holdsStore, labelStore, labelStyleStore, dashboardLayoutStore, scheduleStore, alertStore, notificationStore, onSystemCreate, onSystemDelete)
 	return mux
 }
 
@@ -377,7 +382,7 @@ func newMux(runCtx context.Context, db *sql.DB, store systems.Store, groupStore 
 // that captures every (method, path) pattern without spinning up a real
 // *http.ServeMux. main.go and tests reach for newMux; only the drift
 // test needs this entry point.
-func populateMux(runCtx context.Context, mux router.Mux, db *sql.DB, store systems.Store, groupStore groups.Store, authStore *auth.SQLiteAuthStore, authSvc *auth.Service, secret []byte, vault *secrets.Vault, hub *events.Hub, auditStore *audit.Store, rbacStore rbac.Store, credStore credentials.Store, hostKeyStore hostkeys.Store, updaterStore updaters.Store, exporterStore exporters.Store, settingsStore settings.Store, exclusionStore exclusions.Store, holdsStore holds.Store, labelStore labels.Store, labelStyleStore labels.StyleStore, dashboardLayoutStore dashboardlayout.Store, scheduleStore schedules.Store, alertStore alerts.Store, onSystemCreate, onSystemDelete func()) {
+func populateMux(runCtx context.Context, mux router.Mux, db *sql.DB, store systems.Store, groupStore groups.Store, authStore *auth.SQLiteAuthStore, authSvc *auth.Service, secret []byte, vault *secrets.Vault, hub *events.Hub, auditStore *audit.Store, rbacStore rbac.Store, credStore credentials.Store, hostKeyStore hostkeys.Store, updaterStore updaters.Store, exporterStore exporters.Store, settingsStore settings.Store, exclusionStore exclusions.Store, holdsStore holds.Store, labelStore labels.Store, labelStyleStore labels.StyleStore, dashboardLayoutStore dashboardlayout.Store, scheduleStore schedules.Store, alertStore alerts.Store, notificationStore *notifications.SQLiteStore, onSystemCreate, onSystemDelete func()) {
 	// scheduleOrchestrator is lazy-bound inside the `if vault != nil`
 	// block below — without a vault, ansible can't run, so schedules
 	// can't fire either. When nil, the schedules handler still serves
@@ -986,12 +991,47 @@ func populateMux(runCtx context.Context, mux router.Mux, db *sql.DB, store syste
 	// querier's instant queries just fail and are logged) when the
 	// pipeline isn't wired. The interval is read live from settings each
 	// tick so a change takes effect without a restart.
+	systemName := func(systemID string) string {
+		if sys, err := store.Get(systemID); err == nil {
+			return sys.Name
+		}
+		return ""
+	}
+
+	// Notification delivery needs the vault to seal/open channel secrets,
+	// so it is wired only when secrets are available — mirroring
+	// credentials/secretscan. Without a vault, alerts still evaluate and
+	// surface on the Alerts page; they just aren't delivered anywhere. The
+	// dispatcher becomes the alert evaluator's transition Sink.
+	var alertSink alerts.Sink
+	if vault != nil {
+		notificationStore.Vault = vault
+		dispatcher := &notifications.Dispatcher{
+			Store:      notificationStore,
+			Vault:      vault,
+			Senders:    notifications.NewSenders(nil, nil),
+			SystemName: systemName,
+		}
+		alertSink = dispatcher
+		notificationHandler := &notifications.Handler{
+			Store:      notificationStore,
+			Audit:      auditStore,
+			Dispatcher: dispatcher,
+			CanManage: func(ctx context.Context) bool {
+				scope, ok := rbac.ScopeFromContext(ctx)
+				return ok && scope.IsGlobalAdmin()
+			},
+		}
+		notificationHandler.Register(mux, requireUser)
+	}
+
 	alertEvaluator := &alerts.Evaluator{
 		Store:   alertStore,
 		Querier: &alerts.PrometheusQuerier{BaseURL: envOr("SW_PROMETHEUS_URL", metrics.DefaultUpstreamURL)},
 		Systems: store,
 		Labels:  labelStore,
 		Hub:     hub,
+		Sink:    alertSink,
 	}
 	alertTicker := &alerts.Ticker{
 		Evaluator: alertEvaluator,
@@ -1044,12 +1084,7 @@ func populateMux(runCtx context.Context, mux router.Mux, db *sql.DB, store syste
 			}
 			return scope.CanReadSystem(sys.GroupID)
 		},
-		SystemName: func(systemID string) string {
-			if sys, err := store.Get(systemID); err == nil {
-				return sys.Name
-			}
-			return ""
-		},
+		SystemName: systemName,
 	}
 	alertHandler.Register(mux, requireUser)
 	openapi.Handler{}.Register(mux)
