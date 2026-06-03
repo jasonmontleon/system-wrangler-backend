@@ -23,7 +23,7 @@ jobs:
     name: Filesystem scan (go.mod)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install trivy
         run: |
@@ -50,10 +50,10 @@ jobs:
     # job needs to clone both repos before building.
     steps:
       - name: Checkout backend
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Checkout frontend
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           repository: ${{ github.repository_owner }}/system-wrangler-frontend
           path: _frontend
