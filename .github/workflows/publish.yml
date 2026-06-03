@@ -4,6 +4,10 @@ on:
   push:
     branches: [main]
     tags: ['v*']
+  schedule:
+    # 07:30 UTC = 03:30 America/New_York (EDT); 02:30 in winter (EST).
+    # Nightly rebuild re-runs every gate and republishes :latest only if they pass.
+    - cron: '30 7 * * *'
   workflow_dispatch:
 
 permissions:
