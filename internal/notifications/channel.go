@@ -324,6 +324,9 @@ type PendingDelivery struct {
 	Kind       string // fired | resolved
 	Message    Message
 	EnqueuedAt time.Time
+	// UserID is empty for a deferred shared delivery and set for a deferred
+	// personal one, so the flusher applies the right policy and channels.
+	UserID string
 }
 
 func newUUID() string {

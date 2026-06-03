@@ -27,9 +27,30 @@ type Dispatcher struct {
 	Senders Senders
 	// SystemName resolves a system id to a display name for the message;
 	// nil or an empty return falls back to the id.
-	SystemName  func(systemID string) string
+	SystemName func(systemID string) string
+	// Subscribers, if non-nil, resolves which users should receive an alert
+	// on their personal channels (subscription match + RBAC visibility).
+	// Nil disables the per-user delivery path entirely.
+	Subscribers SubscriberResolver
 	Now         func() time.Time
 	SendTimeout time.Duration
+}
+
+// SubscriberResolver returns the ids of users who should receive an alert
+// on systemID at the given severity — those whose subscription matches and
+// whose RBAC scope can see the system. Implemented in main.go over the
+// subscription store + systems + rbac; the dispatcher only sees user ids.
+type SubscriberResolver interface {
+	Subscribers(systemID, severity string) ([]string, error)
+}
+
+// SubscriberResolverFunc adapts a function to the SubscriberResolver
+// interface so main.go can wire the resolver as a closure.
+type SubscriberResolverFunc func(systemID, severity string) ([]string, error)
+
+// Subscribers implements SubscriberResolver.
+func (f SubscriberResolverFunc) Subscribers(systemID, severity string) ([]string, error) {
+	return f(systemID, severity)
 }
 
 func (d *Dispatcher) now() time.Time {
@@ -68,26 +89,103 @@ func (d *Dispatcher) Emit(_ context.Context, transitions []alerts.Transition) {
 		slog.Error("notifications: get policy", "err", err)
 		policy = DefaultPolicy()
 	}
-	quiet := policy.InQuietHours(d.now())
+	now := d.now()
+	quiet := policy.InQuietHours(now)
 	routingCache := make(map[string]Routing)
+	uc := newUserDispatch()
 	for _, tr := range transitions {
 		msg := d.message(tr)
-		switch policy.ModeFor(string(tr.Rule.Severity)) {
+		sev := string(tr.Rule.Severity)
+		// Shared path: the global policy + per-rule routing.
+		switch policy.ModeFor(sev) {
 		case ModeDashboard:
-			d.recordStatus(msg, DeliverySuppressed)
-			continue
+			d.recordStatus(msg, DeliverySuppressed, "")
 		case ModeQuiet:
 			if quiet {
-				d.enqueue(tr, msg)
+				d.enqueue(tr, msg, "")
+			} else {
+				d.fanOut(d.routedTargets(tr.Rule.ID, enabled, byID, routingCache), msg, "")
+			}
+		case ModeAlways:
+			d.fanOut(d.routedTargets(tr.Rule.ID, enabled, byID, routingCache), msg, "")
+		}
+		// Personal path: each subscribed user's own policy + channels.
+		d.dispatchPersonal(tr, msg, sev, now, uc)
+	}
+}
+
+// dispatchPersonal fans a transition out to each subscribed user's personal
+// channels, applying that user's own delivery policy independently of the
+// global one. A nil resolver disables the path.
+func (d *Dispatcher) dispatchPersonal(tr alerts.Transition, msg Message, sev string, now time.Time, uc *userDispatch) {
+	if d.Subscribers == nil {
+		return
+	}
+	users, err := d.Subscribers.Subscribers(tr.SystemID, sev)
+	if err != nil {
+		slog.Error("notifications: resolve subscribers", "err", err, "system_id", tr.SystemID)
+		return
+	}
+	for _, uid := range users {
+		pol := uc.policy(d, uid)
+		switch pol.ModeFor(sev) {
+		case ModeDashboard:
+			d.recordStatus(msg, DeliverySuppressed, uid)
+			continue
+		case ModeQuiet:
+			if pol.InQuietHours(now) {
+				d.enqueue(tr, msg, uid)
 				continue
 			}
 		case ModeAlways:
-			// fall through to immediate delivery
 		}
-		for _, c := range d.routedTargets(tr.Rule.ID, enabled, byID, routingCache) {
-			go d.deliver(c, msg) //nolint:gosec // detached on purpose: delivery outlives the tick
-		}
+		d.fanOut(uc.channels(d, uid), msg, uid)
 	}
+}
+
+// fanOut delivers msg to each channel in detached goroutines.
+func (d *Dispatcher) fanOut(channels []Channel, msg Message, userID string) {
+	for _, c := range channels {
+		go d.deliver(c, msg, userID) //nolint:gosec // detached on purpose: delivery outlives the tick
+	}
+}
+
+// userDispatch caches each user's policy and enabled channels for the
+// duration of one Emit batch, so a user appearing in several transitions
+// is loaded once.
+type userDispatch struct {
+	policies map[string]Policy
+	chans    map[string][]Channel
+}
+
+func newUserDispatch() *userDispatch {
+	return &userDispatch{policies: map[string]Policy{}, chans: map[string][]Channel{}}
+}
+
+func (u *userDispatch) policy(d *Dispatcher, uid string) Policy {
+	if p, ok := u.policies[uid]; ok {
+		return p
+	}
+	p, err := d.Store.GetUserPolicy(uid)
+	if err != nil {
+		slog.Error("notifications: get user policy", "err", err, "user_id", uid)
+		p = DefaultPolicy()
+	}
+	u.policies[uid] = p
+	return p
+}
+
+func (u *userDispatch) channels(d *Dispatcher, uid string) []Channel {
+	if c, ok := u.chans[uid]; ok {
+		return c
+	}
+	c, err := d.Store.ListEnabledUserChannels(uid)
+	if err != nil {
+		slog.Error("notifications: list user channels", "err", err, "user_id", uid)
+		c = nil
+	}
+	u.chans[uid] = c
+	return c
 }
 
 // routedTargets resolves a rule's routing (cached) to the enabled channels
@@ -132,23 +230,25 @@ func targetsFor(routing Routing, enabled []Channel, byID map[string]Channel) []C
 }
 
 // enqueue defers a transition for the flusher and records a deferred row.
-func (d *Dispatcher) enqueue(tr alerts.Transition, msg Message) {
+// userID is empty for a shared deferral and set for a personal one.
+func (d *Dispatcher) enqueue(tr alerts.Transition, msg Message, userID string) {
 	if _, err := d.Store.EnqueuePending(PendingDelivery{
 		RuleID: tr.Rule.ID, RuleName: tr.Rule.Name, SystemID: tr.SystemID,
-		Severity: string(tr.Rule.Severity), Kind: string(tr.Kind), Message: msg, EnqueuedAt: d.now(),
+		Severity: string(tr.Rule.Severity), Kind: string(tr.Kind), Message: msg,
+		EnqueuedAt: d.now(), UserID: userID,
 	}); err != nil {
 		slog.Error("notifications: enqueue pending", "err", err)
 		return
 	}
-	d.recordStatus(msg, DeliveryDeferred)
+	d.recordStatus(msg, DeliveryDeferred, userID)
 }
 
 // recordStatus logs a channel-less delivery row (suppressed or deferred)
 // so the policy's effect on a transition is visible in the delivery log.
-func (d *Dispatcher) recordStatus(msg Message, status DeliveryStatus) {
+func (d *Dispatcher) recordStatus(msg Message, status DeliveryStatus, userID string) {
 	if _, err := d.Store.RecordDelivery(Delivery{
 		Kind: msg.Kind, RuleName: msg.RuleName, SystemID: msg.SystemID,
-		Status: status, At: d.now(),
+		Status: status, At: d.now(), UserID: userID,
 	}); err != nil {
 		slog.Error("notifications: record delivery", "err", err)
 	}
@@ -156,8 +256,9 @@ func (d *Dispatcher) recordStatus(msg Message, status DeliveryStatus) {
 
 // deliver sends one message to one channel and records the outcome. The
 // message carries the kind/rule/system fields the delivery row needs, so
-// it serves both immediate sends and flushed deferred ones.
-func (d *Dispatcher) deliver(c Channel, msg Message) {
+// it serves both immediate sends and flushed deferred ones. userID is
+// empty for a shared channel and set for a personal one.
+func (d *Dispatcher) deliver(c Channel, msg Message, userID string) {
 	ctx, cancel := context.WithTimeout(context.Background(), d.timeout())
 	defer cancel()
 	status, errStr := DeliverySuccess, ""
@@ -168,7 +269,7 @@ func (d *Dispatcher) deliver(c Channel, msg Message) {
 	if _, err := d.Store.RecordDelivery(Delivery{
 		ChannelID: c.ID, ChannelName: c.Name, ChannelType: c.Type,
 		Kind: msg.Kind, RuleName: msg.RuleName, SystemID: msg.SystemID,
-		Status: status, Error: errStr, At: d.now(),
+		Status: status, Error: errStr, At: d.now(), UserID: userID,
 	}); err != nil {
 		slog.Error("notifications: record delivery", "err", err)
 	}

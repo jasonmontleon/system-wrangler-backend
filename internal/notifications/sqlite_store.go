@@ -39,6 +39,10 @@ func NewSQLiteStore(db *sql.DB) (*SQLiteStore, error) {
 		`ALTER TABLE notification_deliveries ADD COLUMN user_id TEXT NOT NULL DEFAULT ''`); err != nil {
 		return nil, fmt.Errorf("notifications: migrate deliveries: %w", err)
 	}
+	if err := addColumnIfMissing(db, "notification_pending", "user_id",
+		`ALTER TABLE notification_pending ADD COLUMN user_id TEXT NOT NULL DEFAULT ''`); err != nil {
+		return nil, fmt.Errorf("notifications: migrate pending: %w", err)
+	}
 	return &SQLiteStore{db: db, NewID: newUUID, Now: time.Now}, nil
 }
 
@@ -142,7 +146,8 @@ CREATE TABLE IF NOT EXISTS notification_pending (
     severity    TEXT NOT NULL,
     kind        TEXT NOT NULL,
     message     TEXT NOT NULL,
-    enqueued_at INTEGER NOT NULL
+    enqueued_at INTEGER NOT NULL,
+    user_id     TEXT NOT NULL DEFAULT ''
 ) STRICT;
 
 CREATE INDEX IF NOT EXISTS notification_pending_enqueued ON notification_pending(enqueued_at);
@@ -566,9 +571,9 @@ func (s *SQLiteStore) EnqueuePending(d PendingDelivery) (PendingDelivery, error)
 	}
 	if _, err := s.db.Exec(
 		`INSERT INTO notification_pending
-		   (id, rule_id, rule_name, system_id, severity, kind, message, enqueued_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		d.ID, d.RuleID, d.RuleName, d.SystemID, d.Severity, d.Kind, string(msg), d.EnqueuedAt.UnixNano(),
+		   (id, rule_id, rule_name, system_id, severity, kind, message, enqueued_at, user_id)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		d.ID, d.RuleID, d.RuleName, d.SystemID, d.Severity, d.Kind, string(msg), d.EnqueuedAt.UnixNano(), d.UserID,
 	); err != nil {
 		return PendingDelivery{}, fmt.Errorf("notifications: enqueue pending: %w", err)
 	}
@@ -578,7 +583,7 @@ func (s *SQLiteStore) EnqueuePending(d PendingDelivery) (PendingDelivery, error)
 // ListPending returns deferred deliveries oldest first.
 func (s *SQLiteStore) ListPending() ([]PendingDelivery, error) {
 	rows, err := s.db.Query(
-		`SELECT id, rule_id, rule_name, system_id, severity, kind, message, enqueued_at
+		`SELECT id, rule_id, rule_name, system_id, severity, kind, message, enqueued_at, user_id
 		 FROM notification_pending ORDER BY enqueued_at, id`)
 	if err != nil {
 		return nil, fmt.Errorf("notifications: list pending: %w", err)
@@ -592,7 +597,7 @@ func (s *SQLiteStore) ListPending() ([]PendingDelivery, error) {
 			atNs int64
 		)
 		if err := rows.Scan(
-			&d.ID, &d.RuleID, &d.RuleName, &d.SystemID, &d.Severity, &d.Kind, &msg, &atNs,
+			&d.ID, &d.RuleID, &d.RuleName, &d.SystemID, &d.Severity, &d.Kind, &msg, &atNs, &d.UserID,
 		); err != nil {
 			return nil, fmt.Errorf("notifications: scan pending: %w", err)
 		}

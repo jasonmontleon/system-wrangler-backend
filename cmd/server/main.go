@@ -1013,6 +1013,12 @@ func populateMux(runCtx context.Context, mux router.Mux, db *sql.DB, store syste
 			SystemName: systemName,
 		}
 		alertSink = dispatcher
+		// Resolve which users should receive an alert on their personal
+		// channels: those whose subscription matches the alert's group +
+		// severity AND whose RBAC scope can see the system. Visibility is
+		// re-checked at delivery (not just at subscribe time) so a role
+		// change takes effect immediately.
+		dispatcher.Subscribers = subscriberResolver(store, notificationStore, rbacStore)
 		// Release deferred (quiet-hours) deliveries once their window ends.
 		go (&notifications.Flusher{Dispatcher: dispatcher}).Run(runCtx)
 		notificationHandler := &notifications.Handler{
@@ -1109,6 +1115,42 @@ func populateMux(runCtx context.Context, mux router.Mux, db *sql.DB, store syste
 
 // triggerProbe returns a non-blocking sender for p.Trigger; drops cleanly
 // when a tick is already in flight (channel buffer is 1).
+// subscriberResolver builds the per-user notification fan-out resolver: the
+// users whose subscription matches an alert's group + severity AND whose
+// RBAC scope can read the system. Visibility is computed from live role
+// assignments on every call, so losing access stops delivery immediately.
+func subscriberResolver(sysStore systems.Store, subStore notifications.Store, scoper rbac.Scoper) notifications.SubscriberResolverFunc {
+	return func(systemID, severity string) ([]string, error) {
+		sys, err := sysStore.Get(systemID)
+		if err != nil {
+			return nil, err
+		}
+		groupID := ""
+		if sys.GroupID != nil {
+			groupID = *sys.GroupID
+		}
+		subs, err := subStore.ListSubscriptions()
+		if err != nil {
+			return nil, err
+		}
+		var out []string
+		for _, us := range subs {
+			if !us.Matches(groupID, severity) {
+				continue
+			}
+			rows, rerr := scoper.Resolve(us.UserID)
+			if rerr != nil {
+				slog.Error("notifications: resolve subscriber scope", "err", rerr, "user_id", us.UserID)
+				continue
+			}
+			if rbac.NewScope(us.UserID, rows).CanReadSystem(sys.GroupID) {
+				out = append(out, us.UserID)
+			}
+		}
+		return out, nil
+	}
+}
+
 func triggerProbe(p *systems.Probe) func() {
 	return func() {
 		select {
