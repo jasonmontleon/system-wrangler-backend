@@ -5,7 +5,7 @@ networks:
 
 services:
   system-wrangler:
-    image: system-wrangler:latest
+    image: quay.io/jasonmontleon/system-wrangler:latest
     container_name: system-wrangler
     restart: unless-stopped
     environment:

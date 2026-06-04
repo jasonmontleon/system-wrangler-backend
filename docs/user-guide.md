@@ -75,9 +75,17 @@ a glance:
 
 ![The Systems inventory](images/inventory-systems.png)
 
-Every column has a filter box. Filter by name, by group, by last-checked time,
-by update count, or by a **label selector** such as `env=prod` (the label filter
-accepts comma-separated terms and negation). Click any column header to sort.
+On a wide enough screen, an additional **Hostname** column appears between Name
+and Labels — with its own filter and sort — so you can see and search each
+system's fully-qualified hostname inline. On narrower screens it's tucked away to
+keep the table readable; a system's hostname is always on its detail page.
+
+![The Systems inventory on a wide screen, with the Hostname column](images/inventory-systems-wide.png)
+
+Every column has a filter box. Filter by name, by hostname, by group, by
+last-checked time, by update count, or by a **label selector** such as `env=prod`
+(the label filter accepts comma-separated terms and negation). Click any column
+header to sort.
 The status glyph summarizes a system in one mark — a green check when it's
 reachable and up to date, a yellow triangle when updates are pending, a refresh
 icon when a reboot is required, and a red ✗ when it can't be reached. The

@@ -9,18 +9,12 @@ image; for production options (TLS, OIDC, backups, key rotation) see the
 ## Prerequisites
 
 - A container runtime — `podman` or `docker`.
-- The two source repos checked out side by side (`system-wrangler-backend` and
-  `system-wrangler-frontend`), since the frontend is supplied to the build.
 - *(Optional, for telemetry)* a Prometheus that scrapes your hosts' exporters.
 
-## 1. Build the image
-
-From the backend repo, with the frontend supplied as a build context:
+## 1. Pull the image
 
 ```sh
-podman build -t system-wrangler \
-  --build-context frontend=../system-wrangler-frontend \
-  -f Containerfile .
+podman pull quay.io/jasonmontleon/system-wrangler:latest
 ```
 
 ## 2. Create a master key
@@ -42,7 +36,7 @@ podman run -d --name system-wrangler \
   -v "$PWD/data":/var/lib/system-wrangler \
   -v "$PWD/master.key":/etc/system-wrangler/master.key:ro \
   -e SW_MASTER_KEY_FILE=/etc/system-wrangler/master.key \
-  system-wrangler
+  quay.io/jasonmontleon/system-wrangler:latest
 ```
 
 The `data` volume holds the SQLite database, so your state survives restarts and
@@ -56,14 +50,18 @@ you're signed in.
 
 ## 5. (Optional) wire up telemetry
 
-To populate the Monitoring graphs and the cross-system overview, point the
-server at your Prometheus and restart:
+The telemetry pages need a Prometheus. The easiest way is the ready-made
+compose stack in [`deploy/`](../deploy), which runs System Wrangler and
+Prometheus together and wires up discovery for you — see
+[Deploying with Prometheus](installation.md#deploying-with-prometheus).
+
+If you already run a Prometheus, point the server at it instead and restart:
 
 ```sh
   -e SW_PROMETHEUS_URL=http://prometheus.internal:9090
 ```
 
-Then install an exporter on a host from its **Monitoring** tab.
+Either way, install an exporter on a host from its **Monitoring** tab.
 
 ## Next steps
 

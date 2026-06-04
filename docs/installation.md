@@ -26,6 +26,82 @@ How to deploy and operate System Wrangler. For a first run, the
 | `SW_PROMETHEUS_URL` | no | `http://127.0.0.1:9090` | Upstream Prometheus for telemetry and metric alerts. |
 | `TLS_CERT_PATH` / `TLS_KEY_PATH` | no | — | Enable HTTPS (see [TLS](#tls)). Both or neither. |
 | `SW_OIDC_*` | no | — | Optional OIDC single sign-on (see [OIDC](#oidc-single-sign-on)). |
+| `SW_TARGETS_FILE` | no | — | When set, write a Prometheus file-discovery targets file here so Prometheus finds the exporters (see [Deploying with Prometheus](#deploying-with-prometheus)). |
+| `SW_INTERNAL_SECRET_FILE` | no | — | Shared bearer secret that gates the `/internal/scrape/...` proxy Prometheus scrapes through. |
+| `SW_BACKEND_TARGET` | no | `127.0.0.1:8080` | Address written into each targets entry — where Prometheus reaches the scrape proxy. |
+
+## Deploying with Prometheus
+
+The standalone `podman run` above gets you the app, but the telemetry pages need
+a Prometheus. The repo ships a ready-made two-container stack in
+[`deploy/`](../deploy) that wires it up for you — this is the recommended way to
+run System Wrangler with metrics.
+
+```
+deploy/
+  compose.yml      the two services (system-wrangler + prometheus)
+  prometheus.yml   Prometheus's scrape config for this stack
+```
+
+### How it fits together
+
+- The two containers **share one network namespace**
+  (`network_mode: "service:system-wrangler"`), so they reach each other over
+  `127.0.0.1` — no container DNS. That's why the defaults
+  (`SW_BACKEND_TARGET=127.0.0.1:8080`, `SW_PROMETHEUS_URL=http://127.0.0.1:9090`)
+  work without being set.
+- System Wrangler **writes the scrape targets** to a file on the shared
+  `sw-targets` volume (`SW_TARGETS_FILE`) on every inventory change. Prometheus
+  watches that file via `file_sd_configs` and picks up new exporters within
+  seconds — you never hand-edit `prometheus.yml` to add a host.
+- Prometheus **scrapes through System Wrangler**, at
+  `/internal/scrape/{system}/{exporter}`, authenticating with a shared bearer
+  secret (`SW_INTERNAL_SECRET_FILE`). Only the app is published on the host
+  (`8080`); Prometheus is reachable only inside the shared namespace, and the SPA
+  queries it through the app's `/api/metrics/query` proxy.
+
+So **`prometheus.yml` is part of this stack, not a standalone Prometheus
+config** — it defines the single `system-wrangler-exporters` job that reads the
+discovered targets and sends the bearer token. Keep it alongside `compose.yml`.
+
+### One-time setup
+
+From `deploy/`, create the two secret files both containers mount read-only:
+
+```sh
+cd deploy/
+# Master key: base64 of 32 random bytes (seals secrets at rest).
+head -c 32 /dev/urandom | base64 > master.key
+chmod 600 master.key
+# Internal secret: the bearer token Prometheus uses to scrape through the app.
+head -c 24 /dev/urandom | base64 > internal-secret
+chmod 600 internal-secret
+```
+
+### Bring it up
+
+```sh
+podman-compose -f deploy/compose.yml up -d
+```
+
+Open <http://localhost:8080> and create the initial administrator. Install an
+exporter on a host from its **Monitoring** tab; within a few seconds Prometheus
+discovers it and the telemetry pages light up.
+
+### Operational notes
+
+- **Retention** is 365 days out of the box, matching the SPA's longest chart
+  range (`1y`). Adjust `--storage.tsdb.retention.time` on the prometheus service
+  to change it.
+- **Restarts:** restarting the `system-wrangler` container restarts Prometheus
+  too, since Prometheus borrows its network namespace. `depends_on` keeps start
+  order and `restart: unless-stopped` keeps both up.
+- **Separate-namespace layout:** if you'd rather run the two services on their
+  own networks with DNS instead of a shared namespace, drop the
+  `network_mode:` line and set `SW_BACKEND_TARGET=system-wrangler:8080` and
+  `SW_PROMETHEUS_URL=http://prometheus:9090`. (Podman pods via
+  `x-podman.in_pod` aren't used: podman-compose still attaches each member to
+  its own namespace, which overrides the pod's shared one.)
 
 ## Persistence
 
@@ -99,7 +175,7 @@ podman run --rm \
   -v "$PWD/new.key":/keys/new:ro -v "$PWD/old.key":/keys/old:ro \
   -e SW_MASTER_KEY_FILE=/keys/new \
   -e SW_MASTER_KEY_FILE_PREVIOUS=/keys/old \
-  system-wrangler --rotate-keys
+  quay.io/jasonmontleon/system-wrangler:latest --rotate-keys
 ```
 
 ## Tenancy
