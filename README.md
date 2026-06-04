@@ -125,8 +125,8 @@ container. There is no external message broker, cache, or app server to manage.
 - **Backend:** Go (standard library first; SQLite for storage).
 - **Frontend:** React 19 + TypeScript + PatternFly v6, built with Vite and
   embedded into the Go binary at build time.
-- **Runtime deps:** SSH + Ansible (bundled in the image) for host actions; an
-  external Prometheus for metrics.
+- **Runtime deps:** SSH + Ansible (bundled in the image) for host actions;
+  Prometheus for metrics.
 
 ## License
 
