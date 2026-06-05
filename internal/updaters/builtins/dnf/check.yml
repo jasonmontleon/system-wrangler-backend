@@ -6,6 +6,7 @@
     - name: Query dnf for pending updates
       ansible.builtin.dnf:
         list: updates
+        update_cache: true
       register: dnf_pending
     - name: Gather installed package facts for old-version lookup
       ansible.builtin.package_facts:
