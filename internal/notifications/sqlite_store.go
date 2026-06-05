@@ -43,6 +43,15 @@ func NewSQLiteStore(db *sql.DB) (*SQLiteStore, error) {
 		`ALTER TABLE notification_pending ADD COLUMN user_id TEXT NOT NULL DEFAULT ''`); err != nil {
 		return nil, fmt.Errorf("notifications: migrate pending: %w", err)
 	}
+	// The user_id index is created here, after the migration above, not in
+	// `schema`: on a pre-per-user install the deliveries table already
+	// exists without user_id, so building this index inside the schema Exec
+	// would run before the ALTER and fail with "no such column: user_id".
+	if _, err := db.Exec(
+		`CREATE INDEX IF NOT EXISTS notification_deliveries_user ON notification_deliveries(user_id)`,
+	); err != nil {
+		return nil, fmt.Errorf("notifications: index deliveries user: %w", err)
+	}
 	return &SQLiteStore{db: db, NewID: newUUID, Now: time.Now}, nil
 }
 
@@ -90,7 +99,6 @@ CREATE TABLE IF NOT EXISTS notification_deliveries (
 ) STRICT;
 
 CREATE INDEX IF NOT EXISTS notification_deliveries_at ON notification_deliveries(at);
-CREATE INDEX IF NOT EXISTS notification_deliveries_user ON notification_deliveries(user_id);
 
 CREATE TABLE IF NOT EXISTS user_notification_channels (
     id                TEXT PRIMARY KEY,

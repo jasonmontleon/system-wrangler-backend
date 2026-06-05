@@ -243,3 +243,61 @@ func TestRecordDeliveryFillsIDAndTime(t *testing.T) {
 		t.Errorf("id/at not filled: %+v", d)
 	}
 }
+
+// TestNewSQLiteStoreMigratesPreUserIDInstall guards the migration order:
+// a pre-per-user database has notification_deliveries / notification_pending
+// without a user_id column. NewSQLiteStore must add the column and build the
+// user_id index afterward, not fail because the index in `schema` ran before
+// the ALTER. Regression for "no such column: user_id" on restart.
+func TestNewSQLiteStoreMigratesPreUserIDInstall(t *testing.T) {
+	dsn := "file:" + filepath.Join(t.TempDir(), "legacy.db")
+	db, err := database.Open(dsn)
+	if err != nil {
+		t.Fatalf("database.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	// Old-shape tables: no user_id column.
+	for _, ddl := range []string{
+		`CREATE TABLE notification_deliveries (
+			id TEXT PRIMARY KEY, channel_id TEXT NOT NULL, channel_name TEXT NOT NULL,
+			channel_type TEXT NOT NULL, kind TEXT NOT NULL, rule_name TEXT NOT NULL,
+			system_id TEXT NOT NULL, status TEXT NOT NULL, error TEXT, at INTEGER NOT NULL
+		) STRICT;`,
+		`CREATE TABLE notification_pending (
+			id TEXT PRIMARY KEY, rule_id TEXT NOT NULL, rule_name TEXT NOT NULL,
+			system_id TEXT NOT NULL, severity TEXT NOT NULL, kind TEXT NOT NULL,
+			message TEXT NOT NULL, enqueued_at INTEGER NOT NULL
+		) STRICT;`,
+	} {
+		if _, err := db.Exec(ddl); err != nil {
+			t.Fatalf("seed legacy schema: %v", err)
+		}
+	}
+
+	if _, err := NewSQLiteStore(db); err != nil {
+		t.Fatalf("NewSQLiteStore on legacy DB: %v", err)
+	}
+
+	// Idempotent: a second open (the steady-state restart) must also succeed.
+	if _, err := NewSQLiteStore(db); err != nil {
+		t.Fatalf("NewSQLiteStore second pass: %v", err)
+	}
+
+	assertColumn := func(table string) {
+		row := db.QueryRow(`SELECT 1 FROM pragma_table_info(?) WHERE name = 'user_id'`, table)
+		var n int
+		if err := row.Scan(&n); err != nil {
+			t.Fatalf("%s missing user_id after migration: %v", table, err)
+		}
+	}
+	assertColumn("notification_deliveries")
+	assertColumn("notification_pending")
+
+	row := db.QueryRow(
+		`SELECT 1 FROM sqlite_master WHERE type='index' AND name='notification_deliveries_user'`)
+	var n int
+	if err := row.Scan(&n); err != nil {
+		t.Fatalf("user_id index not created: %v", err)
+	}
+}
