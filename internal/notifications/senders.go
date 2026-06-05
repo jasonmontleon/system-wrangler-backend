@@ -80,16 +80,35 @@ func (s *emailSender) Send(ctx context.Context, c Channel, secret string, msg Me
 
 // buildEmail renders a minimal RFC 5322 message. CRLF line endings and a
 // blank header/body separator are what SMTP DATA expects.
+//
+// Header values are run through sanitizeHeader to strip embedded CR/LF.
+// The Subject is assembled from the alert rule name and the system name,
+// both of which are user-controlled (a group operator can rename a
+// system); without this an embedded "\r\nBcc: ..." would inject SMTP
+// headers. Stripping at this single choke point covers every caller.
 func buildEmail(from string, to []string, subject, body string) []byte {
 	var b bytes.Buffer
-	fmt.Fprintf(&b, "From: %s\r\n", from)
-	fmt.Fprintf(&b, "To: %s\r\n", strings.Join(to, ", "))
-	fmt.Fprintf(&b, "Subject: %s\r\n", subject)
+	fmt.Fprintf(&b, "From: %s\r\n", sanitizeHeader(from))
+	cleanTo := make([]string, len(to))
+	for i, addr := range to {
+		cleanTo[i] = sanitizeHeader(addr)
+	}
+	fmt.Fprintf(&b, "To: %s\r\n", strings.Join(cleanTo, ", "))
+	fmt.Fprintf(&b, "Subject: %s\r\n", sanitizeHeader(subject))
 	b.WriteString("MIME-Version: 1.0\r\n")
 	b.WriteString("Content-Type: text/plain; charset=utf-8\r\n")
 	b.WriteString("\r\n")
 	b.WriteString(strings.ReplaceAll(body, "\n", "\r\n"))
 	return b.Bytes()
+}
+
+// sanitizeHeader removes CR and LF from a single email header value so a
+// user-controlled field (rule name, system name, recipient) cannot inject
+// additional headers or prematurely terminate the header block. Other
+// control characters are left alone — only the line terminators matter for
+// header-injection.
+func sanitizeHeader(v string) string {
+	return strings.NewReplacer("\r", "", "\n", "").Replace(v)
 }
 
 // smtpSend dials the SMTP server, optionally upgrades to TLS via STARTTLS

