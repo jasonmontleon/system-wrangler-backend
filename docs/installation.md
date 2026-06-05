@@ -25,6 +25,7 @@ How to deploy and operate System Wrangler. For a first run, the
 | `DB_PATH` | no | `/var/lib/system-wrangler/system-wrangler.db` (image) | SQLite database path. |
 | `SW_PROMETHEUS_URL` | no | `http://127.0.0.1:9090` | Upstream Prometheus for telemetry and metric alerts. |
 | `TLS_CERT_PATH` / `TLS_KEY_PATH` | no | — | Enable HTTPS (see [TLS](#tls)). Both or neither. |
+| `SW_SECURE_COOKIES` | no | tracks TLS | Force the `Secure` flag on auth cookies. Defaults to on when the app serves TLS directly; set `true` when TLS terminates at a reverse proxy (see [TLS](#tls)). |
 | `SW_OIDC_*` | no | — | Optional OIDC single sign-on (see [OIDC](#oidc-single-sign-on)). |
 | `SW_TARGETS_FILE` | no | — | When set, write a Prometheus file-discovery targets file here so Prometheus finds the exporters (see [Deploying with Prometheus](#deploying-with-prometheus)). |
 | `SW_INTERNAL_SECRET_FILE` | no | — | Shared bearer secret that gates the `/internal/scrape/...` proxy Prometheus scrapes through. |
@@ -126,7 +127,10 @@ rejected, to fail loud on misconfiguration.
   -e TLS_KEY_PATH=/etc/system-wrangler/tls/server.key
 ```
 
-Terminating TLS at a reverse proxy in front of System Wrangler also works.
+Terminating TLS at a reverse proxy in front of System Wrangler also works. In
+that setup the app speaks plain HTTP, so it can't tell the browser connection
+is encrypted — set `SW_SECURE_COOKIES=true` so the auth cookies still carry the
+`Secure` flag.
 
 ## Authentication
 

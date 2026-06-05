@@ -895,6 +895,47 @@ func TestTLSConfig(t *testing.T) {
 	}
 }
 
+func TestSecureCookies(t *testing.T) {
+	tests := []struct {
+		name      string
+		val       string
+		useTLS    bool
+		want      bool
+		wantError bool
+	}{
+		{name: "unset tracks TLS off", val: "", useTLS: false, want: false},
+		{name: "unset tracks TLS on", val: "", useTLS: true, want: true},
+		{name: "true forces on without TLS", val: "true", useTLS: false, want: true},
+		{name: "on forces on", val: "on", useTLS: false, want: true},
+		{name: "false forces off with TLS", val: "false", useTLS: true, want: false},
+		{name: "zero forces off", val: "0", useTLS: true, want: false},
+		{name: "unrecognized is rejected", val: "maybe", useTLS: true, wantError: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			get := func(k string) string {
+				if k == "SW_SECURE_COOKIES" {
+					return tt.val
+				}
+				return ""
+			}
+			got, err := secureCookies(get, tt.useTLS)
+			if tt.wantError {
+				if err == nil {
+					t.Fatal("err = nil, want error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected err: %v", err)
+			}
+			if got != tt.want {
+				t.Errorf("secureCookies(%q, %v) = %v, want %v", tt.val, tt.useTLS, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestEnvOr(t *testing.T) {
 	tests := []struct {
 		name string

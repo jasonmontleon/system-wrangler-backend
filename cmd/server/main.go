@@ -231,7 +231,14 @@ func run(ctx context.Context, args []string, getenv func(string) string) error {
 		slog.Warn("reverse-proxy trust-header auth enabled — requests from trusted CIDRs may bypass the cookie/TOTP flow",
 			"header", trustHeaderCfg.HeaderName, "cidrs", len(trustHeaderCfg.ProxyCIDRs))
 	}
-	authSvc := auth.NewService(authStore, secret, useTLS)
+	secureCookie, err := secureCookies(getenv, useTLS)
+	if err != nil {
+		return err
+	}
+	if secureCookie && !useTLS {
+		slog.Info("auth cookies forced Secure via SW_SECURE_COOKIES — ensure TLS terminates upstream")
+	}
+	authSvc := auth.NewService(authStore, secret, secureCookie)
 	authSvc.TOTPStore = authStore
 	authSvc.RecoveryStore = authStore
 	authSvc.DeviceStore = authStore
@@ -1400,6 +1407,27 @@ func (p updaterPkgManagerProbe) DetectedPkgManagers(systemID string) ([]string, 
 		out = append(out, a.UpdaterID)
 	}
 	return out, nil
+}
+
+// secureCookies decides whether auth cookies carry the Secure attribute.
+// By default it tracks whether this process terminates TLS (useTLS). A
+// deployment that terminates TLS at an upstream reverse proxy — so the app
+// itself speaks plain HTTP — sets SW_SECURE_COOKIES=true to keep the Secure
+// flag on the cookies the browser sees; setting it false forces it off. An
+// unrecognized value is rejected so a typo fails loud rather than silently
+// dropping the flag.
+func secureCookies(env func(string) string, useTLS bool) (bool, error) {
+	v := strings.TrimSpace(env("SW_SECURE_COOKIES"))
+	if v == "" {
+		return useTLS, nil
+	}
+	switch strings.ToLower(v) {
+	case "1", "true", "yes", "on":
+		return true, nil
+	case "0", "false", "no", "off":
+		return false, nil
+	}
+	return false, fmt.Errorf("SW_SECURE_COOKIES: unrecognized value %q (use true or false)", v)
 }
 
 // tlsConfig reads TLS_CERT_PATH and TLS_KEY_PATH via the supplied lookup
