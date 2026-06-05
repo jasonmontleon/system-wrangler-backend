@@ -3,12 +3,16 @@
 package scrape
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"system-wrangler-backend/internal/database"
@@ -293,5 +297,43 @@ func TestScrapeZeroPort(t *testing.T) {
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusServiceUnavailable {
 		t.Errorf("status = %d, want 503", resp.StatusCode)
+	}
+}
+
+func TestScrapeFailedLogsThroughInjectedLogger(t *testing.T) {
+	h, sysStore, expStore := newHandlerFixture(t)
+	sys, _ := sysStore.Create(systems.SystemInput{Name: "nb", Hostname: "nb.example"})
+	_ = expStore.UpsertSystemExporter(exporters.SystemExporter{
+		SystemID: sys.ID, ExporterID: "builtin.pkgin.exporter",
+		State: exporters.StateInstalled, Port: 9100,
+	})
+	// A generic proxy error hits the default branch → 502 + "scrape failed".
+	h.Proxy = &fakeFetcher{err: errors.New("connection refused")}
+	var buf bytes.Buffer
+	h.Logger = slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})).
+		With("component", "scrape")
+
+	mux := http.NewServeMux()
+	h.Register(mux)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	req, _ := http.NewRequest(http.MethodGet,
+		srv.URL+"/internal/scrape/"+sys.ID+"/builtin.pkgin.exporter", nil)
+	req.Header.Set(HeaderSecret, "test-secret")
+	resp, _ := http.DefaultClient.Do(req)
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502", resp.StatusCode)
+	}
+
+	var rec map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(buf.String())), &rec); err != nil {
+		t.Fatalf("decode log %q: %v", buf.String(), err)
+	}
+	if rec["component"] != "scrape" {
+		t.Errorf("component = %v, want scrape", rec["component"])
+	}
+	if rec["msg"] != "scrape failed" {
+		t.Errorf("msg = %v, want \"scrape failed\"", rec["msg"])
 	}
 }

@@ -151,9 +151,13 @@ func (p *Probe) succThreshold() int {
 // success thresholds once at the top of the cycle so a settings
 // change mid-tick can't observe a per-system race.
 func (p *Probe) Tick(ctx context.Context) {
+	log := p.Logger
+	if log == nil {
+		log = slog.Default()
+	}
 	systems, err := p.Store.List()
 	if err != nil {
-		p.Logger.Error("probe list", "err", err)
+		log.Error("list systems", "err", err)
 		return
 	}
 	failT := p.failThreshold()
@@ -177,7 +181,7 @@ func (p *Probe) Tick(ctx context.Context) {
 			ok := p.Prober.Probe(probeCtx, h.Hostname) == nil
 			transitioned, err := p.Store.UpdateProbe(h.ID, ok, p.Now(), failT, succT)
 			if err != nil {
-				p.Logger.Error("probe update", "err", err, "id", h.ID)
+				log.Error("update probe result", "err", err, "id", h.ID)
 				return
 			}
 			if transitioned {
@@ -186,6 +190,7 @@ func (p *Probe) Tick(ctx context.Context) {
 		}(h)
 	}
 	wg.Wait()
+	log.Debug("probe cycle complete", "systems", len(systems), "changed", changes.Load())
 	if changes.Load() > 0 && p.OnChange != nil {
 		p.OnChange()
 	}

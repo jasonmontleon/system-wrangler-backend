@@ -11,6 +11,7 @@ import (
 	"strconv"
 
 	"system-wrangler-backend/internal/audit"
+	"system-wrangler-backend/internal/logging"
 	"system-wrangler-backend/internal/router"
 )
 
@@ -25,6 +26,11 @@ type Handler struct {
 	// CanManage gates every endpoint. Bound to
 	// "scope.IsGlobalAdmin()" in main.go.
 	CanManage func(ctx context.Context) bool
+
+	// OnLogLevelChange, when non-nil, is invoked after a log_level_*
+	// setting is persisted so the live logger level can be updated
+	// without a restart. Bound to logging.SetLevel in main.go.
+	OnLogLevelChange func(component, level string)
 }
 
 // Register attaches the two routes behind mw (the authenticated-
@@ -84,6 +90,12 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 	}
 	if _, ok := all[KeyScheduleMisfireGraceSeconds]; !ok {
 		all[KeyScheduleMisfireGraceSeconds] = strconv.Itoa(ScheduleMisfireGraceSeconds(h.Store))
+	}
+	for _, c := range logging.Components {
+		k := LogLevelKey(c)
+		if _, ok := all[k]; !ok {
+			all[k] = LogLevel(h.Store, c)
+		}
 	}
 	writeJSON(w, http.StatusOK, settingsResponseDTO{Settings: all})
 }
@@ -156,8 +168,14 @@ func (h *Handler) put(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	default:
-		writeError(w, http.StatusNotFound, "unknown setting")
-		return
+		component, ok := LogLevelComponent(key)
+		if !ok || !knownComponent(component) {
+			writeError(w, http.StatusNotFound, "unknown setting")
+			return
+		}
+		if err := h.setLogLevel(w, key, component, in.Value); err != nil {
+			return
+		}
 	}
 
 	h.emitAudit(r.Context(), key, before, in.Value)
@@ -186,6 +204,38 @@ func (h *Handler) setIntFromBody(w http.ResponseWriter, value, key string, sette
 		return err
 	}
 	return nil
+}
+
+// setLogLevel validates and persists a background-loop log level, then
+// applies it live via OnLogLevelChange. On error it writes the matching
+// HTTP response and returns non-nil so put can short-circuit.
+func (h *Handler) setLogLevel(w http.ResponseWriter, key, component, value string) error {
+	if err := SetLogLevel(h.Store, component, value); err != nil {
+		if errors.Is(err, ErrInvalid) {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return err
+		}
+		writeError(w, http.StatusInternalServerError, "set failed")
+		// key is user-controlled but slog's structured kv form doesn't
+		// interpolate it into the message — gosec G706 false positive.
+		slog.Error("settings set", "err", err, "key", key) //nolint:gosec
+		return err
+	}
+	if h.OnLogLevelChange != nil {
+		h.OnLogLevelChange(component, value)
+	}
+	return nil
+}
+
+// knownComponent reports whether name is one of the background loops
+// that has an adjustable log level.
+func knownComponent(name string) bool {
+	for _, c := range logging.Components {
+		if c == name {
+			return true
+		}
+	}
+	return false
 }
 
 func (h *Handler) allowed(ctx context.Context) bool {

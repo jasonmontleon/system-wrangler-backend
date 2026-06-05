@@ -3,9 +3,11 @@
 package promtargets
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -389,5 +391,25 @@ func TestRunDebouncesBursts(t *testing.T) {
 	}
 	if len(entries) != 1 {
 		t.Errorf("entries = %d, want 1", len(entries))
+	}
+}
+
+func TestRegenerateLogsThroughInjectedLogger(t *testing.T) {
+	w, _, _, _ := newWriter(t)
+	var buf bytes.Buffer
+	w.Logger = slog.New(slog.NewJSONHandler(&buf, nil)).With("component", "promtargets")
+
+	if err := w.Regenerate(context.Background()); err != nil {
+		t.Fatalf("Regenerate: %v", err)
+	}
+	var rec map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(buf.String())), &rec); err != nil {
+		t.Fatalf("decode log line %q: %v", buf.String(), err)
+	}
+	if rec["component"] != "promtargets" {
+		t.Errorf("component = %v, want promtargets", rec["component"])
+	}
+	if rec["msg"] != "wrote targets.json" {
+		t.Errorf("msg = %v, want \"wrote targets.json\"", rec["msg"])
 	}
 }

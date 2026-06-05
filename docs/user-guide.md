@@ -298,6 +298,16 @@ have read access here without any ability to change things.
 - **Reachability check frequency** — how often the backend probes each system's
   SSH port, plus the failure/success thresholds that decide when a system flips
   between reachable and unreachable.
+- **Logging** — a per-subsystem log level (Debug / Info / Warn / Error) for each
+  of the five background loops (reachability probe, alert evaluation, schedule
+  runner, notification delivery, Prometheus targets), the **Prometheus scrape**
+  proxy — usually the noisiest, since it warns on every scrape of an unreachable
+  exporter — and the **HTTP request** access log (API and UI requests at Info;
+  the high-volume internal Prometheus scrape requests hidden unless you set this
+  to Debug). Turn a noisy subsystem down or one up to debug; changes
+  take effect immediately, no restart required. The matching `component` tag on
+  each log line lets you filter the JSON stream — see
+  [Troubleshooting](troubleshooting.md#the-logs-scroll-too-fast-or-a-loop-is-too-quiet-to-debug).
 
 There are further settings for alert evaluation cadence and notification
 behavior; each field explains its range and default inline.

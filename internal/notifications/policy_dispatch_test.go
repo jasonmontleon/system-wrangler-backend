@@ -3,9 +3,12 @@
 package notifications
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -211,5 +214,26 @@ func TestHandlerPolicyForbidden(t *testing.T) {
 			t.Errorf("%s policy should 403, got %d", m.method, resp.StatusCode)
 		}
 		_ = resp.Body.Close()
+	}
+}
+
+func TestFlushPendingDebugLogCarriesComponent(t *testing.T) {
+	_, _, d := dispatcherWithChannel(t)
+	var buf bytes.Buffer
+	d.Logger = slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})).
+		With("component", "notification")
+
+	// Empty-pending path emits the "flush complete" debug summary.
+	d.FlushPending(context.Background())
+
+	var rec map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(buf.String())), &rec); err != nil {
+		t.Fatalf("decode %q: %v", buf.String(), err)
+	}
+	if rec["component"] != "notification" {
+		t.Errorf("component = %v, want notification", rec["component"])
+	}
+	if rec["msg"] != "flush complete" {
+		t.Errorf("msg = %v, want \"flush complete\"", rec["msg"])
 	}
 }

@@ -37,9 +37,20 @@ type Evaluator struct {
 	Sink Sink
 	// Now overrides the clock for tests. Default time.Now.
 	Now func() time.Time
+	// Logger receives this loop's structured logs. Nil falls back to
+	// slog.Default(). Wired to logging.Component("alert") in main.go so
+	// the lines carry component="alert" and obey the per-loop level.
+	Logger *slog.Logger
 }
 
 const eventAlertsChanged = "alerts.changed"
+
+func (e *Evaluator) logger() *slog.Logger {
+	if e.Logger != nil {
+		return e.Logger
+	}
+	return slog.Default()
+}
 
 // TransitionKind labels a state change worth delivering: a system began
 // firing, or a firing/pending system cleared.
@@ -79,7 +90,7 @@ func (e *Evaluator) now() time.Time {
 func (e *Evaluator) EvaluateOnce(ctx context.Context) {
 	rules, err := e.Store.ListEnabled()
 	if err != nil {
-		slog.Error("alerts: list enabled rules", "err", err)
+		e.logger().Error("list enabled rules", "err", err)
 		return
 	}
 	now := e.now()
@@ -88,12 +99,14 @@ func (e *Evaluator) EvaluateOnce(ctx context.Context) {
 	for _, r := range rules {
 		ts, c, err := e.evaluateRule(ctx, r, now)
 		if err != nil {
-			slog.Warn("alerts: evaluate rule", "err", err, "rule_id", r.ID, "name", r.Name)
+			e.logger().Warn("evaluate rule", "err", err, "rule_id", r.ID, "name", r.Name)
 			continue
 		}
 		changed = changed || c
 		transitions = append(transitions, ts...)
 	}
+	e.logger().Debug("evaluation complete",
+		"rules", len(rules), "transitions", len(transitions), "changed", changed)
 	if changed && e.Hub != nil {
 		e.Hub.Broadcast(events.Event{Type: eventAlertsChanged})
 	}
@@ -208,7 +221,7 @@ func (e *Evaluator) breachingSystems(ctx context.Context, r Rule) (map[string]fl
 
 	case KindMetric, KindPromQL:
 		if e.Querier == nil {
-			slog.Debug("alerts: no querier, skipping metric rule", "rule_id", r.ID)
+			e.logger().Debug("no querier, skipping metric rule", "rule_id", r.ID)
 			return breaching, nil
 		}
 		expr := r.Expr

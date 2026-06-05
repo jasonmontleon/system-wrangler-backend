@@ -68,8 +68,21 @@ type Writer struct {
 	Systems systems.Store
 	// Exporters lets the writer read every (system, exporter) row.
 	Exporters exporters.Store
+	// Logger receives this loop's structured logs. Nil falls back to
+	// slog.Default(). Wired to logging.Component("promtargets") in
+	// main.go so the lines carry component="promtargets" and obey the
+	// per-loop level — the per-write "wrote targets.json" line is the
+	// one an operator with a large inventory most often turns down.
+	Logger *slog.Logger
 
 	mu sync.Mutex
+}
+
+func (w *Writer) logger() *slog.Logger {
+	if w.Logger != nil {
+		return w.Logger
+	}
+	return slog.Default()
 }
 
 // Regenerate scans system_exporters, joins hostnames + groups, and
@@ -99,7 +112,7 @@ func (w *Writer) Regenerate(_ context.Context) error {
 	for _, h := range hosts {
 		rows, err := w.Exporters.ListSystemExporters(h.ID)
 		if err != nil {
-			slog.Warn("promtargets: list system_exporters", "err", err, "system_id", h.ID) //nolint:gosec
+			w.logger().Warn("list system_exporters", "err", err, "system_id", h.ID) //nolint:gosec
 			continue
 		}
 		for _, row := range rows {
@@ -177,7 +190,7 @@ func (w *Writer) Regenerate(_ context.Context) error {
 		cleanup()
 		return fmt.Errorf("promtargets: rename: %w", err)
 	}
-	slog.Info("promtargets: wrote targets.json", "path", w.Path, "entries", len(entries))
+	w.logger().Info("wrote targets.json", "path", w.Path, "entries", len(entries))
 	return nil
 }
 
@@ -211,7 +224,7 @@ func (w *Writer) Run(ctx context.Context, subscribe subscribeFunc) func() {
 		// Initial generation: any state present at startup gets
 		// reflected immediately.
 		if err := w.Regenerate(ctx); err != nil {
-			slog.Warn("promtargets: initial regenerate", "err", err)
+			w.logger().Warn("initial regenerate", "err", err)
 		}
 		for {
 			select {
@@ -236,7 +249,7 @@ func (w *Writer) Run(ctx context.Context, subscribe subscribeFunc) func() {
 					}
 				}
 				if err := w.Regenerate(ctx); err != nil {
-					slog.Warn("promtargets: regenerate", "err", err)
+					w.logger().Warn("regenerate", "err", err)
 				}
 			}
 		}

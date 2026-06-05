@@ -71,6 +71,19 @@ type Handler struct {
 	// a misconfigured deployment doesn't accidentally expose
 	// authenticated-by-omission scrape access.
 	Secret string
+	// Logger receives this subsystem's structured logs. Nil falls back
+	// to slog.Default(). Wired to logging.Component("scrape") in main.go
+	// so the lines carry component="scrape" and obey the adjustable
+	// level — the per-scrape "scrape failed" warning against an
+	// unreachable host is the noisiest line on a large install.
+	Logger *slog.Logger
+}
+
+func (h *Handler) logger() *slog.Logger {
+	if h.Logger != nil {
+		return h.Logger
+	}
+	return slog.Default()
 }
 
 // Register attaches the route. No middleware — the secret check is
@@ -109,7 +122,7 @@ func (h *Handler) scrape(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		http.Error(w, "lookup failed", http.StatusInternalServerError)
-		slog.Error("scrape lookup", "err", err, "system_id", systemID, "exporter_id", exporterID) //nolint:gosec
+		h.logger().Error("scrape lookup", "err", err, "system_id", systemID, "exporter_id", exporterID) //nolint:gosec
 		return
 	}
 	if row.State == exporters.StateRemoved {
@@ -146,7 +159,7 @@ func (h *Handler) scrape(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "scrape timed out", http.StatusGatewayTimeout)
 		default:
 			http.Error(w, "scrape failed", http.StatusBadGateway)
-			slog.Warn("scrape failed", "err", err, "system_id", systemID, "exporter_id", exporterID) //nolint:gosec
+			h.logger().Warn("scrape failed", "err", err, "system_id", systemID, "exporter_id", exporterID) //nolint:gosec
 		}
 		return
 	}

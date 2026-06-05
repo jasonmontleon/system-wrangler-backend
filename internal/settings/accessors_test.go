@@ -279,3 +279,61 @@ func TestSetAlertEvalIntervalSeconds(t *testing.T) {
 		t.Errorf("nil store err = nil, want error")
 	}
 }
+
+func TestLogLevelRoundTrip(t *testing.T) {
+	store := newFakeStore()
+	// Unset falls back to the default.
+	if got := LogLevel(store, "probe"); got != DefaultLogLevel {
+		t.Errorf("unset LogLevel = %q, want %q", got, DefaultLogLevel)
+	}
+	// Stored valid value round-trips.
+	if err := SetLogLevel(store, "probe", "debug"); err != nil {
+		t.Fatalf("SetLogLevel: %v", err)
+	}
+	if store.lastKey != LogLevelKey("probe") {
+		t.Errorf("stored key = %q, want %q", store.lastKey, LogLevelKey("probe"))
+	}
+	if got := LogLevel(store, "probe"); got != "debug" {
+		t.Errorf("LogLevel = %q, want debug", got)
+	}
+}
+
+func TestLogLevelInvalidStoredValueFallsBack(t *testing.T) {
+	store := newFakeStore()
+	store.values[LogLevelKey("alert")] = "verbose"
+	if got := LogLevel(store, "alert"); got != DefaultLogLevel {
+		t.Errorf("LogLevel on junk = %q, want default %q", got, DefaultLogLevel)
+	}
+}
+
+func TestSetLogLevelRejectsUnknownLevel(t *testing.T) {
+	store := newFakeStore()
+	err := SetLogLevel(store, "probe", "loud")
+	if !errors.Is(err, ErrInvalid) {
+		t.Errorf("err = %v, want ErrInvalid", err)
+	}
+}
+
+func TestSetLogLevelNilStore(t *testing.T) {
+	if err := SetLogLevel(nil, "probe", "info"); err == nil {
+		t.Error("nil store err = nil, want error")
+	}
+}
+
+func TestLogLevelNilStore(t *testing.T) {
+	if got := LogLevel(nil, "probe"); got != DefaultLogLevel {
+		t.Errorf("nil store LogLevel = %q, want default", got)
+	}
+}
+
+func TestLogLevelComponentRoundTrip(t *testing.T) {
+	if got, ok := LogLevelComponent(LogLevelKey("schedule")); !ok || got != "schedule" {
+		t.Errorf("LogLevelComponent = (%q, %v), want (schedule, true)", got, ok)
+	}
+	if _, ok := LogLevelComponent("run_history_limit"); ok {
+		t.Error("non-log-level key parsed as a component")
+	}
+	if _, ok := LogLevelComponent(logLevelPrefix); ok {
+		t.Error("empty component accepted")
+	}
+}

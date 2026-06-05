@@ -41,6 +41,7 @@ import (
 	"system-wrangler-backend/internal/holds"
 	"system-wrangler-backend/internal/hostkeys"
 	"system-wrangler-backend/internal/labels"
+	"system-wrangler-backend/internal/logging"
 	"system-wrangler-backend/internal/metrics"
 	"system-wrangler-backend/internal/notifications"
 	"system-wrangler-backend/internal/openapi"
@@ -79,6 +80,10 @@ func run(ctx context.Context, args []string, getenv func(string) string) error {
 	}
 
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
+	// Background-loop loggers delegate to the same JSON handler but each
+	// carries a component=<name> tag and an independently adjustable
+	// level (driven from the admin settings page).
+	logging.SetBase(slog.Default().Handler())
 
 	envOrFn := func(key, fallback string) string {
 		if v := getenv(key); v != "" {
@@ -178,6 +183,13 @@ func run(ctx context.Context, args []string, getenv func(string) string) error {
 	if err != nil {
 		return err
 	}
+	// Apply each background loop's persisted log level so a restart
+	// resumes the levels an admin last chose.
+	for _, c := range logging.Components {
+		if err := logging.SetLevel(c, settings.LogLevel(settingsStore, c)); err != nil {
+			slog.Warn("apply stored log level", "err", err, "component", c)
+		}
+	}
 	exclusionStore, err := initStore(db, "exclusions", exclusions.NewSQLiteStore)
 	if err != nil {
 		return err
@@ -272,6 +284,7 @@ func run(ctx context.Context, args []string, getenv func(string) string) error {
 		Workers:         10,
 		Trigger:         make(chan struct{}, 1),
 		OnChange:        broadcastSystemsChanged,
+		Logger:          logging.Component(logging.Probe),
 	}
 
 	onCreate := func() {
@@ -311,6 +324,7 @@ func run(ctx context.Context, args []string, getenv func(string) string) error {
 			BackendTarget: envOrFn("SW_BACKEND_TARGET", promtargets.DefaultBackendTarget),
 			Systems:       store,
 			Exporters:     exporterStore,
+			Logger:        logging.Component(logging.Promtargets),
 		}
 		targetsStop = tw.Run(runCtx, func(handler func(string)) func() {
 			sub := hub.Subscribe()
@@ -749,6 +763,7 @@ func populateMux(runCtx context.Context, mux router.Mux, db *sql.DB, store syste
 			GraceFn: func() time.Duration {
 				return time.Duration(settings.ScheduleMisfireGraceSeconds(settingsStore)) * time.Second
 			},
+			Logger: logging.Component(logging.Schedule),
 		}
 		go scheduleTicker.Run(runCtx)
 		updaterHandler := &updaters.Handler{
@@ -909,6 +924,7 @@ func populateMux(runCtx context.Context, mux router.Mux, db *sql.DB, store syste
 			Proxy:     sshProxy,
 			Exporters: exporterStore,
 			Secret:    internalSecret,
+			Logger:    logging.Component(logging.Scrape),
 		}
 		scrapeHandler.Register(mux)
 
@@ -944,6 +960,13 @@ func populateMux(runCtx context.Context, mux router.Mux, db *sql.DB, store syste
 		CanManage: func(ctx context.Context) bool {
 			scope, ok := rbac.ScopeFromContext(ctx)
 			return ok && scope.IsGlobalAdmin()
+		},
+		// Apply a log-level change to the live logger immediately, so an
+		// admin's choice takes effect without a restart.
+		OnLogLevelChange: func(component, level string) {
+			if err := logging.SetLevel(component, level); err != nil {
+				slog.Warn("apply log level", "err", err, "component", component)
+			}
 		},
 	}
 	settingsHandler.Register(mux, requireUser)
@@ -1011,6 +1034,7 @@ func populateMux(runCtx context.Context, mux router.Mux, db *sql.DB, store syste
 			Vault:      vault,
 			Senders:    notifications.NewSenders(nil, nil),
 			SystemName: systemName,
+			Logger:     logging.Component(logging.Notification),
 		}
 		alertSink = dispatcher
 		// Resolve which users should receive an alert on their personal
@@ -1049,6 +1073,7 @@ func populateMux(runCtx context.Context, mux router.Mux, db *sql.DB, store syste
 		Labels:  labelStore,
 		Hub:     hub,
 		Sink:    alertSink,
+		Logger:  logging.Component(logging.Alert),
 	}
 	alertTicker := &alerts.Ticker{
 		Evaluator: alertEvaluator,
@@ -1241,14 +1266,26 @@ func spaHandler() http.Handler {
 }
 
 func withLogging(next http.Handler) http.Handler {
+	// All requests log under component="request". Normal API/UI requests log
+	// at Info (visible by default); the internal Prometheus scrape endpoint
+	// is high volume (one hit per exporter per scrape interval), so those log
+	// at Debug and are hidden by the Info default. Set the "request" level to
+	// Debug in Settings → Logging to also see scrape requests, or to Warn to
+	// silence the access log entirely. Built once; the logger shares the
+	// component's live LevelVar.
+	log := logging.Component(logging.Request)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		rw := &statusWriter{ResponseWriter: w, status: 200}
 		next.ServeHTTP(rw, r)
+		level := slog.LevelInfo
+		if strings.HasPrefix(r.URL.Path, "/internal/scrape/") {
+			level = slog.LevelDebug
+		}
 		// Structured log fields aren't interpolated into the message, so an
 		// attacker-controlled URL can't forge log lines — gosec G706 is a
 		// false positive against slog's key/value form.
-		slog.Info("request", //nolint:gosec
+		log.Log(r.Context(), level, "request", //nolint:gosec
 			"method", r.Method,
 			"path", r.URL.Path,
 			"status", rw.status,

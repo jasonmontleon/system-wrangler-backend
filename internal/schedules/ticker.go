@@ -39,6 +39,18 @@ type Ticker struct {
 	GraceFn func() time.Duration
 	// Now overrides the clock for tests. Default time.Now.
 	Now func() time.Time
+	// Logger receives this loop's structured logs. Nil falls back to
+	// slog.Default(). Wired to logging.Component("schedule") in main.go
+	// so the lines carry component="schedule" and obey the per-loop
+	// level.
+	Logger *slog.Logger
+}
+
+func (t *Ticker) logger() *slog.Logger {
+	if t.Logger != nil {
+		return t.Logger
+	}
+	return slog.Default()
 }
 
 // Run blocks until ctx is cancelled, ticking the schedule pipeline
@@ -95,27 +107,28 @@ func (t *Ticker) tick(ctx context.Context, now time.Time) {
 	// next future occurrence here, so Due(now) below returns only the
 	// runs that are legitimately due within the window.
 	if missed, err := t.Store.ReconcileMissed(now, grace); err != nil {
-		slog.Error("schedules: ticker reconcile missed", "err", err)
+		t.logger().Error("reconcile missed runs", "err", err)
 	} else {
 		for _, sch := range missed {
 			var was string
 			if sch.NextRunAt != nil {
 				was = sch.NextRunAt.UTC().Format(time.RFC3339)
 			}
-			slog.Warn("schedules: skipping missed run, rescheduled to next occurrence",
+			t.logger().Warn("skipping missed run, rescheduled to next occurrence",
 				"schedule_id", sch.ID, "name", sch.Name, "missed_run_at", was)
 		}
 	}
 
 	due, err := t.Store.Due(now)
 	if err != nil {
-		slog.Error("schedules: ticker due", "err", err)
+		t.logger().Error("list due schedules", "err", err)
 		return
 	}
+	t.logger().Debug("tick complete", "due", len(due))
 	for _, sch := range due {
 		go func(sch Schedule) {
 			if _, err := t.Orchestrator.Fire(ctx, sch); err != nil {
-				slog.Error("schedules: fire", "err", err, "schedule_id", sch.ID)
+				t.logger().Error("fire schedule", "err", err, "schedule_id", sch.ID)
 			}
 		}(sch)
 	}

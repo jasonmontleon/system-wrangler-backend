@@ -12,7 +12,10 @@
 // rules without bloating the persistence layer.
 package settings
 
-import "errors"
+import (
+	"errors"
+	"strings"
+)
 
 // KeyRunHistoryLimit is the per-system cap on updater_runs rows.
 // Stored as a string-encoded integer; DefaultRunHistoryLimit
@@ -147,6 +150,44 @@ const MinAlertEvalIntervalSeconds = 10
 // MaxAlertEvalIntervalSeconds caps at one hour. Slower than that and a
 // breach could persist most of an hour before an alert ever fires.
 const MaxAlertEvalIntervalSeconds = 3600
+
+// logLevelPrefix is prepended to a background-loop component name to
+// form its setting key, e.g. "log_level_probe".
+const logLevelPrefix = "log_level_"
+
+// LogLevelKey returns the settings key holding the log level for a
+// background loop component (one of internal/logging's Components).
+func LogLevelKey(component string) string {
+	return logLevelPrefix + component
+}
+
+// LogLevelComponent reverses LogLevelKey: it reports the component name
+// for a log-level key, and false for any other key.
+func LogLevelComponent(key string) (string, bool) {
+	c, ok := strings.CutPrefix(key, logLevelPrefix)
+	if !ok || c == "" {
+		return "", false
+	}
+	return c, true
+}
+
+// DefaultLogLevel is the level a background loop logs at until an admin
+// changes it: routine operational lines, no per-cycle debug churn.
+const DefaultLogLevel = "info"
+
+// LogLevels are the accepted values for a per-loop log level, ordered
+// most-to-least verbose. The frontend renders the same set.
+var LogLevels = []string{"debug", "info", "warn", "error"}
+
+// validLogLevel reports whether s is one of the accepted log levels.
+func validLogLevel(s string) bool {
+	for _, l := range LogLevels {
+		if s == l {
+			return true
+		}
+	}
+	return false
+}
 
 // ErrNotFound is returned by Store.Get when no row exists for the
 // requested key. Typed accessors translate this to the matching

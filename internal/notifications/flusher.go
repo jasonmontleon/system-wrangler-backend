@@ -4,7 +4,6 @@ package notifications
 
 import (
 	"context"
-	"log/slog"
 	"time"
 
 	"system-wrangler-backend/internal/alerts"
@@ -26,10 +25,11 @@ const DefaultFlushInterval = time.Minute
 func (d *Dispatcher) FlushPending(_ context.Context) {
 	pending, err := d.Store.ListPending()
 	if err != nil {
-		slog.Error("notifications: flush list pending", "err", err)
+		d.logger().Error("flush: list pending", "err", err)
 		return
 	}
 	if len(pending) == 0 {
+		d.logger().Debug("flush complete", "pending", 0, "processed", 0)
 		return
 	}
 	now := d.now()
@@ -65,7 +65,7 @@ func (d *Dispatcher) FlushPending(_ context.Context) {
 			p, perr = d.Store.GetUserPolicy(uid)
 		}
 		if perr != nil {
-			slog.Error("notifications: flush get policy", "err", perr, "user_id", uid)
+			d.logger().Error("flush: get policy", "err", perr, "user_id", uid)
 			p = DefaultPolicy()
 		}
 		policyCache[uid] = p
@@ -90,7 +90,7 @@ func (d *Dispatcher) FlushPending(_ context.Context) {
 		if k.user == "" {
 			if !sharedLoaded {
 				if enabled, err = d.Store.ListEnabled(); err != nil {
-					slog.Error("notifications: flush list enabled", "err", err)
+					d.logger().Error("flush: list enabled channels", "err", err)
 					enabled = nil
 				}
 				byID = indexByID(enabled)
@@ -103,8 +103,9 @@ func (d *Dispatcher) FlushPending(_ context.Context) {
 		d.fanOut(targets, last.Message, k.user)
 	}
 	if err := d.Store.DeletePending(processed); err != nil {
-		slog.Error("notifications: flush delete pending", "err", err)
+		d.logger().Error("flush: delete pending", "err", err)
 	}
+	d.logger().Debug("flush complete", "pending", len(pending), "processed", len(processed))
 }
 
 // collapses reports whether a (rule, system) group both fired and resolved

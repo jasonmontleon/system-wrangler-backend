@@ -151,6 +151,34 @@ func SetAlertEvalIntervalSeconds(store Store, n int) error {
 		MinAlertEvalIntervalSeconds, MaxAlertEvalIntervalSeconds, "alert_eval_interval_seconds")
 }
 
+// LogLevel returns the configured log level for a background-loop
+// component, falling back to DefaultLogLevel when the setting is unset
+// or holds an unrecognised value. Used both to seed the live level at
+// startup and to surface the effective value on the settings page.
+func LogLevel(store Store, component string) string {
+	if store == nil {
+		return DefaultLogLevel
+	}
+	raw, err := store.Get(LogLevelKey(component))
+	if err != nil || !validLogLevel(raw) {
+		return DefaultLogLevel
+	}
+	return raw
+}
+
+// SetLogLevel validates level against the accepted set and persists it
+// for component. An unknown level returns ErrInvalid; the handler maps
+// that to 400.
+func SetLogLevel(store Store, component, level string) error {
+	if store == nil {
+		return errors.New("settings: store is nil")
+	}
+	if !validLogLevel(level) {
+		return fmt.Errorf("%w: log level must be one of debug, info, warn, error", ErrInvalid)
+	}
+	return store.Set(LogLevelKey(component), level)
+}
+
 // clampedSetting reads key, falls back to defaultValue on
 // unset/unparseable/below-min, and caps to max. Shared by the
 // three new probe accessors so each stays a one-liner.

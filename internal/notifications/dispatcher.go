@@ -34,6 +34,18 @@ type Dispatcher struct {
 	Subscribers SubscriberResolver
 	Now         func() time.Time
 	SendTimeout time.Duration
+	// Logger receives the flusher loop's structured logs. Nil falls
+	// back to slog.Default(). Wired to logging.Component("notification")
+	// in main.go so the lines carry component="notification" and obey
+	// the per-loop level.
+	Logger *slog.Logger
+}
+
+func (d *Dispatcher) logger() *slog.Logger {
+	if d.Logger != nil {
+		return d.Logger
+	}
+	return slog.Default()
 }
 
 // SubscriberResolver returns the ids of users who should receive an alert

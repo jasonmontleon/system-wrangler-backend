@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"io"
+	"log/slog"
 	"math/big"
 	"net"
 	"net/http"
@@ -40,6 +41,7 @@ import (
 	"system-wrangler-backend/internal/holds"
 	"system-wrangler-backend/internal/hostkeys"
 	"system-wrangler-backend/internal/labels"
+	"system-wrangler-backend/internal/logging"
 	"system-wrangler-backend/internal/notifications"
 	"system-wrangler-backend/internal/rbac"
 	"system-wrangler-backend/internal/schedules"
@@ -1432,5 +1434,83 @@ func TestHandleAPINotFound(t *testing.T) {
 	}
 	if !bytes.Contains(w.Body.Bytes(), []byte(`"error":"not found"`)) {
 		t.Errorf("body = %q", w.Body.Bytes())
+	}
+}
+
+// TestAccessLogPathBasedLevels verifies the per-request access log is tagged
+// component=request and logs normal requests at Info (visible by default)
+// while logging the high-volume /internal/scrape/ path at Debug (hidden until
+// the request level is lowered to Debug).
+func TestAccessLogPathBasedLevels(t *testing.T) {
+	var buf bytes.Buffer
+	logging.SetBase(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	t.Cleanup(func() {
+		logging.SetBase(slog.Default().Handler())
+		_ = logging.SetLevel(logging.Request, "info")
+	})
+	_ = logging.SetLevel(logging.Request, "info")
+
+	ok := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	srv := httptest.NewServer(withLogging(ok))
+	defer srv.Close()
+
+	// records decodes every JSON line currently in the buffer.
+	records := func() []map[string]any {
+		var out []map[string]any
+		for _, l := range strings.Split(strings.TrimSpace(buf.String()), "\n") {
+			if l == "" {
+				continue
+			}
+			var m map[string]any
+			if err := json.Unmarshal([]byte(l), &m); err != nil {
+				t.Fatalf("decode %q: %v", l, err)
+			}
+			out = append(out, m)
+		}
+		return out
+	}
+	get := func(path string) {
+		resp, err := http.Get(srv.URL + path)
+		if err != nil {
+			t.Fatalf("get %s: %v", path, err)
+		}
+		_ = resp.Body.Close()
+	}
+
+	// At the Info default: a normal request is logged, a scrape request is not.
+	get("/api/systems")
+	get("/internal/scrape/sys/exp")
+	recs := records()
+	if len(recs) != 1 {
+		t.Fatalf("want 1 record at info (the normal request), got %d: %s", len(recs), buf.String())
+	}
+	if recs[0]["component"] != "request" || recs[0]["msg"] != "request" {
+		t.Fatalf("unexpected record: %v", recs[0])
+	}
+	if recs[0]["path"] != "/api/systems" {
+		t.Fatalf("logged path = %v, want the normal /api/systems request", recs[0]["path"])
+	}
+
+	// Lower request to Debug → the scrape access line now surfaces too.
+	buf.Reset()
+	if err := logging.SetLevel(logging.Request, "debug"); err != nil {
+		t.Fatalf("SetLevel: %v", err)
+	}
+	get("/internal/scrape/sys/exp")
+	recs = records()
+	if len(recs) != 1 || recs[0]["path"] != "/internal/scrape/sys/exp" {
+		t.Fatalf("scrape request not logged at debug: %v", recs)
+	}
+
+	// Raise request to Warn → the access log is silenced entirely.
+	buf.Reset()
+	if err := logging.SetLevel(logging.Request, "warn"); err != nil {
+		t.Fatalf("SetLevel: %v", err)
+	}
+	get("/api/systems")
+	if buf.Len() != 0 {
+		t.Fatalf("access log not silenced at warn: %s", buf.String())
 	}
 }

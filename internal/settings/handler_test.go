@@ -527,3 +527,88 @@ func TestAllowedNilCanManageAllowsThrough(t *testing.T) {
 		t.Errorf("status = %d, want 200 (nil CanManage permits)", resp.StatusCode)
 	}
 }
+
+// newFakeHandlerSrv builds a Handler over an in-memory fakeStore (no
+// audit) so log-level dispatch — including the OnLogLevelChange hook —
+// can be asserted without a real DB.
+func newFakeHandlerSrv(t *testing.T) (*fakeStore, *[]string, *httptest.Server) {
+	t.Helper()
+	store := newFakeStore()
+	var applied []string
+	h := &Handler{
+		Store:     store,
+		CanManage: func(_ context.Context) bool { return true },
+		OnLogLevelChange: func(component, level string) {
+			applied = append(applied, component+"="+level)
+		},
+	}
+	mux := http.NewServeMux()
+	h.Register(mux, nil)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return store, &applied, srv
+}
+
+func putValue(t *testing.T, srv *httptest.Server, key, value string) int {
+	t.Helper()
+	req, _ := http.NewRequest(
+		http.MethodPut,
+		srv.URL+"/api/admin/settings/"+key,
+		strings.NewReader(`{"value":"`+value+`"}`),
+	)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("put: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	return resp.StatusCode
+}
+
+func TestPutLogLevelHappyPath(t *testing.T) {
+	store, applied, srv := newFakeHandlerSrv(t)
+	if code := putValue(t, srv, LogLevelKey("schedule"), "warn"); code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", code)
+	}
+	if v, _ := store.Get(LogLevelKey("schedule")); v != "warn" {
+		t.Errorf("stored = %q, want warn", v)
+	}
+	if len(*applied) != 1 || (*applied)[0] != "schedule=warn" {
+		t.Errorf("OnLogLevelChange calls = %v, want [schedule=warn]", *applied)
+	}
+}
+
+func TestPutLogLevelRejectsBadLevel(t *testing.T) {
+	_, applied, srv := newFakeHandlerSrv(t)
+	if code := putValue(t, srv, LogLevelKey("probe"), "loud"); code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", code)
+	}
+	if len(*applied) != 0 {
+		t.Errorf("OnLogLevelChange should not fire on a rejected value, got %v", *applied)
+	}
+}
+
+func TestPutLogLevelUnknownComponentIs404(t *testing.T) {
+	_, _, srv := newFakeHandlerSrv(t)
+	if code := putValue(t, srv, LogLevelKey("bogus"), "info"); code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", code)
+	}
+}
+
+func TestListSurfacesLogLevelDefaults(t *testing.T) {
+	_, srv := newHandlerSrv(t, true)
+	resp, err := http.Get(srv.URL + "/api/admin/settings")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	var got settingsResponseDTO
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	for _, c := range []string{"probe", "alert", "schedule", "notification", "promtargets", "scrape", "request"} {
+		if got.Settings[LogLevelKey(c)] != DefaultLogLevel {
+			t.Errorf("%s = %q, want default %q", LogLevelKey(c), got.Settings[LogLevelKey(c)], DefaultLogLevel)
+		}
+	}
+}

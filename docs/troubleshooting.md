@@ -80,6 +80,35 @@ That's the channel's destination being unreachable from the container (wrong
 URL, SMTP host, or network egress). Use the channel's **Test** action to
 validate it, and check the **deliveries** log for the exact error.
 
+## The logs scroll too fast (or a loop is too quiet to debug)
+
+The server logs are structured JSON on stdout. Lines from the busier subsystems
+carry a `component` field — one of `probe`, `alert`, `schedule`,
+`notification`, `promtargets` (the five background loops), `scrape` (the
+Prometheus scrape proxy), or `request` (the HTTP access log) — so you can filter
+to the one you care about:
+
+```sh
+# follow only the scrape proxy
+podman logs -f system-wrangler | jq 'select(.component=="scrape")'
+```
+
+On a large install the busiest line is usually the **scrape proxy** warning
+`scrape failed` — emitted every scrape interval for each exporter on an
+unreachable host — followed by `promtargets` rewriting `targets.json` on every
+inventory change. To turn one down, use **Settings → Logging**: each subsystem
+has a level selector (Debug / Info / Warn / Error). Set a noisy one to **Warn**
+or **Error** to drop its routine lines, or **Debug** for per-cycle detail.
+Changes apply to the running server immediately — no restart required — and
+persist across restarts.
+
+The per-request **access log** (`"msg":"request"`, tagged `component=request`)
+logs normal API and UI requests at Info, but the high-volume internal Prometheus
+scrape requests (`/internal/scrape/...`, one per exporter per scrape interval)
+are logged at Debug and hidden by default. To also see scrape requests, set
+**HTTP Requests** to **Debug** in Settings → Logging; set it to **Warn** to
+silence the access log entirely.
+
 ## Telemetry charts go blank after a while in a demo/test setup
 
 If you're using the screenshot harness, the synthetic data extends a couple of
