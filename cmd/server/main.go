@@ -930,9 +930,31 @@ func populateMux(runCtx context.Context, mux router.Mux, db *sql.DB, store syste
 
 		metricsHandler := &metrics.Handler{
 			UpstreamURL: envOr("SW_PROMETHEUS_URL", metrics.DefaultUpstreamURL),
-			CanRead: func(ctx context.Context) bool {
-				_, ok := rbac.ScopeFromContext(ctx)
-				return ok
+			// Resolve the caller's metric visibility from their RBAC
+			// scope. Any global role reads everything; a group-scoped
+			// caller is constrained to the system_ids in groups they can
+			// read, which the handler injects into every PromQL selector
+			// so a crafted query can't reach another group's metrics.
+			AllowedSystems: func(ctx context.Context) (bool, []string, bool) {
+				scope, ok := rbac.ScopeFromContext(ctx)
+				if !ok {
+					return false, nil, false
+				}
+				if scope.IsGlobalAuditor() {
+					return true, nil, true
+				}
+				sys, err := store.List()
+				if err != nil {
+					slog.Error("metrics: list systems for scope", "err", err)
+					return false, nil, false
+				}
+				ids := make([]string, 0, len(sys))
+				for _, s := range sys {
+					if scope.CanReadSystem(s.GroupID) {
+						ids = append(ids, s.ID)
+					}
+				}
+				return false, ids, true
 			},
 		}
 		metricsHandler.Register(mux, requireUser)

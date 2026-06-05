@@ -8,11 +8,32 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
 	"system-wrangler-backend/internal/systems"
 )
+
+// allowAll grants unconstrained access (any global role), so queries are
+// forwarded without rewriting.
+func allowAll(context.Context) (bool, []string, bool) { return true, nil, true }
+
+// upstreamForm reads the form parameters the handler POSTed to the fake
+// Prometheus. The handler always forwards as an x-www-form-urlencoded
+// body, so the params live there rather than on the URL.
+func upstreamForm(t *testing.T, r *http.Request) url.Values {
+	t.Helper()
+	b, err := io.ReadAll(r.Body)
+	if err != nil {
+		t.Fatalf("read upstream body: %v", err)
+	}
+	v, err := url.ParseQuery(string(b))
+	if err != nil {
+		t.Fatalf("parse upstream body: %v", err)
+	}
+	return v
+}
 
 // fakeProm stands in for the sibling Prometheus container in tests.
 func fakeProm(t *testing.T, handler http.HandlerFunc) *httptest.Server {
@@ -33,16 +54,13 @@ func TestQueryForwardsToUpstream(t *testing.T) {
 		if r.URL.Path != "/api/v1/query" {
 			t.Errorf("path = %q, want /api/v1/query", r.URL.Path)
 		}
-		if r.URL.Query().Get("query") != "node_load1" {
-			t.Errorf("query param = %q", r.URL.Query().Get("query"))
+		if got := upstreamForm(t, r).Get("query"); got != "node_load1" {
+			t.Errorf("query param = %q", got)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"status":"success","data":{"resultType":"vector","result":[]}}`))
 	})
-	h := &Handler{
-		UpstreamURL: prom.URL,
-		CanRead:     func(context.Context) bool { return true },
-	}
+	h := &Handler{UpstreamURL: prom.URL, AllowedSystems: allowAll}
 	mux := http.NewServeMux()
 	h.Register(mux, nil)
 	srv := httptest.NewServer(mux)
@@ -65,15 +83,14 @@ func TestQueryForwardsToUpstream(t *testing.T) {
 }
 
 func TestQueryRangeForwardsParams(t *testing.T) {
-	var seenPath string
-	var seenQuery string
+	var seenPath, seenStep string
 	prom := fakeProm(t, func(w http.ResponseWriter, r *http.Request) {
 		seenPath = r.URL.Path
-		seenQuery = r.URL.RawQuery
+		seenStep = upstreamForm(t, r).Get("step")
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"status":"success","data":{"resultType":"matrix","result":[]}}`))
 	})
-	h := &Handler{UpstreamURL: prom.URL, CanRead: func(context.Context) bool { return true }}
+	h := &Handler{UpstreamURL: prom.URL, AllowedSystems: allowAll}
 	mux := http.NewServeMux()
 	h.Register(mux, nil)
 	srv := httptest.NewServer(mux)
@@ -89,18 +106,18 @@ func TestQueryRangeForwardsParams(t *testing.T) {
 	if seenPath != "/api/v1/query_range" {
 		t.Errorf("upstream path = %q", seenPath)
 	}
-	if !strings.Contains(seenQuery, "step=15") {
-		t.Errorf("upstream query = %q", seenQuery)
+	if seenStep != "15" {
+		t.Errorf("upstream step = %q, want 15", seenStep)
 	}
 }
 
 func TestForwardWhenForbidden(t *testing.T) {
 	prom := fakeProm(t, func(http.ResponseWriter, *http.Request) {
-		t.Error("upstream must not be called when CanRead returns false")
+		t.Error("upstream must not be called when scope resolution fails")
 	})
 	h := &Handler{
-		UpstreamURL: prom.URL,
-		CanRead:     func(context.Context) bool { return false },
+		UpstreamURL:    prom.URL,
+		AllowedSystems: func(context.Context) (bool, []string, bool) { return false, nil, false },
 	}
 	mux := http.NewServeMux()
 	h.Register(mux, nil)
@@ -113,8 +130,108 @@ func TestForwardWhenForbidden(t *testing.T) {
 	}
 }
 
+// TestScopedQueryIsRewritten verifies a group-scoped caller's query reaches
+// Prometheus constrained to their visible system_ids, regardless of what
+// the caller asked for.
+func TestScopedQueryIsRewritten(t *testing.T) {
+	var seenQuery string
+	prom := fakeProm(t, func(w http.ResponseWriter, r *http.Request) {
+		seenQuery = upstreamForm(t, r).Get("query")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"success","data":{"resultType":"vector","result":[]}}`))
+	})
+	h := &Handler{
+		UpstreamURL:    prom.URL,
+		AllowedSystems: func(context.Context) (bool, []string, bool) { return false, []string{"sys-a", "sys-b"}, true },
+	}
+	mux := http.NewServeMux()
+	h.Register(mux, nil)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	// The caller tries to read a system outside their scope.
+	resp, _ := http.Get(srv.URL + `/api/metrics/query?query=up{system_id="sys-z"}`)
+	defer func() { _ = resp.Body.Close() }()
+	if !strings.Contains(seenQuery, `system_id=~"sys-a|sys-b"`) {
+		t.Errorf("scope matcher not injected: %q", seenQuery)
+	}
+	if !strings.Contains(seenQuery, `system_id="sys-z"`) {
+		t.Errorf("caller's own matcher should be preserved (and intersect to empty): %q", seenQuery)
+	}
+}
+
+// TestZeroVisibilityShortCircuits verifies a caller who can see no systems
+// gets an empty result without any request reaching Prometheus.
+func TestZeroVisibilityShortCircuits(t *testing.T) {
+	prom := fakeProm(t, func(http.ResponseWriter, *http.Request) {
+		t.Error("upstream must not be called when the caller has zero visible systems")
+	})
+	h := &Handler{
+		UpstreamURL:    prom.URL,
+		AllowedSystems: func(context.Context) (bool, []string, bool) { return false, nil, true },
+	}
+	mux := http.NewServeMux()
+	h.Register(mux, nil)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	resp, _ := http.Get(srv.URL + "/api/metrics/query?query=up")
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	var body struct {
+		Status string `json:"status"`
+		Data   struct {
+			ResultType string `json:"resultType"`
+			Result     []any  `json:"result"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.Status != "success" || body.Data.ResultType != "vector" || len(body.Data.Result) != 0 {
+		t.Errorf("unexpected empty body: %+v", body)
+	}
+}
+
+// TestScopedInvalidQueryRejected verifies an unparseable query from a
+// scope-constrained caller is rejected (and not forwarded).
+func TestScopedInvalidQueryRejected(t *testing.T) {
+	prom := fakeProm(t, func(http.ResponseWriter, *http.Request) {
+		t.Error("upstream must not be called for an unparseable query")
+	})
+	h := &Handler{
+		UpstreamURL:    prom.URL,
+		AllowedSystems: func(context.Context) (bool, []string, bool) { return false, []string{"sys-a"}, true },
+	}
+	mux := http.NewServeMux()
+	h.Register(mux, nil)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	resp, _ := http.Get(srv.URL + "/api/metrics/query?query=up{{{")
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", resp.StatusCode)
+	}
+}
+
+func TestMissingQueryRejected(t *testing.T) {
+	prom := fakeProm(t, func(http.ResponseWriter, *http.Request) {
+		t.Error("upstream must not be called when no query is supplied")
+	})
+	h := &Handler{UpstreamURL: prom.URL, AllowedSystems: allowAll}
+	mux := http.NewServeMux()
+	h.Register(mux, nil)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	resp, _ := http.Get(srv.URL + "/api/metrics/query")
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", resp.StatusCode)
+	}
+}
+
 func TestForwardWhenUpstreamUnset(t *testing.T) {
-	h := &Handler{CanRead: func(context.Context) bool { return true }}
+	h := &Handler{AllowedSystems: allowAll}
 	mux := http.NewServeMux()
 	h.Register(mux, nil)
 	srv := httptest.NewServer(mux)
@@ -131,7 +248,7 @@ func TestForwardUpstreamFailure(t *testing.T) {
 		w.WriteHeader(http.StatusInternalServerError)
 		_, _ = w.Write([]byte(`{"status":"error","error":"boom"}`))
 	})
-	h := &Handler{UpstreamURL: prom.URL, CanRead: func(context.Context) bool { return true }}
+	h := &Handler{UpstreamURL: prom.URL, AllowedSystems: allowAll}
 	mux := http.NewServeMux()
 	h.Register(mux, nil)
 	srv := httptest.NewServer(mux)
@@ -150,20 +267,19 @@ func TestForwardUpstreamFailure(t *testing.T) {
 func TestPostForwardsBody(t *testing.T) {
 	var seen string
 	prom := fakeProm(t, func(w http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(r.Body)
-		seen = string(body)
+		seen = upstreamForm(t, r).Get("query")
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"status":"success"}`))
 	})
-	h := &Handler{UpstreamURL: prom.URL, CanRead: func(context.Context) bool { return true }}
+	h := &Handler{UpstreamURL: prom.URL, AllowedSystems: allowAll}
 	mux := http.NewServeMux()
 	h.Register(mux, nil)
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 	resp, _ := http.Post(srv.URL+"/api/metrics/query", "application/x-www-form-urlencoded", strings.NewReader("query=up"))
 	defer func() { _ = resp.Body.Close() }()
-	if seen != "query=up" {
-		t.Errorf("upstream body = %q", seen)
+	if seen != "up" {
+		t.Errorf("upstream query = %q, want up", seen)
 	}
 }
 
@@ -174,8 +290,8 @@ var _ systems.Store = (*systems.SQLiteStore)(nil)
 
 func TestForwardInvalidUpstreamURL(t *testing.T) {
 	h := &Handler{
-		UpstreamURL: "http://[::1:invalid", // bracket-mismatched URL fails url.Parse
-		CanRead:     func(context.Context) bool { return true },
+		UpstreamURL:    "http://[::1:invalid", // bracket-mismatched URL fails url.Parse
+		AllowedSystems: allowAll,
 	}
 	mux := http.NewServeMux()
 	h.Register(mux, nil)
@@ -190,8 +306,8 @@ func TestForwardInvalidUpstreamURL(t *testing.T) {
 
 func TestForwardUpstreamConnectionRefused(t *testing.T) {
 	h := &Handler{
-		UpstreamURL: "http://127.0.0.1:1", // nothing listens on TCP/1
-		CanRead:     func(context.Context) bool { return true },
+		UpstreamURL:    "http://127.0.0.1:1", // nothing listens on TCP/1
+		AllowedSystems: allowAll,
 	}
 	mux := http.NewServeMux()
 	h.Register(mux, nil)
@@ -211,9 +327,9 @@ func TestForwardUsesCustomClient(t *testing.T) {
 	})
 	custom := &http.Client{}
 	h := &Handler{
-		UpstreamURL: prom.URL,
-		Client:      custom,
-		CanRead:     func(context.Context) bool { return true },
+		UpstreamURL:    prom.URL,
+		Client:         custom,
+		AllowedSystems: allowAll,
 	}
 	mux := http.NewServeMux()
 	h.Register(mux, nil)
