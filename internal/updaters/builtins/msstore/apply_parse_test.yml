@@ -1,0 +1,54 @@
+- name: Test msstore apply parsing
+  hosts: localhost
+  gather_facts: false
+  vars:
+    msstore_apply_typical:
+      stdout_lines:
+        - "Updated: Microsoft.WindowsTerminal_8wekyb3d8bbwe"
+        - "Updated: Microsoft.ScreenSketch_8wekyb3d8bbwe"
+    msstore_apply_none:
+      stdout_lines: []
+    msstore_apply_partial:
+      stdout_lines:
+        - "Updated: Microsoft.Paint_8wekyb3d8bbwe"
+        - "Some unrelated diagnostic line"
+  tasks:
+    - name: Count updated apps in the typical case
+      ansible.builtin.set_fact:
+        typical_count: >-
+          {{ msstore_apply_typical.stdout_lines
+             | default([])
+             | select('match', '^Updated: ')
+             | list
+             | length }}
+    - name: Assert typical counts two updates
+      ansible.builtin.assert:
+        that:
+          - typical_count | int == 2
+        fail_msg: "typical_count={{ typical_count }}, want 2"
+    - name: Count updated apps when nothing was applied
+      ansible.builtin.set_fact:
+        none_count: >-
+          {{ msstore_apply_none.stdout_lines
+             | default([])
+             | select('match', '^Updated: ')
+             | list
+             | length }}
+    - name: Assert no updates counts zero
+      ansible.builtin.assert:
+        that:
+          - none_count | int == 0
+        fail_msg: "none_count={{ none_count }}, want 0"
+    - name: Count updated apps amid unrelated diagnostic noise
+      ansible.builtin.set_fact:
+        partial_count: >-
+          {{ msstore_apply_partial.stdout_lines
+             | default([])
+             | select('match', '^Updated: ')
+             | list
+             | length }}
+    - name: Assert only the Updated line is counted
+      ansible.builtin.assert:
+        that:
+          - partial_count | int == 1
+        fail_msg: "partial_count={{ partial_count }}, want 1"

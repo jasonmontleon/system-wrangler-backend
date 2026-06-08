@@ -1,0 +1,48 @@
+- name: Apply Microsoft Store app updates
+  hosts: all
+  gather_facts: false
+  become: false
+  tasks:
+    # The two-arg SearchForAllUpdatesAsync downloads and installs every
+    # available Store/UWP update (the same scan the Store's "Get updates"
+    # button runs). Each returned AppInstallItem installs asynchronously,
+    # so we poll GetCurrentStatus() to a terminal state and emit one
+    # "Updated:" line per item for the affected-count tally. Exclusions
+    # are not honoured: the Store API has no stable key shared with the
+    # check list, so this updater is all-or-nothing per system.
+    - name: Search for and install all available Store app updates
+      ansible.windows.win_shell: |
+        [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+        $mgr = [Windows.ApplicationModel.Store.Preview.InstallControl.AppInstallManager, Windows.ApplicationModel.Store.Preview.InstallControl, ContentType=WindowsRuntime]::new()
+        $itemType = [Windows.ApplicationModel.Store.Preview.InstallControl.AppInstallItem, Windows.ApplicationModel.Store.Preview.InstallControl, ContentType=WindowsRuntime]
+        $listType = [System.Collections.Generic.IReadOnlyList`1].MakeGenericType($itemType)
+        $asTask = ([System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object { $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1' })[0]
+        $op = $mgr.SearchForAllUpdatesAsync('', '')
+        $task = $asTask.MakeGenericMethod($listType).Invoke($null, @($op))
+        $task.Wait(-1) | Out-Null
+        foreach ($item in $task.Result) {
+            $pfn = $item.PackageFamilyName
+            while ($true) {
+                $state = $item.GetCurrentStatus().InstallState.ToString()
+                if ($state -eq 'Completed' -or $state -eq 'Error' -or $state -eq 'Canceled') { break }
+                Start-Sleep -Seconds 5
+            }
+            if ($item.GetCurrentStatus().InstallState.ToString() -eq 'Completed') {
+                Write-Output ("Updated: " + $pfn)
+            }
+        }
+        exit 0
+      register: msstore_apply
+      changed_when: msstore_apply.stdout_lines | default([]) | select('match', '^Updated: ') | list | length > 0
+      failed_when: msstore_apply.rc not in [0]
+    - name: Compute upgraded count from "Updated:" lines
+      ansible.builtin.set_fact:
+        sw_upgraded_count: >-
+          {{ msstore_apply.stdout_lines
+             | default([])
+             | select('match', '^Updated: ')
+             | list
+             | length }}
+    - name: Surface upgrade count to the run log
+      ansible.builtin.debug:
+        msg: "SW_AFFECTED_COUNT: {{ sw_upgraded_count }}"

@@ -137,6 +137,7 @@ func TestAdminListSupportsExclusionsFlag(t *testing.T) {
 		"builtin.windowsupdate":  false,
 		"builtin.fwupdmgr":       false,
 		"builtin.syspatch":       false,
+		"builtin.msstore":        false,
 	}
 	gotByID := map[string]bool{}
 	for _, d := range got.Definitions {

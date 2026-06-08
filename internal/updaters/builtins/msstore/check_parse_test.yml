@@ -1,0 +1,58 @@
+- name: Test msstore check parsing
+  hosts: localhost
+  gather_facts: false
+  vars:
+    msstore_pending_typical:
+      stdout_lines:
+        - "Microsoft.WindowsTerminal_8wekyb3d8bbwe"
+        - "Microsoft.WindowsStore_8wekyb3d8bbwe"
+        - "SpotifyAB.SpotifyMusic_zpdnekdrzrea0"
+    msstore_pending_empty:
+      stdout_lines:
+        - ""
+    msstore_pending_with_blanks:
+      stdout_lines:
+        - ""
+        - "Microsoft.Paint_8wekyb3d8bbwe"
+        - "   "
+        - "Microsoft.ScreenSketch_8wekyb3d8bbwe"
+  tasks:
+    - name: Parse typical package-family output
+      ansible.builtin.set_fact:
+        typical_pkgs: >-
+          {{ msstore_pending_typical.stdout_lines
+             | default([])
+             | reject('match', '^\s*$')
+             | reject('equalto', '')
+             | list }}
+    - name: Assert typical extracts package-family names verbatim
+      ansible.builtin.assert:
+        that:
+          - typical_pkgs == ['Microsoft.WindowsTerminal_8wekyb3d8bbwe', 'Microsoft.WindowsStore_8wekyb3d8bbwe', 'SpotifyAB.SpotifyMusic_zpdnekdrzrea0']
+        fail_msg: "typical_pkgs={{ typical_pkgs }}"
+    - name: Parse the no-updates case (lone empty line from the catch block)
+      ansible.builtin.set_fact:
+        empty_pkgs: >-
+          {{ msstore_pending_empty.stdout_lines
+             | default([])
+             | reject('match', '^\s*$')
+             | reject('equalto', '')
+             | list }}
+    - name: Assert empty produces empty list
+      ansible.builtin.assert:
+        that:
+          - empty_pkgs == []
+        fail_msg: "empty_pkgs={{ empty_pkgs }}, want []"
+    - name: Parse output with interspersed blank and whitespace-only lines
+      ansible.builtin.set_fact:
+        blanks_pkgs: >-
+          {{ msstore_pending_with_blanks.stdout_lines
+             | default([])
+             | reject('match', '^\s*$')
+             | reject('equalto', '')
+             | list }}
+    - name: Assert blank and whitespace-only lines are stripped
+      ansible.builtin.assert:
+        that:
+          - blanks_pkgs == ['Microsoft.Paint_8wekyb3d8bbwe', 'Microsoft.ScreenSketch_8wekyb3d8bbwe']
+        fail_msg: "blanks_pkgs={{ blanks_pkgs }}"

@@ -1,0 +1,50 @@
+- name: List pending Microsoft Store app updates
+  hosts: all
+  gather_facts: false
+  become: false
+  tasks:
+    # AppInstallManager is the only headless way to enumerate Store/UWP
+    # updates. SearchForAllUpdatesAsync auto-queues installs by default,
+    # which a check must never do, so we pass AppUpdateOptions with
+    # AutomaticallyDownloadAndInstallUpdateIfFound disabled and only read
+    # the returned list. Any failure (Server / LTSC without the Store,
+    # older OS, missing capability) is swallowed so the check reports
+    # nothing pending rather than installing or erroring.
+    - name: Search the Store for available app updates (read-only; no install)
+      ansible.windows.win_shell: |
+        [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+        try {
+            $mgr = [Windows.ApplicationModel.Store.Preview.InstallControl.AppInstallManager, Windows.ApplicationModel.Store.Preview.InstallControl, ContentType=WindowsRuntime]::new()
+            $opts = [Windows.ApplicationModel.Store.Preview.InstallControl.AppUpdateOptions, Windows.ApplicationModel.Store.Preview.InstallControl, ContentType=WindowsRuntime]::new()
+            $opts.AutomaticallyDownloadAndInstallUpdateIfFound = $false
+            $itemType = [Windows.ApplicationModel.Store.Preview.InstallControl.AppInstallItem, Windows.ApplicationModel.Store.Preview.InstallControl, ContentType=WindowsRuntime]
+            $listType = [System.Collections.Generic.IReadOnlyList`1].MakeGenericType($itemType)
+            $asTask = ([System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object { $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1' })[0]
+            $op = $mgr.SearchForAllUpdatesAsync('', '', $opts)
+            $task = $asTask.MakeGenericMethod($listType).Invoke($null, @($op))
+            $task.Wait(-1) | Out-Null
+            foreach ($item in $task.Result) {
+                if ($item.PackageFamilyName) { Write-Output $item.PackageFamilyName }
+            }
+        } catch {
+            Write-Output ''
+        }
+        exit 0
+      register: msstore_pending
+      changed_when: false
+      failed_when: msstore_pending.rc not in [0]
+    - name: Extract pending package-family names
+      ansible.builtin.set_fact:
+        sw_pending_packages: >-
+          {{ msstore_pending.stdout_lines
+             | default([])
+             | reject('match', '^\s*$')
+             | reject('equalto', '')
+             | list }}
+    - name: Surface count to the run log
+      ansible.builtin.debug:
+        msg: "SW_AFFECTED_COUNT: {{ sw_pending_packages | length }}"
+    - name: Surface each pending Store app
+      ansible.builtin.debug:
+        msg: "SW_PENDING_PACKAGE: {{ item }}"
+      loop: "{{ sw_pending_packages }}"

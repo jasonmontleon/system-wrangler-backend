@@ -72,6 +72,12 @@ var builtinWingetCheck []byte
 //go:embed builtins/winget/apply.yml
 var builtinWingetApply []byte
 
+//go:embed builtins/msstore/check.yml
+var builtinMSStoreCheck []byte
+
+//go:embed builtins/msstore/apply.yml
+var builtinMSStoreApply []byte
+
 //go:embed builtins/xbps/check.yml
 var builtinXBPSCheck []byte
 
@@ -341,6 +347,15 @@ func Builtins() []Definition {
 			DetectBinary:  "UsoClient",
 			CheckPlaybook: builtinWindowsUpdateCheck,
 			ApplyPlaybook: builtinWindowsUpdateApply,
+		},
+		{
+			ID:            "builtin.msstore",
+			Source:        SourceBuiltin,
+			DisplayName:   "msstore",
+			Description:   "Microsoft Store / UWP app updates via the AppInstallManager WinRT API (catches Store apps winget cannot version-resolve; installs all available, no per-app exclusions)",
+			DetectBinary:  "wsreset",
+			CheckPlaybook: builtinMSStoreCheck,
+			ApplyPlaybook: builtinMSStoreApply,
 		},
 	}
 }
