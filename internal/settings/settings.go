@@ -178,6 +178,29 @@ const MinRebootGraceSeconds = 10
 // stale "reboot required" before the metric reclaims authority.
 const MaxRebootGraceSeconds = 1800
 
+// KeyShutdownGraceSeconds is how long, on receiving a shutdown signal,
+// the server keeps draining in-flight runs before it exits. New runs
+// are refused immediately; runs still going when the grace elapses are
+// abandoned and reconciled (marked failed, locks dropped) on the next
+// start. Stored as a string-encoded integer number of seconds.
+const KeyShutdownGraceSeconds = "shutdown_grace_seconds"
+
+// DefaultShutdownGraceSeconds is five minutes: long enough for a
+// typical check/apply to finish cleanly during a rolling restart,
+// short enough not to stall an operator who needs the server down.
+const DefaultShutdownGraceSeconds = 300
+
+// MinShutdownGraceSeconds is one minute. The container or orchestrator
+// stop timeout (podman --stop-timeout, k8s terminationGracePeriodSeconds,
+// systemd TimeoutStopSec) must be at least this, or the runtime SIGKILLs
+// mid-drain and only startup reconciliation recovers.
+const MinShutdownGraceSeconds = 60
+
+// MaxShutdownGraceSeconds caps at thirty minutes — beyond that a stuck
+// run would hold the whole shutdown hostage when it should be left for
+// reconciliation instead.
+const MaxShutdownGraceSeconds = 1800
+
 // logLevelPrefix is prepended to a background-loop component name to
 // form its setting key, e.g. "log_level_probe".
 const logLevelPrefix = "log_level_"

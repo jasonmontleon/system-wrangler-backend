@@ -57,6 +57,11 @@ type Store interface {
 	FinishRun(id string, finishedAt time.Time, exitCode int, logTail string) error
 	ListRuns(systemID string, limit int) ([]Run, error)
 	TrimRunsForSystem(systemID string, keep int) error
+	// ReconcileOrphanedRuns finalizes every exporter run a previous
+	// process left in flight (finished_at IS NULL) as an interrupted
+	// failure. Called once at startup; the shared advisory locks are
+	// cleared by the updater store. Returns the number finalized.
+	ReconcileOrphanedRuns(at time.Time) (int, error)
 }
 
 // SQLiteStore persists exporter state.
@@ -552,6 +557,28 @@ func (s *SQLiteStore) FinishRun(id string, finishedAt time.Time, exitCode int, l
 		return ErrNotFound
 	}
 	return nil
+}
+
+// InterruptedExitCode is stamped on an exporter run finalized by
+// startup reconciliation; 143 (128 + SIGTERM) is non-zero so the run
+// folds into the existing failed rendering.
+const InterruptedExitCode = 143
+
+const interruptedLogTail = "Run interrupted: the System Wrangler server restarted while this run was in progress. Its outcome is unknown — re-run the action to get the system's current state."
+
+// ReconcileOrphanedRuns satisfies Store.ReconcileOrphanedRuns.
+func (s *SQLiteStore) ReconcileOrphanedRuns(at time.Time) (int, error) {
+	res, err := s.db.Exec(
+		`UPDATE exporter_runs
+		 SET finished_at = ?, exit_code = ?, log_tail = ?
+		 WHERE finished_at IS NULL`,
+		at.UTC().UnixNano(), InterruptedExitCode, interruptedLogTail,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("exporters: reconcile orphaned runs: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return int(n), nil
 }
 
 // ListRuns satisfies Store.ListRuns.

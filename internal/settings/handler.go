@@ -99,6 +99,9 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 	if _, ok := all[KeyRebootGraceSeconds]; !ok {
 		all[KeyRebootGraceSeconds] = strconv.Itoa(RebootGraceSeconds(h.Store))
 	}
+	if _, ok := all[KeyShutdownGraceSeconds]; !ok {
+		all[KeyShutdownGraceSeconds] = strconv.Itoa(ShutdownGraceSeconds(h.Store))
+	}
 	for _, c := range logging.Components {
 		k := LogLevelKey(c)
 		if _, ok := all[k]; !ok {
@@ -193,6 +196,10 @@ func (h *Handler) put(w http.ResponseWriter, r *http.Request) {
 		}
 	case KeyRebootGraceSeconds:
 		if err := h.setIntFromBody(w, in.Value, key, SetRebootGraceSeconds); err != nil {
+			return
+		}
+	case KeyShutdownGraceSeconds:
+		if err := h.setIntFromBody(w, in.Value, key, SetShutdownGraceSeconds); err != nil {
 			return
 		}
 	default:

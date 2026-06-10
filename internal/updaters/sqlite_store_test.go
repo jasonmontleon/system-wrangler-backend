@@ -462,6 +462,82 @@ func TestInsertAndFinishRun(t *testing.T) {
 	}
 }
 
+func TestReconcileOrphanedRuns(t *testing.T) {
+	store := newStore(t)
+	now := time.Now().UTC()
+	// An in-flight run from a dead process: inserted, never finished,
+	// and holding the host's advisory lock.
+	if err := store.InsertRun(Run{
+		ID: "run-orphan", SystemID: "sys-1", UpdaterID: "builtin.dnf",
+		Kind: RunKindApply, StartedAt: now, ActorID: "user-1", PlaybookSHA: "abc",
+	}); err != nil {
+		t.Fatalf("InsertRun orphan: %v", err)
+	}
+	if err := store.AcquireLock("sys-1", "run-orphan", now); err != nil {
+		t.Fatalf("AcquireLock: %v", err)
+	}
+	// A run that already finished cleanly must be left untouched.
+	if err := store.InsertRun(Run{
+		ID: "run-done", SystemID: "sys-2", UpdaterID: "builtin.dnf",
+		Kind: RunKindCheck, StartedAt: now, ActorID: "user-1", PlaybookSHA: "abc",
+	}); err != nil {
+		t.Fatalf("InsertRun done: %v", err)
+	}
+	if err := store.FinishRun("run-done", now.Add(time.Second), 0, 0, "ok\n"); err != nil {
+		t.Fatalf("FinishRun: %v", err)
+	}
+
+	n, err := store.ReconcileOrphanedRuns(now.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("ReconcileOrphanedRuns: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("finalized = %d, want 1", n)
+	}
+
+	// The orphan is now a finished failure.
+	orphan := mustRun(t, store, "sys-1")
+	if orphan.FinishedAt == nil {
+		t.Error("orphan finished_at still null")
+	}
+	if orphan.ExitCode == nil || *orphan.ExitCode != InterruptedExitCode {
+		t.Errorf("orphan exit_code = %v, want %d", orphan.ExitCode, InterruptedExitCode)
+	}
+	if orphan.LogTail == "" {
+		t.Error("orphan log_tail not set to the interrupted message")
+	}
+	// The lock is gone, so the host accepts new actions.
+	if held, _ := store.ConflictingRun("sys-1"); held != "" {
+		t.Errorf("lock still held by %q after reconcile", held)
+	}
+	// The clean run is unchanged.
+	done := mustRun(t, store, "sys-2")
+	if done.ExitCode == nil || *done.ExitCode != 0 {
+		t.Errorf("clean run exit_code = %v, want 0 (untouched)", done.ExitCode)
+	}
+
+	// Idempotent: a second pass finalizes nothing.
+	n2, err := store.ReconcileOrphanedRuns(now.Add(2 * time.Minute))
+	if err != nil {
+		t.Fatalf("second ReconcileOrphanedRuns: %v", err)
+	}
+	if n2 != 0 {
+		t.Errorf("second pass finalized = %d, want 0", n2)
+	}
+}
+
+func mustRun(t *testing.T, store *SQLiteStore, systemID string) Run {
+	t.Helper()
+	list, err := store.ListRuns(systemID, 10)
+	if err != nil {
+		t.Fatalf("ListRuns %s: %v", systemID, err)
+	}
+	if len(list) == 0 {
+		t.Fatalf("no runs for %s", systemID)
+	}
+	return list[0]
+}
+
 func TestFinishRunTruncatesLogTail(t *testing.T) {
 	store := newStore(t)
 	now := time.Now().UTC()

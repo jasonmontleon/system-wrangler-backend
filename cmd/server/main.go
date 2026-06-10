@@ -190,6 +190,24 @@ func run(ctx context.Context, args []string, getenv func(string) string) error {
 			slog.Warn("apply stored log level", "err", err, "component", c)
 		}
 	}
+	// Reconcile runs a previous process left in flight before accepting
+	// any traffic. A crash, OOM-kill, or SIGKILL leaves updater/exporter
+	// runs with finished_at IS NULL and the host's advisory lock held,
+	// so the action shows "running" forever and every new action on that
+	// host returns ErrConflict. With one server process per database any
+	// in-flight row at boot is orphaned: finalize it as failed and drop
+	// the locks so the host is usable again.
+	reconcileAt := time.Now()
+	if n, err := updaterStore.ReconcileOrphanedRuns(reconcileAt); err != nil {
+		slog.Error("reconcile orphaned updater runs", "err", err)
+	} else if n > 0 {
+		slog.Warn("finalized orphaned updater runs from a previous process", "count", n)
+	}
+	if n, err := exporterStore.ReconcileOrphanedRuns(reconcileAt); err != nil {
+		slog.Error("reconcile orphaned exporter runs", "err", err)
+	} else if n > 0 {
+		slog.Warn("finalized orphaned exporter runs from a previous process", "count", n)
+	}
 	exclusionStore, err := initStore(db, "exclusions", exclusions.NewSQLiteStore)
 	if err != nil {
 		return err
@@ -371,7 +389,13 @@ func run(ctx context.Context, args []string, getenv func(string) string) error {
 			return fmt.Errorf("server failed: %w", err)
 		}
 	}
-	slog.Info("shutdown signal received")
+	// runCtx is already cancelled here, so the updater/exporter handlers
+	// are refusing new runs (503). Drain in-flight runs for up to the
+	// configured grace before forcing the connections closed; anything
+	// still going is left for startup reconciliation on the next boot.
+	graceSecs := settings.ShutdownGraceSeconds(settingsStore)
+	slog.Info("shutdown signal received; draining in-flight runs", "grace_seconds", graceSecs,
+		"note", "ensure the container/orchestrator stop timeout is at least this long, or the runtime will SIGKILL mid-drain")
 	// Stop the targets writer first — once the hub closes its
 	// subscriber channel, the writer's goroutine returns; targetsStop
 	// waits for it before unsubscribing.
@@ -380,10 +404,10 @@ func run(ctx context.Context, args []string, getenv func(string) string) error {
 	// close and return; otherwise srv.Shutdown waits out its deadline on
 	// the long-lived /api/events requests held by open dashboard tabs.
 	hub.Close()
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), time.Duration(graceSecs)*time.Second)
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
-		slog.Error("shutdown error", "err", err)
+		slog.Error("drain grace exceeded; forcing close — unfinished runs will be reconciled on next start", "err", err)
 		if err := srv.Close(); err != nil {
 			slog.Error("force close error", "err", err)
 		}
@@ -797,6 +821,9 @@ func populateMux(runCtx context.Context, mux router.Mux, db *sql.DB, store syste
 				}
 				return scope.CanReadSystem(s.GroupID)
 			},
+			// runCtx is cancelled the moment a shutdown signal lands, so
+			// new check/apply/inspect runs are refused while draining.
+			Draining: func() bool { return runCtx.Err() != nil },
 		}
 		updaterHandler.Register(mux, requireUser)
 		updaterAdmin := &updaters.AdminHandler{
@@ -899,6 +926,9 @@ func populateMux(runCtx context.Context, mux router.Mux, db *sql.DB, store syste
 				}
 				return scope.CanReadSystem(s.GroupID)
 			},
+			// Refuse new install/remove runs once a shutdown signal has
+			// cancelled runCtx, matching the updater handler.
+			Draining: func() bool { return runCtx.Err() != nil },
 		}
 		exporterHandler.Register(mux, requireUser)
 		exporterAdmin := &exporters.AdminHandler{

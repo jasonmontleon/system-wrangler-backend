@@ -219,10 +219,15 @@ func TestListSurfacesProbeDefaults(t *testing.T) {
 		KeyProbeSuccessThreshold,
 		KeyScheduleMisfireGraceSeconds,
 		KeyRebootGraceSeconds,
+		KeyShutdownGraceSeconds,
 	} {
 		if _, ok := got.Settings[key]; !ok {
 			t.Errorf("%s missing from list response", key)
 		}
+	}
+	if got.Settings[KeyShutdownGraceSeconds] != strconv.Itoa(DefaultShutdownGraceSeconds) {
+		t.Errorf("shutdown_grace_seconds = %q, want default %d",
+			got.Settings[KeyShutdownGraceSeconds], DefaultShutdownGraceSeconds)
 	}
 	if got.Settings[KeyRebootGraceSeconds] != strconv.Itoa(DefaultRebootGraceSeconds) {
 		t.Errorf("reboot_grace_seconds = %q, want default %d",
@@ -318,6 +323,46 @@ func TestPutRebootGrace(t *testing.T) {
 			http.MethodPut,
 			srv.URL+"/api/admin/settings/"+KeyRebootGraceSeconds,
 			strings.NewReader(`{"value":"99999"}`),
+		)
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("put: %v", err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("status = %d, want 400", resp.StatusCode)
+		}
+	})
+}
+
+func TestPutShutdownGrace(t *testing.T) {
+	t.Run("ok", func(t *testing.T) {
+		h, srv := newHandlerSrv(t, true)
+		req, _ := http.NewRequest(
+			http.MethodPut,
+			srv.URL+"/api/admin/settings/"+KeyShutdownGraceSeconds,
+			strings.NewReader(`{"value":"600"}`),
+		)
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("put: %v", err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		if resp.StatusCode != http.StatusNoContent {
+			t.Fatalf("status = %d, want 204", resp.StatusCode)
+		}
+		if v, _ := h.Store.Get(KeyShutdownGraceSeconds); v != "600" {
+			t.Errorf("stored = %q, want 600", v)
+		}
+	})
+	t.Run("below_min", func(t *testing.T) {
+		_, srv := newHandlerSrv(t, true)
+		req, _ := http.NewRequest(
+			http.MethodPut,
+			srv.URL+"/api/admin/settings/"+KeyShutdownGraceSeconds,
+			strings.NewReader(`{"value":"5"}`),
 		)
 		req.Header.Set("Content-Type", "application/json")
 		resp, err := http.DefaultClient.Do(req)

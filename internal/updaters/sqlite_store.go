@@ -93,6 +93,15 @@ type Store interface {
 	// ConflictingRun returns the run id that currently holds the
 	// lock on systemID, or "" if free.
 	ConflictingRun(systemID string) (string, error)
+
+	// ReconcileOrphanedRuns finalizes every run a previous process left
+	// in flight (finished_at IS NULL) as an interrupted failure and
+	// drops every advisory lock. Called once at startup: with a single
+	// server process per database, any in-flight row at boot is
+	// necessarily orphaned, so this both unblocks the host (the lock is
+	// what returns ErrConflict to new actions) and clears the
+	// "running forever" run. Returns the number of runs finalized.
+	ReconcileOrphanedRuns(at time.Time) (int, error)
 }
 
 // SQLiteStore persists updater state. New ids are minted with the
@@ -627,6 +636,42 @@ func (s *SQLiteStore) FinishRun(id string, finishedAt time.Time, exitCode, affec
 		return ErrNotFound
 	}
 	return nil
+}
+
+// InterruptedExitCode is stamped on a run finalized by startup
+// reconciliation. 143 is the conventional "terminated by SIGTERM"
+// code (128 + 15); any non-zero value flips the run to failed, which
+// is how the interrupted state folds into the existing failed
+// rendering.
+const InterruptedExitCode = 143
+
+// interruptedLogTail explains the synthetic failure in the run detail
+// view, since the run never produced real output.
+const interruptedLogTail = "Run interrupted: the System Wrangler server restarted while this run was in progress. Its outcome is unknown — re-run the action to get the system's current state."
+
+// ReconcileOrphanedRuns satisfies Store.ReconcileOrphanedRuns. The two
+// statements are independent — clearing locks must happen even if no
+// run rows were open, since a lock can outlive its run row after a
+// partial crash — so a failure on the second still reports the first's
+// count.
+func (s *SQLiteStore) ReconcileOrphanedRuns(at time.Time) (int, error) {
+	res, err := s.db.Exec(
+		`UPDATE updater_runs
+		 SET finished_at = ?, exit_code = ?, log_tail = ?
+		 WHERE finished_at IS NULL`,
+		at.UTC().UnixNano(), InterruptedExitCode, interruptedLogTail,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("updaters: reconcile orphaned runs: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	// system_action_locks is shared with the exporter runner; clearing
+	// it here drops every host's advisory lock regardless of which
+	// substrate held it.
+	if _, err := s.db.Exec(`DELETE FROM system_action_locks`); err != nil {
+		return int(n), fmt.Errorf("updaters: clear action locks: %w", err)
+	}
+	return int(n), nil
 }
 
 // SystemStatsAll satisfies Store.SystemStatsAll. Two passes:

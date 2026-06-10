@@ -53,6 +53,25 @@ func newHandlerFixture(t *testing.T) (*Handler, *httptest.Server, *runnerFixture
 	return h, srv, rf
 }
 
+func TestHandlerDrainingRefusesRuns(t *testing.T) {
+	h, srv, rf := newHandlerFixture(t)
+	h.Draining = func() bool { return true }
+	for _, path := range []string{
+		"/exporters/builtin.node/install",
+		"/exporters/builtin.node/status",
+		"/exporters/builtin.node/remove",
+	} {
+		resp, err := http.Post(srv.URL+"/api/systems/"+rf.systemID+path, "application/json", nil)
+		if err != nil {
+			t.Fatalf("post %s: %v", path, err)
+		}
+		if resp.StatusCode != http.StatusServiceUnavailable {
+			t.Errorf("%s status = %d, want 503 while draining", path, resp.StatusCode)
+		}
+		_ = resp.Body.Close()
+	}
+}
+
 func TestHandlerListAvailability(t *testing.T) {
 	_, srv, rf := newHandlerFixture(t)
 	resp, err := http.Get(srv.URL + "/api/systems/" + rf.systemID + "/exporters")

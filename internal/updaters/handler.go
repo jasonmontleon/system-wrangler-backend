@@ -42,6 +42,19 @@ type Handler struct {
 	// scope-resolved read check so an auditor or operator can see
 	// what's happened against the system.
 	CanReadSystem func(ctx context.Context, s systems.System) bool
+
+	// Draining, when it returns true, makes the mutating endpoints
+	// (inspect, check, apply) refuse new runs with 503 so a server
+	// that received a shutdown signal stops starting work it would
+	// only orphan. nil means never draining. Bound to the shutdown
+	// flag in main.go.
+	Draining func() bool
+}
+
+// draining reports whether the server is shutting down and refusing new
+// runs. A nil hook means never draining.
+func (h *Handler) draining() bool {
+	return h.Draining != nil && h.Draining()
 }
 
 // Register attaches the routes behind mw (the authenticated-user
@@ -142,6 +155,10 @@ type conflictDTO struct {
 }
 
 func (h *Handler) inspect(w http.ResponseWriter, r *http.Request) {
+	if h.draining() {
+		writeError(w, http.StatusServiceUnavailable, "server is shutting down; try again once it is back")
+		return
+	}
 	sys, ok := h.loadSystem(w, r)
 	if !ok {
 		return
@@ -192,6 +209,10 @@ func (h *Handler) apply(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) runUpdaterEndpoint(w http.ResponseWriter, r *http.Request, kind RunKind) {
+	if h.draining() {
+		writeError(w, http.StatusServiceUnavailable, "server is shutting down; try again once it is back")
+		return
+	}
 	sys, ok := h.loadSystem(w, r)
 	if !ok {
 		return

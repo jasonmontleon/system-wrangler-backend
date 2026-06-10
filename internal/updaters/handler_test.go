@@ -84,6 +84,22 @@ func TestHandlerInspect(t *testing.T) {
 	}
 }
 
+func TestHandlerDrainingRefusesRuns(t *testing.T) {
+	h, srv, rf := newHandlerFixture(t)
+	h.Draining = func() bool { return true }
+	for _, path := range []string{
+		"/inspect",
+		"/updaters/builtin.dnf/check",
+		"/updaters/builtin.dnf/apply",
+	} {
+		resp := postJSON(t, srv.URL+"/api/systems/"+rf.systemID+path)
+		if resp.StatusCode != http.StatusServiceUnavailable {
+			t.Errorf("%s status = %d, want 503 while draining", path, resp.StatusCode)
+		}
+		_ = resp.Body.Close()
+	}
+}
+
 func TestHandlerCheckAndApply(t *testing.T) {
 	_, srv, rf := newHandlerFixture(t)
 	// Two queued responses cover both POSTs.

@@ -67,6 +67,18 @@ type Handler struct {
 	// promtargets writer can regenerate immediately. Bound to
 	// events.Hub.Broadcast("systems.changed") in main.go.
 	Notify func(eventType string)
+
+	// Draining, when it returns true, makes the mutating endpoints
+	// (install, remove) refuse new runs with 503 during shutdown so the
+	// server doesn't start work it would only orphan. nil means never
+	// draining. Bound to the shutdown flag in main.go.
+	Draining func() bool
+}
+
+// draining reports whether the server is shutting down and refusing new
+// runs. A nil hook means never draining.
+func (h *Handler) draining() bool {
+	return h.Draining != nil && h.Draining()
 }
 
 // Register attaches the routes behind mw (the authenticated-user
@@ -277,6 +289,10 @@ func (h *Handler) remove(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) runEndpoint(w http.ResponseWriter, r *http.Request, kind RunKind) {
+	if h.draining() {
+		writeError(w, http.StatusServiceUnavailable, "server is shutting down; try again once it is back")
+		return
+	}
 	sys, ok := h.loadSystem(w, r)
 	if !ok {
 		return

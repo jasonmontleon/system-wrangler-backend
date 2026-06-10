@@ -151,6 +151,20 @@ func SetAlertEvalIntervalSeconds(store Store, n int) error {
 		MinAlertEvalIntervalSeconds, MaxAlertEvalIntervalSeconds, "alert_eval_interval_seconds")
 }
 
+// ShutdownGraceSeconds returns how long the server drains in-flight
+// runs after a shutdown signal before exiting, falling back to
+// DefaultShutdownGraceSeconds on unset/unparseable/out-of-range values.
+func ShutdownGraceSeconds(store Store) int {
+	return clampedSetting(store, KeyShutdownGraceSeconds,
+		DefaultShutdownGraceSeconds, MinShutdownGraceSeconds, MaxShutdownGraceSeconds)
+}
+
+// SetShutdownGraceSeconds validates and persists the grace.
+func SetShutdownGraceSeconds(store Store, n int) error {
+	return setBoundedSetting(store, KeyShutdownGraceSeconds, n,
+		MinShutdownGraceSeconds, MaxShutdownGraceSeconds, "shutdown_grace_seconds")
+}
+
 // RebootGraceSeconds returns how long the apply-stamped
 // reboot_required_at column stays authoritative in the SPA before the
 // sw_reboot_required metric takes over, falling back to

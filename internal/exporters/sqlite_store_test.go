@@ -318,6 +318,60 @@ func TestRunCRUD(t *testing.T) {
 	}
 }
 
+func TestReconcileOrphanedRuns(t *testing.T) {
+	store := newStore(t)
+	now := time.Now().UTC()
+	// In-flight install from a dead process.
+	if err := store.InsertRun(Run{
+		ID: "run-orphan", SystemID: "sys-1", ExporterID: "x",
+		Kind: RunKindInstall, StartedAt: now,
+	}); err != nil {
+		t.Fatalf("InsertRun orphan: %v", err)
+	}
+	// A finished run that must stay untouched.
+	if err := store.InsertRun(Run{
+		ID: "run-done", SystemID: "sys-2", ExporterID: "x",
+		Kind: RunKindStatus, StartedAt: now,
+	}); err != nil {
+		t.Fatalf("InsertRun done: %v", err)
+	}
+	if err := store.FinishRun("run-done", now.Add(time.Second), 0, "ok"); err != nil {
+		t.Fatalf("FinishRun: %v", err)
+	}
+
+	n, err := store.ReconcileOrphanedRuns(now.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("ReconcileOrphanedRuns: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("finalized = %d, want 1", n)
+	}
+
+	orphan, err := store.ListRuns("sys-1", 10)
+	if err != nil || len(orphan) != 1 {
+		t.Fatalf("ListRuns sys-1: %v len=%d", err, len(orphan))
+	}
+	if orphan[0].FinishedAt == nil {
+		t.Error("orphan finished_at still null")
+	}
+	if orphan[0].ExitCode == nil || *orphan[0].ExitCode != InterruptedExitCode {
+		t.Errorf("orphan exit = %v, want %d", orphan[0].ExitCode, InterruptedExitCode)
+	}
+
+	done, _ := store.ListRuns("sys-2", 10)
+	if done[0].ExitCode == nil || *done[0].ExitCode != 0 {
+		t.Errorf("clean run exit = %v, want 0 (untouched)", done[0].ExitCode)
+	}
+
+	n2, err := store.ReconcileOrphanedRuns(now.Add(2 * time.Minute))
+	if err != nil {
+		t.Fatalf("second pass: %v", err)
+	}
+	if n2 != 0 {
+		t.Errorf("second pass finalized = %d, want 0", n2)
+	}
+}
+
 func TestTrimRunsForSystem(t *testing.T) {
 	store := newStore(t)
 	now := time.Now().UTC()
