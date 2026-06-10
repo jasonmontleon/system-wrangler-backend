@@ -90,7 +90,7 @@
           Write-Error "windows_exporter binary path not resolved (PathName=$($svc.PathName))"
           exit 1
         }
-        $newPath = '"' + $exe + '" --web.listen-address=127.0.0.1:9182 --collectors.enabled=[defaults],memory,tcp,textfile --collector.textfile.directory={{ sw_textfile_dir }}'
+        $newPath = '"' + $exe + '" --web.listen-address=127.0.0.1:9182 --collectors.enabled=[defaults],memory,tcp,textfile --collector.textfile.directories={{ sw_textfile_dir }}'
         $result = Invoke-CimMethod -InputObject $svc -MethodName Change -Arguments @{ PathName = $newPath }
         if ($result.ReturnValue -ne 0) {
           Write-Error "Win32_Service.Change failed: ReturnValue=$($result.ReturnValue)"
