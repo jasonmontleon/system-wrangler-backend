@@ -8,3 +8,6 @@
 *.db
 *.db-wal
 *.db-shm
+
+# Vim swap files
+*.swp
