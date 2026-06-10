@@ -102,6 +102,12 @@ type Store interface {
 	// what returns ErrConflict to new actions) and clears the
 	// "running forever" run. Returns the number of runs finalized.
 	ReconcileOrphanedRuns(at time.Time) (int, error)
+
+	// CountLocks returns the number of held advisory locks, i.e. the
+	// number of runs in flight across both the updater and exporter
+	// substrates (they share this table). The shutdown drain polls it
+	// to wait for in-flight runs — HTTP-driven or scheduled — to finish.
+	CountLocks() (int, error)
 }
 
 // SQLiteStore persists updater state. New ids are minted with the
@@ -672,6 +678,15 @@ func (s *SQLiteStore) ReconcileOrphanedRuns(at time.Time) (int, error) {
 		return int(n), fmt.Errorf("updaters: clear action locks: %w", err)
 	}
 	return int(n), nil
+}
+
+// CountLocks satisfies Store.CountLocks.
+func (s *SQLiteStore) CountLocks() (int, error) {
+	var n int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM system_action_locks`).Scan(&n); err != nil {
+		return 0, fmt.Errorf("updaters: count locks: %w", err)
+	}
+	return n, nil
 }
 
 // SystemStatsAll satisfies Store.SystemStatsAll. Two passes:

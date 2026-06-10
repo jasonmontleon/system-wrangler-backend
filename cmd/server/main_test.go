@@ -174,7 +174,7 @@ func newTestMuxWithStores(t *testing.T) (http.Handler, *audit.Store, *rbac.SQLit
 	svc.Vault = vault
 	svc.Sessions = authStore
 	hub := events.NewHub(nil)
-	return newMux(t.Context(), db, invStore, groupStore, authStore, svc, secret, vault, hub, auditStore, rbacStore, credStore, hostKeyStore, updaterStore, exporterStore, settingsStore, exclusionStore, holdsStore, labelStore, labelStyleStore, dashboardLayoutStore, scheduleStore, alertStore, notificationStore, nil, nil), auditStore, rbacStore
+	return newMux(t.Context(), t.Context(), db, invStore, groupStore, authStore, svc, secret, vault, hub, auditStore, rbacStore, credStore, hostKeyStore, updaterStore, exporterStore, settingsStore, exclusionStore, holdsStore, labelStore, labelStyleStore, dashboardLayoutStore, scheduleStore, alertStore, notificationStore, nil, nil), auditStore, rbacStore
 }
 
 func TestHandleHealth(t *testing.T) {

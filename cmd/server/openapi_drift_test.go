@@ -185,7 +185,7 @@ func recordRoutes(t *testing.T) map[string]bool {
 	}
 
 	rec := &recordingMux{patterns: map[string]bool{}}
-	populateMux(t.Context(), rec, db, invStore, groupStore, authStore, svc, secret, vault, hub, auditStore, rbacStore, credStore, hostKeyStore, updaterStore, exporterStore, settingsStore, exclusionStore, holdsStore, labelStore, labelStyleStore, dashboardLayoutStore, scheduleStore, alertStore, notificationStore, nil, nil)
+	populateMux(t.Context(), t.Context(), rec, db, invStore, groupStore, authStore, svc, secret, vault, hub, auditStore, rbacStore, credStore, hostKeyStore, updaterStore, exporterStore, settingsStore, exclusionStore, holdsStore, labelStore, labelStyleStore, dashboardLayoutStore, scheduleStore, alertStore, notificationStore, nil, nil)
 	return rec.patterns
 }
 

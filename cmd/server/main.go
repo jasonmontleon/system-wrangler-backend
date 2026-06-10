@@ -320,12 +320,21 @@ func run(ctx context.Context, args []string, getenv func(string) string) error {
 	runCtx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	// runExecCtx is the context fired/long-running runs execute under. It
+	// is derived from the root ctx, NOT runCtx, so a shutdown signal
+	// (which cancels runCtx and stops the scheduler loop + refuses new
+	// runs) does not instantly kill in-flight scheduled runs — they keep
+	// going through the drain. cancelRunExec is called only after the
+	// drain grace, to reap any stragglers.
+	runExecCtx, cancelRunExec := context.WithCancel(ctx)
+	defer cancelRunExec()
+
 	srv := &http.Server{
 		Addr: addr,
 		Handler: withRequestMeta(
 			withLogging(
 				auth.CSRF(auditStore)(
-					newMux(runCtx, db, store, groupStore, authStore, authSvc, secret, vault, hub, auditStore, rbacStore, credStore, hostKeyStore, updaterStore, exporterStore, settingsStore, exclusionStore, holdsStore, labelStore, labelStyleStore, dashboardLayoutStore, scheduleStore, alertStore, notificationStore, onCreate, broadcastSystemsChanged),
+					newMux(runCtx, runExecCtx, db, store, groupStore, authStore, authSvc, secret, vault, hub, auditStore, rbacStore, credStore, hostKeyStore, updaterStore, exporterStore, settingsStore, exclusionStore, holdsStore, labelStore, labelStyleStore, dashboardLayoutStore, scheduleStore, alertStore, notificationStore, onCreate, broadcastSystemsChanged),
 				),
 			),
 		),
@@ -389,25 +398,32 @@ func run(ctx context.Context, args []string, getenv func(string) string) error {
 			return fmt.Errorf("server failed: %w", err)
 		}
 	}
-	// runCtx is already cancelled here, so the updater/exporter handlers
-	// are refusing new runs (503). Drain in-flight runs for up to the
-	// configured grace before forcing the connections closed; anything
-	// still going is left for startup reconciliation on the next boot.
+	// runCtx is already cancelled here: the updater/exporter handlers
+	// refuse new runs (503) and the schedule ticker's loop has stopped
+	// firing new runs. In-flight runs keep going — HTTP ones on their
+	// request context, scheduled ones on runExecCtx — so drain them by
+	// waiting for their advisory locks to clear, up to the grace.
+	// Whatever is still running when the grace elapses is abandoned and
+	// reconciled (marked failed, lock dropped) on the next boot.
 	graceSecs := settings.ShutdownGraceSeconds(settingsStore)
-	slog.Info("shutdown signal received; draining in-flight runs", "grace_seconds", graceSecs,
+	slog.Info("shutdown signal received; refusing new runs and draining in-flight", "grace_seconds", graceSecs,
 		"note", "ensure the container/orchestrator stop timeout is at least this long, or the runtime will SIGKILL mid-drain")
+	drainInFlightRuns(updaterStore, time.Duration(graceSecs)*time.Second)
+	// In-flight runs are done (or abandoned past grace); cancel the run
+	// execution context to reap any scheduled stragglers.
+	cancelRunExec()
 	// Stop the targets writer first — once the hub closes its
 	// subscriber channel, the writer's goroutine returns; targetsStop
 	// waits for it before unsubscribing.
 	targetsStop()
-	// Close the SSE hub first so streaming handlers observe their channel
-	// close and return; otherwise srv.Shutdown waits out its deadline on
-	// the long-lived /api/events requests held by open dashboard tabs.
+	// Close the SSE hub so streaming handlers observe their channel close
+	// and return; otherwise srv.Shutdown waits out its deadline on the
+	// long-lived /api/events requests held by open dashboard tabs.
 	hub.Close()
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), time.Duration(graceSecs)*time.Second)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
-		slog.Error("drain grace exceeded; forcing close — unfinished runs will be reconciled on next start", "err", err)
+		slog.Error("http shutdown error; forcing close", "err", err)
 		if err := srv.Close(); err != nil {
 			slog.Error("force close error", "err", err)
 		}
@@ -416,9 +432,39 @@ func run(ctx context.Context, args []string, getenv func(string) string) error {
 	return nil
 }
 
-func newMux(runCtx context.Context, db *sql.DB, store systems.Store, groupStore groups.Store, authStore *auth.SQLiteAuthStore, authSvc *auth.Service, secret []byte, vault *secrets.Vault, hub *events.Hub, auditStore *audit.Store, rbacStore rbac.Store, credStore credentials.Store, hostKeyStore hostkeys.Store, updaterStore updaters.Store, exporterStore exporters.Store, settingsStore settings.Store, exclusionStore exclusions.Store, holdsStore holds.Store, labelStore labels.Store, labelStyleStore labels.StyleStore, dashboardLayoutStore dashboardlayout.Store, scheduleStore schedules.Store, alertStore alerts.Store, notificationStore *notifications.SQLiteStore, onSystemCreate, onSystemDelete func()) *http.ServeMux {
+// lockCounter is the narrow slice of updaters.Store the drain needs.
+type lockCounter interface {
+	CountLocks() (int, error)
+}
+
+// drainInFlightRuns blocks until no run holds an advisory lock or the
+// grace elapses, whichever comes first. The lock table is the shared
+// in-flight registry for both updater and exporter runs (HTTP-driven
+// and scheduled alike), so polling it drains every run origin without
+// per-runner bookkeeping.
+func drainInFlightRuns(store lockCounter, grace time.Duration) {
+	deadline := time.Now().Add(grace)
+	for {
+		n, err := store.CountLocks()
+		if err != nil {
+			slog.Error("drain: count in-flight runs", "err", err)
+			return
+		}
+		if n == 0 {
+			slog.Info("all in-flight runs drained")
+			return
+		}
+		if !time.Now().Before(deadline) {
+			slog.Warn("drain grace exceeded; abandoning in-flight runs — reconciled on next start", "remaining", n)
+			return
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+}
+
+func newMux(runCtx, runExecCtx context.Context, db *sql.DB, store systems.Store, groupStore groups.Store, authStore *auth.SQLiteAuthStore, authSvc *auth.Service, secret []byte, vault *secrets.Vault, hub *events.Hub, auditStore *audit.Store, rbacStore rbac.Store, credStore credentials.Store, hostKeyStore hostkeys.Store, updaterStore updaters.Store, exporterStore exporters.Store, settingsStore settings.Store, exclusionStore exclusions.Store, holdsStore holds.Store, labelStore labels.Store, labelStyleStore labels.StyleStore, dashboardLayoutStore dashboardlayout.Store, scheduleStore schedules.Store, alertStore alerts.Store, notificationStore *notifications.SQLiteStore, onSystemCreate, onSystemDelete func()) *http.ServeMux {
 	mux := http.NewServeMux()
-	populateMux(runCtx, mux, db, store, groupStore, authStore, authSvc, secret, vault, hub, auditStore, rbacStore, credStore, hostKeyStore, updaterStore, exporterStore, settingsStore, exclusionStore, holdsStore, labelStore, labelStyleStore, dashboardLayoutStore, scheduleStore, alertStore, notificationStore, onSystemCreate, onSystemDelete)
+	populateMux(runCtx, runExecCtx, mux, db, store, groupStore, authStore, authSvc, secret, vault, hub, auditStore, rbacStore, credStore, hostKeyStore, updaterStore, exporterStore, settingsStore, exclusionStore, holdsStore, labelStore, labelStyleStore, dashboardLayoutStore, scheduleStore, alertStore, notificationStore, onSystemCreate, onSystemDelete)
 	return mux
 }
 
@@ -427,7 +473,7 @@ func newMux(runCtx context.Context, db *sql.DB, store systems.Store, groupStore 
 // that captures every (method, path) pattern without spinning up a real
 // *http.ServeMux. main.go and tests reach for newMux; only the drift
 // test needs this entry point.
-func populateMux(runCtx context.Context, mux router.Mux, db *sql.DB, store systems.Store, groupStore groups.Store, authStore *auth.SQLiteAuthStore, authSvc *auth.Service, secret []byte, vault *secrets.Vault, hub *events.Hub, auditStore *audit.Store, rbacStore rbac.Store, credStore credentials.Store, hostKeyStore hostkeys.Store, updaterStore updaters.Store, exporterStore exporters.Store, settingsStore settings.Store, exclusionStore exclusions.Store, holdsStore holds.Store, labelStore labels.Store, labelStyleStore labels.StyleStore, dashboardLayoutStore dashboardlayout.Store, scheduleStore schedules.Store, alertStore alerts.Store, notificationStore *notifications.SQLiteStore, onSystemCreate, onSystemDelete func()) {
+func populateMux(runCtx, runExecCtx context.Context, mux router.Mux, db *sql.DB, store systems.Store, groupStore groups.Store, authStore *auth.SQLiteAuthStore, authSvc *auth.Service, secret []byte, vault *secrets.Vault, hub *events.Hub, auditStore *audit.Store, rbacStore rbac.Store, credStore credentials.Store, hostKeyStore hostkeys.Store, updaterStore updaters.Store, exporterStore exporters.Store, settingsStore settings.Store, exclusionStore exclusions.Store, holdsStore holds.Store, labelStore labels.Store, labelStyleStore labels.StyleStore, dashboardLayoutStore dashboardlayout.Store, scheduleStore schedules.Store, alertStore alerts.Store, notificationStore *notifications.SQLiteStore, onSystemCreate, onSystemDelete func()) {
 	// scheduleOrchestrator is lazy-bound inside the `if vault != nil`
 	// block below — without a vault, ansible can't run, so schedules
 	// can't fire either. When nil, the schedules handler still serves
@@ -795,6 +841,10 @@ func populateMux(runCtx context.Context, mux router.Mux, db *sql.DB, store syste
 				return time.Duration(settings.ScheduleMisfireGraceSeconds(settingsStore)) * time.Second
 			},
 			Logger: logging.Component(logging.Schedule),
+			// Fired runs execute under runExecCtx so a shutdown signal
+			// stops the loop (runCtx) but lets in-flight scheduled runs
+			// drain rather than dying instantly.
+			FireCtx: runExecCtx,
 		}
 		go scheduleTicker.Run(runCtx)
 		updaterHandler := &updaters.Handler{

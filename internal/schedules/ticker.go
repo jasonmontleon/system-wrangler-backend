@@ -44,6 +44,23 @@ type Ticker struct {
 	// so the lines carry component="schedule" and obey the per-loop
 	// level.
 	Logger *slog.Logger
+
+	// FireCtx, when non-nil, is the context fired runs execute under,
+	// decoupled from the Run loop's context. On a shutdown signal the
+	// loop context is cancelled (so the ticker stops scheduling new
+	// runs) while FireCtx stays live, letting in-flight scheduled runs
+	// finish during the drain instead of being killed instantly. nil
+	// falls back to the loop context (tests). Bound in cmd/server/main.go.
+	FireCtx context.Context
+}
+
+// fireContext returns the context fired runs execute under: FireCtx
+// when set, otherwise the loop context.
+func (t *Ticker) fireContext(loopCtx context.Context) context.Context {
+	if t.FireCtx != nil {
+		return t.FireCtx
+	}
+	return loopCtx
 }
 
 func (t *Ticker) logger() *slog.Logger {
@@ -125,9 +142,10 @@ func (t *Ticker) tick(ctx context.Context, now time.Time) {
 		return
 	}
 	t.logger().Debug("tick complete", "due", len(due))
+	fireCtx := t.fireContext(ctx)
 	for _, sch := range due {
 		go func(sch Schedule) {
-			if _, err := t.Orchestrator.Fire(ctx, sch); err != nil {
+			if _, err := t.Orchestrator.Fire(fireCtx, sch); err != nil {
 				t.logger().Error("fire schedule", "err", err, "schedule_id", sch.ID)
 			}
 		}(sch)

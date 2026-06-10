@@ -526,6 +526,29 @@ func TestReconcileOrphanedRuns(t *testing.T) {
 	}
 }
 
+func TestCountLocks(t *testing.T) {
+	store := newStore(t)
+	now := time.Now().UTC()
+	if n, err := store.CountLocks(); err != nil || n != 0 {
+		t.Fatalf("empty CountLocks = %d, %v; want 0, nil", n, err)
+	}
+	if err := store.AcquireLock("sys-1", "run-1", now); err != nil {
+		t.Fatalf("AcquireLock sys-1: %v", err)
+	}
+	if err := store.AcquireLock("sys-2", "run-2", now); err != nil {
+		t.Fatalf("AcquireLock sys-2: %v", err)
+	}
+	if n, _ := store.CountLocks(); n != 2 {
+		t.Errorf("CountLocks = %d, want 2", n)
+	}
+	if err := store.ReleaseLock("sys-1", "run-1"); err != nil {
+		t.Fatalf("ReleaseLock: %v", err)
+	}
+	if n, _ := store.CountLocks(); n != 1 {
+		t.Errorf("CountLocks after release = %d, want 1", n)
+	}
+}
+
 func mustRun(t *testing.T, store *SQLiteStore, systemID string) Run {
 	t.Helper()
 	list, err := store.ListRuns(systemID, 10)

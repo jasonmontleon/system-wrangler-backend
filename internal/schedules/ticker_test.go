@@ -12,6 +12,24 @@ import (
 	"system-wrangler-backend/internal/updaters"
 )
 
+func TestTickerFireContext(t *testing.T) {
+	loop := context.Background()
+	// Unset FireCtx falls back to the loop context so tests and any
+	// caller that doesn't decouple keep their old behavior.
+	tk := &Ticker{}
+	if got := tk.fireContext(loop); got != loop {
+		t.Errorf("nil FireCtx: got %v, want the loop ctx", got)
+	}
+	// A set FireCtx is used for fires, decoupling them from the loop ctx
+	// that a shutdown signal cancels.
+	type k struct{}
+	fireCtx := context.WithValue(context.Background(), k{}, "fire")
+	tk.FireCtx = fireCtx
+	if got := tk.fireContext(loop); got != fireCtx {
+		t.Errorf("set FireCtx: got %v, want the FireCtx", got)
+	}
+}
+
 func TestTickerFiresDueSchedulesOnTick(t *testing.T) {
 	o, store := newFiringOrchestrator(t)
 	o.Systems = fakeSysStore{systems: []systems.System{{ID: "s1"}}}
