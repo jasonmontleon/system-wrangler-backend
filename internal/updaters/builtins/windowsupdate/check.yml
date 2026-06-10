@@ -28,13 +28,13 @@
              | reject('equalto', '')
              | list }}
         sw_reboot_pending_titles: "{{ wu_staged.stdout_lines | default([]) | reject('equalto', '') | list }}"
-    - name: Surface count to the run log
+    - name: Reduce to the genuinely-installable subset (drop staged-pending-reboot items)
+      ansible.builtin.set_fact:
+        sw_installable_titles: "{{ sw_pending_titles | reject('in', sw_reboot_pending_titles) | list }}"
+    - name: Surface installable count to the run log
       ansible.builtin.debug:
-        msg: "SW_AFFECTED_COUNT: {{ sw_pending_titles | length }}"
-    - name: Surface each pending update (prefixed when staged-pending-reboot)
+        msg: "SW_AFFECTED_COUNT: {{ sw_installable_titles | length }}"
+    - name: Surface each genuinely-installable pending update
       ansible.builtin.debug:
-        msg: >-
-          {{ 'SW_PENDING_PACKAGE: (Installed, Pending Reboot): ' ~ item
-             if item in sw_reboot_pending_titles
-             else 'SW_PENDING_PACKAGE: ' ~ item }}
-      loop: "{{ sw_pending_titles }}"
+        msg: "SW_PENDING_PACKAGE: {{ item }}"
+      loop: "{{ sw_installable_titles }}"

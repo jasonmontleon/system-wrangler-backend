@@ -1,0 +1,50 @@
+- name: Test windowsupdate check parsing
+  hosts: localhost
+  gather_facts: false
+  vars:
+    wu_typical:
+      pending:
+        - "2024-01 Cumulative Update for Windows 11 (KB5034123)"
+        - "Security Intelligence Update for Microsoft Defender (KB2267602)"
+        - ".NET 8.0.3 Security Update (KB5034567)"
+      reboot_pending:
+        - "2024-01 Cumulative Update for Windows 11 (KB5034123)"
+    wu_all_reboot:
+      pending:
+        - "Feature Update to Windows 11, version 23H2"
+        - "2024-01 Cumulative Update for Windows 11 (KB5034123)"
+      reboot_pending:
+        - "Feature Update to Windows 11, version 23H2"
+        - "2024-01 Cumulative Update for Windows 11 (KB5034123)"
+    wu_none_reboot:
+      pending:
+        - "Security Intelligence Update for Microsoft Defender (KB2267602)"
+      reboot_pending: []
+  tasks:
+    - name: Typical — drop the single staged-pending-reboot title
+      ansible.builtin.set_fact:
+        typical_installable: >-
+          {{ wu_typical.pending | reject('in', wu_typical.reboot_pending) | list }}
+    - name: Assert typical keeps only the genuinely-installable titles
+      ansible.builtin.assert:
+        that:
+          - typical_installable == ['Security Intelligence Update for Microsoft Defender (KB2267602)', '.NET 8.0.3 Security Update (KB5034567)']
+        fail_msg: "typical_installable={{ typical_installable }}"
+    - name: All staged-pending-reboot — installable subset collapses to empty
+      ansible.builtin.set_fact:
+        all_reboot_installable: >-
+          {{ wu_all_reboot.pending | reject('in', wu_all_reboot.reboot_pending) | list }}
+    - name: Assert an all-reboot host reports zero installable updates
+      ansible.builtin.assert:
+        that:
+          - all_reboot_installable == []
+        fail_msg: "all_reboot_installable={{ all_reboot_installable }}"
+    - name: No staged-pending-reboot — installable subset equals the full pending list
+      ansible.builtin.set_fact:
+        none_reboot_installable: >-
+          {{ wu_none_reboot.pending | reject('in', wu_none_reboot.reboot_pending) | list }}
+    - name: Assert a host with nothing staged keeps every pending title
+      ansible.builtin.assert:
+        that:
+          - none_reboot_installable == ['Security Intelligence Update for Microsoft Defender (KB2267602)']
+        fail_msg: "none_reboot_installable={{ none_reboot_installable }}"
