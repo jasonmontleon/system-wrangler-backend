@@ -8,6 +8,13 @@ services:
     image: quay.io/jasonmontleon/system-wrangler:latest
     container_name: system-wrangler
     restart: unless-stopped
+    # Give the server time to drain in-flight runs on shutdown before
+    # podman force-kills it. Must be >= the shutdown_grace_seconds
+    # setting (default 300s); the extra margin covers the rest of the
+    # graceful-stop sequence. Raise both together if you increase the
+    # setting. Runs still unfinished at force-kill are recovered (marked
+    # failed, host lock cleared) on the next start regardless.
+    stop_grace_period: 330s
     environment:
       SW_INTERNAL_SECRET_FILE: /etc/system-wrangler/internal-secret
       SW_TARGETS_FILE: /var/lib/sw-targets/targets.json
