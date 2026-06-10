@@ -151,6 +151,21 @@ func SetAlertEvalIntervalSeconds(store Store, n int) error {
 		MinAlertEvalIntervalSeconds, MaxAlertEvalIntervalSeconds, "alert_eval_interval_seconds")
 }
 
+// RebootGraceSeconds returns how long the apply-stamped
+// reboot_required_at column stays authoritative in the SPA before the
+// sw_reboot_required metric takes over, falling back to
+// DefaultRebootGraceSeconds on unset/unparseable/out-of-range values.
+func RebootGraceSeconds(store Store) int {
+	return clampedSetting(store, KeyRebootGraceSeconds,
+		DefaultRebootGraceSeconds, MinRebootGraceSeconds, MaxRebootGraceSeconds)
+}
+
+// SetRebootGraceSeconds validates and persists the grace.
+func SetRebootGraceSeconds(store Store, n int) error {
+	return setBoundedSetting(store, KeyRebootGraceSeconds, n,
+		MinRebootGraceSeconds, MaxRebootGraceSeconds, "reboot_grace_seconds")
+}
+
 // LogLevel returns the configured log level for a background-loop
 // component, falling back to DefaultLogLevel when the setting is unset
 // or holds an unrecognised value. Used both to seed the live level at

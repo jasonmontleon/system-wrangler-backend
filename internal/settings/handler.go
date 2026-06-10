@@ -41,6 +41,11 @@ func (h *Handler) Register(mux router.Mux, mw func(http.Handler) http.Handler) {
 	}
 	mux.Handle("GET /api/admin/settings", mw(http.HandlerFunc(h.list)))
 	mux.Handle("PUT /api/admin/settings/{key}", mw(http.HandlerFunc(h.put)))
+	// Readable by any authenticated user, not just Global-Admins: the
+	// SPA's reboot-required handoff runs in every operator's browser
+	// and needs the effective grace value to decide how long the
+	// apply-stamped column stays authoritative.
+	mux.Handle("GET /api/reboot-grace-seconds", mw(http.HandlerFunc(h.rebootGrace)))
 }
 
 // settingsResponseDTO returns the full set as {key: value}. The
@@ -91,6 +96,9 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 	if _, ok := all[KeyScheduleMisfireGraceSeconds]; !ok {
 		all[KeyScheduleMisfireGraceSeconds] = strconv.Itoa(ScheduleMisfireGraceSeconds(h.Store))
 	}
+	if _, ok := all[KeyRebootGraceSeconds]; !ok {
+		all[KeyRebootGraceSeconds] = strconv.Itoa(RebootGraceSeconds(h.Store))
+	}
 	for _, c := range logging.Components {
 		k := LogLevelKey(c)
 		if _, ok := all[k]; !ok {
@@ -98,6 +106,22 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, settingsResponseDTO{Settings: all})
+}
+
+// rebootGraceDTO is the response shape of GET /api/reboot-grace-seconds.
+type rebootGraceDTO struct {
+	Seconds int `json:"seconds"`
+}
+
+// rebootGrace returns the effective reboot-required grace window in
+// seconds. Deliberately not behind CanManage — every operator's SPA
+// reads it to drive the reboot-required handoff.
+func (h *Handler) rebootGrace(w http.ResponseWriter, _ *http.Request) {
+	if h.Store == nil {
+		writeError(w, http.StatusServiceUnavailable, "settings store not configured")
+		return
+	}
+	writeJSON(w, http.StatusOK, rebootGraceDTO{Seconds: RebootGraceSeconds(h.Store)})
 }
 
 func (h *Handler) put(w http.ResponseWriter, r *http.Request) {
@@ -165,6 +189,10 @@ func (h *Handler) put(w http.ResponseWriter, r *http.Request) {
 		}
 	case KeyScheduleMisfireGraceSeconds:
 		if err := h.setIntFromBody(w, in.Value, key, SetScheduleMisfireGraceSeconds); err != nil {
+			return
+		}
+	case KeyRebootGraceSeconds:
+		if err := h.setIntFromBody(w, in.Value, key, SetRebootGraceSeconds); err != nil {
 			return
 		}
 	default:

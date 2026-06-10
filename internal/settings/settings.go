@@ -151,6 +151,33 @@ const MinAlertEvalIntervalSeconds = 10
 // breach could persist most of an hour before an alert ever fires.
 const MaxAlertEvalIntervalSeconds = 3600
 
+// KeyRebootGraceSeconds is how long the apply-stamped reboot_required_at
+// column stays authoritative in the SPA before the sw_reboot_required
+// metric takes over as the sole source of truth. Stored as a
+// string-encoded integer number of seconds.
+const KeyRebootGraceSeconds = "reboot_grace_seconds"
+
+// DefaultRebootGraceSeconds is two minutes. The metric's worst-case ON
+// latency after a reboot becomes required is ~105s in a default deploy
+// (60s textfile collector cadence + 15s Prometheus scrape + 30s SPA
+// poll); 120s covers that with a small margin so the column bridges the
+// gap without a "no reboot" flicker, while keeping the time-to-truth
+// after a reboot short. Operators with a faster or slower scrape can
+// tune it either way.
+const DefaultRebootGraceSeconds = 120
+
+// MinRebootGraceSeconds is a permissive floor. Values below the
+// metric's ~105s catch-up let the column expire before the metric is
+// reliable, which can show a brief post-apply flicker — but that's the
+// operator's call to make, so the floor only guards against a zero or
+// negative window.
+const MinRebootGraceSeconds = 10
+
+// MaxRebootGraceSeconds caps at thirty minutes. A longer grace only
+// widens the window in which an apply-then-immediate-reboot shows a
+// stale "reboot required" before the metric reclaims authority.
+const MaxRebootGraceSeconds = 1800
+
 // logLevelPrefix is prepended to a background-loop component name to
 // form its setting key, e.g. "log_level_probe".
 const logLevelPrefix = "log_level_"

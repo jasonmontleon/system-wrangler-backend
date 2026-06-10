@@ -2693,6 +2693,27 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
 
+  /api/reboot-grace-seconds:
+    get:
+      tags: [settings]
+      summary: Effective reboot-required grace window, in seconds.
+      description: |
+        Readable by any authenticated user. The SPA's reboot-required
+        handoff uses this to decide how long the apply-stamped
+        `rebootRequiredAt` column stays authoritative before the
+        `sw_reboot_required` metric takes over.
+      responses:
+        "200":
+          description: The grace window in seconds.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [seconds]
+                properties:
+                  seconds: { type: integer }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
   /api/admin/settings:
     get:
       tags: [settings]

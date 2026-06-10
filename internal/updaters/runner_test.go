@@ -548,11 +548,10 @@ func TestRunnerSilentOnLockConflict(t *testing.T) {
 }
 
 // TestRunnerRebootRequiredReconciliation pins the lifecycle of the
-// hosts.reboot_required_at hint across the three run kinds: an
-// apply that emits SW_REBOOT_REQUIRED:1 stamps it, an apply that
-// doesn't clears it, and a structurally-successful check or inspect
-// always clears regardless of emission. Transport failures (aErr !=
-// nil) leave prior state intact.
+// hosts.reboot_required_at hint: any structurally-successful run that
+// emits SW_REBOOT_REQUIRED:1 stamps it (apply or check), a run that
+// doesn't emit it clears it, and inspect — which never emits — always
+// clears. Transport failures (aErr != nil) leave prior state intact.
 func TestRunnerRebootRequiredReconciliation(t *testing.T) {
 	type call struct {
 		op string
@@ -587,9 +586,19 @@ func TestRunnerRebootRequiredReconciliation(t *testing.T) {
 			wantCall: &call{op: "clear"},
 		},
 		{
-			name:   "check with marker (ignored) still Clears",
+			name:   "check with marker -> Set",
 			kind:   RunKindCheck,
 			stdout: `ok: [h] => { "msg": "SW_REBOOT_REQUIRED: 1" }` + "\n",
+			runFunc: func(f *runnerFixture) error {
+				_, err := f.runner.Check(context.Background(), f.systemID, "builtin.dnf")
+				return err
+			},
+			wantCall: &call{op: "set"},
+		},
+		{
+			name:   "check no marker -> Clear",
+			kind:   RunKindCheck,
+			stdout: "",
 			runFunc: func(f *runnerFixture) error {
 				_, err := f.runner.Check(context.Background(), f.systemID, "builtin.dnf")
 				return err

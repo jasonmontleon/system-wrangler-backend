@@ -238,9 +238,8 @@ func (r *Runner) Inspect(ctx context.Context, systemID string) (InspectResult, e
 		}
 	}
 	// Inspect playbooks don't emit SW_REBOOT_REQUIRED, so a
-	// structurally-successful inspect always clears the hint — same
-	// auto-clear semantics as Check.
-	r.reconcileRebootRequired(RunKindInspect, systemID, aRun.Stdout, finishedAt)
+	// structurally-successful inspect always clears the hint.
+	r.reconcileRebootRequired(systemID, aRun.Stdout, finishedAt)
 
 	// Reconcile system_updaters: every detected id gets an upsert,
 	// every previously-recorded id that is no longer detected gets
@@ -482,7 +481,7 @@ func (r *Runner) runUpdater(ctx context.Context, systemID, updaterID string, kin
 	// hint. A transport-level failure leaves prior state intact so
 	// we don't lose the signal because ansible itself crashed.
 	if aErr == nil {
-		r.reconcileRebootRequired(kind, systemID, aRun.Stdout, finishedAt)
+		r.reconcileRebootRequired(systemID, aRun.Stdout, finishedAt)
 	}
 
 	if aErr != nil {
@@ -548,12 +547,17 @@ func (r *Runner) runUpdater(ctx context.Context, systemID, updaterID string, kin
 }
 
 // reconcileRebootRequired applies the SW_REBOOT_REQUIRED marker
-// against the persisted hint. Apply that emits the marker sets the
-// hint; any structurally-successful run that does not emit it
-// clears the hint. Errors degrade to a warning — the next clean
-// run reconciles.
-func (r *Runner) reconcileRebootRequired(kind RunKind, systemID string, stdout []byte, at time.Time) {
-	if kind == RunKindApply && parseRebootRequired(stdout) {
+// against the persisted hint. Any structurally-successful run that
+// emits the marker stamps the hint — an apply that installed
+// reboot-pending updates, or a check that still sees them staged — so
+// the auto-check after an apply re-confirms the stamp instead of
+// wiping it. A run that does not emit the marker clears it. The SPA
+// trusts the stamp only for a bounded grace window before the
+// sw_reboot_required metric takes over, so a stamp that outlives a
+// reboot self-expires rather than sticking. Errors degrade to a
+// warning — the next clean run reconciles.
+func (r *Runner) reconcileRebootRequired(systemID string, stdout []byte, at time.Time) {
+	if parseRebootRequired(stdout) {
 		if r.SetRebootRequired == nil {
 			return
 		}

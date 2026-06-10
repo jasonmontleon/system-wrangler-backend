@@ -238,6 +238,48 @@ func TestSetScheduleMisfireGraceSeconds(t *testing.T) {
 	}
 }
 
+func TestRebootGraceSeconds(t *testing.T) {
+	if got := RebootGraceSeconds(nil); got != DefaultRebootGraceSeconds {
+		t.Fatalf("nil store = %d, want default %d", got, DefaultRebootGraceSeconds)
+	}
+	if got := RebootGraceSeconds(newFakeStore()); got != DefaultRebootGraceSeconds {
+		t.Fatalf("unset = %d, want default %d", got, DefaultRebootGraceSeconds)
+	}
+
+	f := newFakeStore()
+	f.values[KeyRebootGraceSeconds] = strconv.Itoa(MinRebootGraceSeconds - 1)
+	if got := RebootGraceSeconds(f); got != DefaultRebootGraceSeconds {
+		t.Errorf("below min = %d, want default %d", got, DefaultRebootGraceSeconds)
+	}
+	f.values[KeyRebootGraceSeconds] = strconv.Itoa(MaxRebootGraceSeconds + 100)
+	if got := RebootGraceSeconds(f); got != MaxRebootGraceSeconds {
+		t.Errorf("above max = %d, want clamp %d", got, MaxRebootGraceSeconds)
+	}
+	f.values[KeyRebootGraceSeconds] = "45"
+	if got := RebootGraceSeconds(f); got != 45 {
+		t.Errorf("valid = %d, want 45", got)
+	}
+}
+
+func TestSetRebootGraceSeconds(t *testing.T) {
+	f := newFakeStore()
+	if err := SetRebootGraceSeconds(f, 45); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if got := RebootGraceSeconds(f); got != 45 {
+		t.Fatalf("round-trip = %d, want 45", got)
+	}
+	if err := SetRebootGraceSeconds(f, MinRebootGraceSeconds-1); !errors.Is(err, ErrInvalid) {
+		t.Errorf("below-min err = %v, want ErrInvalid", err)
+	}
+	if err := SetRebootGraceSeconds(f, MaxRebootGraceSeconds+1); !errors.Is(err, ErrInvalid) {
+		t.Errorf("above-max err = %v, want ErrInvalid", err)
+	}
+	if err := SetRebootGraceSeconds(nil, 120); err == nil {
+		t.Errorf("nil store err = nil, want error")
+	}
+}
+
 func TestAlertEvalIntervalSeconds(t *testing.T) {
 	if got := AlertEvalIntervalSeconds(nil); got != DefaultAlertEvalIntervalSeconds {
 		t.Fatalf("nil store = %d, want default %d", got, DefaultAlertEvalIntervalSeconds)

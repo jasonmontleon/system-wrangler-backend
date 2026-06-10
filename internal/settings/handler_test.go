@@ -218,10 +218,15 @@ func TestListSurfacesProbeDefaults(t *testing.T) {
 		KeyProbeFailureThreshold,
 		KeyProbeSuccessThreshold,
 		KeyScheduleMisfireGraceSeconds,
+		KeyRebootGraceSeconds,
 	} {
 		if _, ok := got.Settings[key]; !ok {
 			t.Errorf("%s missing from list response", key)
 		}
+	}
+	if got.Settings[KeyRebootGraceSeconds] != strconv.Itoa(DefaultRebootGraceSeconds) {
+		t.Errorf("reboot_grace_seconds = %q, want default %d",
+			got.Settings[KeyRebootGraceSeconds], DefaultRebootGraceSeconds)
 	}
 	if got.Settings[KeyScheduleMisfireGraceSeconds] != strconv.Itoa(DefaultScheduleMisfireGraceSeconds) {
 		t.Errorf("schedule_misfire_grace_seconds = %q, want default %d",
@@ -284,6 +289,85 @@ func TestPutScheduleMisfireGrace(t *testing.T) {
 			t.Errorf("status = %d, want 400", resp.StatusCode)
 		}
 	})
+}
+
+func TestPutRebootGrace(t *testing.T) {
+	t.Run("ok", func(t *testing.T) {
+		h, srv := newHandlerSrv(t, true)
+		req, _ := http.NewRequest(
+			http.MethodPut,
+			srv.URL+"/api/admin/settings/"+KeyRebootGraceSeconds,
+			strings.NewReader(`{"value":"45"}`),
+		)
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("put: %v", err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		if resp.StatusCode != http.StatusNoContent {
+			t.Fatalf("status = %d, want 204", resp.StatusCode)
+		}
+		if v, _ := h.Store.Get(KeyRebootGraceSeconds); v != "45" {
+			t.Errorf("stored = %q, want 45", v)
+		}
+	})
+	t.Run("above_max", func(t *testing.T) {
+		_, srv := newHandlerSrv(t, true)
+		req, _ := http.NewRequest(
+			http.MethodPut,
+			srv.URL+"/api/admin/settings/"+KeyRebootGraceSeconds,
+			strings.NewReader(`{"value":"99999"}`),
+		)
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("put: %v", err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("status = %d, want 400", resp.StatusCode)
+		}
+	})
+}
+
+func TestRebootGraceEndpoint(t *testing.T) {
+	// Default when unset, and readable by a non-admin (allow=false) —
+	// the gate that protects /api/admin/settings must not apply here.
+	h, srv := newHandlerSrv(t, false)
+	resp, err := http.Get(srv.URL + "/api/reboot-grace-seconds")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200 for non-admin", resp.StatusCode)
+	}
+	var got struct {
+		Seconds int `json:"seconds"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Seconds != DefaultRebootGraceSeconds {
+		t.Errorf("unset = %d, want default %d", got.Seconds, DefaultRebootGraceSeconds)
+	}
+
+	// Reflects a stored override.
+	if err := SetRebootGraceSeconds(h.Store, 300); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+	resp2, err := http.Get(srv.URL + "/api/reboot-grace-seconds")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	defer func() { _ = resp2.Body.Close() }()
+	if err := json.NewDecoder(resp2.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Seconds != 300 {
+		t.Errorf("override = %d, want 300", got.Seconds)
+	}
 }
 
 func TestPutHappyPath(t *testing.T) {

@@ -38,3 +38,7 @@
       ansible.builtin.debug:
         msg: "SW_PENDING_PACKAGE: {{ item }}"
       loop: "{{ sw_installable_titles }}"
+    - name: Surface reboot-required marker when updates are staged pending a reboot
+      ansible.builtin.debug:
+        msg: "SW_REBOOT_REQUIRED: 1"
+      when: sw_reboot_pending_titles | length > 0
