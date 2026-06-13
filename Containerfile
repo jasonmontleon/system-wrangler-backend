@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 
-FROM quay.io/centos/centos:stream10 AS frontend-build
+FROM --platform=$BUILDPLATFORM quay.io/centos/centos:stream10 AS frontend-build
 RUN dnf update -y \
  && dnf install -y --setopt=install_weak_deps=False nodejs npm \
  && dnf clean all && rm -rf /var/cache/dnf \
