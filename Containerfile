@@ -11,23 +11,24 @@ RUN npm ci
 COPY --from=frontend . .
 RUN npm run build
 
-FROM quay.io/centos/centos:stream10 AS backend-build
+FROM --platform=$BUILDPLATFORM quay.io/centos/centos:stream10 AS backend-build
 ARG GO_VERSION=1.26.4
 ARG BACKEND_SHA=dev
 ARG FRONTEND_SHA=dev
 ARG BUILD_DATE=unknown
+ARG TARGETARCH
 RUN dnf update -y \
  && dnf install -y --setopt=install_weak_deps=False tar gzip curl-minimal \
  && dnf clean all && rm -rf /var/cache/dnf \
- && ARCH=$(uname -m) \
- && case "$ARCH" in \
-        x86_64)  GOARCH=amd64 ;; \
-        aarch64) GOARCH=arm64 ;; \
-        s390x)   GOARCH=s390x ;; \
-        ppc64le) GOARCH=ppc64le ;; \
-        *) echo "unsupported arch: $ARCH" >&2; exit 1 ;; \
+ && HOSTARCH=$(uname -m) \
+ && case "$HOSTARCH" in \
+        x86_64)  GOHOSTARCH=amd64 ;; \
+        aarch64) GOHOSTARCH=arm64 ;; \
+        s390x)   GOHOSTARCH=s390x ;; \
+        ppc64le) GOHOSTARCH=ppc64le ;; \
+        *) echo "unsupported build arch: $HOSTARCH" >&2; exit 1 ;; \
     esac \
- && curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-${GOARCH}.tar.gz" \
+ && curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-${GOHOSTARCH}.tar.gz" \
     | tar -C /usr/local -xz
 ENV PATH=/usr/local/go/bin:$PATH
 WORKDIR /src
@@ -35,7 +36,7 @@ COPY go.mod go.sum* ./
 RUN go mod download
 COPY . .
 COPY --from=frontend-build /app/dist ./web/dist
-RUN CGO_ENABLED=0 GOOS=linux go build \
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build \
     -ldflags="-s -w \
         -X system-wrangler-backend/internal/buildinfo.Backend=${BACKEND_SHA} \
         -X system-wrangler-backend/internal/buildinfo.Frontend=${FRONTEND_SHA} \
