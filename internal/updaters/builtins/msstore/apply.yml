@@ -33,7 +33,9 @@
         }
         exit 0
       register: msstore_apply
-      changed_when: msstore_apply.stdout_lines | default([]) | select('match', '^Updated: ') | list | length > 0
+      changed_when: >-
+        msstore_apply.stdout_lines | default([])
+        | select('match', '^Updated: ') | list | length > 0
       failed_when: msstore_apply.rc not in [0]
     - name: Compute upgraded count from "Updated:" lines
       ansible.builtin.set_fact:
