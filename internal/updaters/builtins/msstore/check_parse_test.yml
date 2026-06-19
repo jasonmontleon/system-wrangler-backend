@@ -16,6 +16,11 @@
         - "Microsoft.Paint_8wekyb3d8bbwe"
         - "   "
         - "Microsoft.ScreenSketch_8wekyb3d8bbwe"
+    msstore_stderr_diag:
+      stderr_lines:
+        - ""
+        - "msstore check error: System.Runtime.WindowsRuntime unavailable"
+        - "   "
   tasks:
     - name: Parse typical package-family output
       ansible.builtin.set_fact:
@@ -30,7 +35,7 @@
         that:
           - typical_pkgs == ['Microsoft.WindowsTerminal_8wekyb3d8bbwe', 'Microsoft.WindowsStore_8wekyb3d8bbwe', 'SpotifyAB.SpotifyMusic_zpdnekdrzrea0']
         fail_msg: "typical_pkgs={{ typical_pkgs }}"
-    - name: Parse the no-updates case (lone empty line from the catch block)
+    - name: Parse the no-updates case (lone trailing empty line)
       ansible.builtin.set_fact:
         empty_pkgs: >-
           {{ msstore_pending_empty.stdout_lines
@@ -56,3 +61,13 @@
         that:
           - blanks_pkgs == ['Microsoft.Paint_8wekyb3d8bbwe', 'Microsoft.ScreenSketch_8wekyb3d8bbwe']
         fail_msg: "blanks_pkgs={{ blanks_pkgs }}"
+    - name: Filter stderr diagnostics the way the SW_DIAG loop does
+      ansible.builtin.set_fact:
+        diag_lines: >-
+          {{ msstore_stderr_diag.stderr_lines | default([])
+             | reject('match', '^\s*$') | list }}
+    - name: Assert only the real diagnostic line survives
+      ansible.builtin.assert:
+        that:
+          - "diag_lines == ['msstore check error: System.Runtime.WindowsRuntime unavailable']"
+        fail_msg: "diag_lines={{ diag_lines }}"
