@@ -123,7 +123,7 @@ jobs:
           echo "$HOME/sdk/go/bin" >> "$GITHUB_PATH"
           echo "$HOME/go/bin" >> "$GITHUB_PATH"
       - run: go install golang.org/x/vuln/cmd/govulncheck@latest
-      - run: ./scripts/govulncheck.sh
+      - run: govulncheck ./...
 
   trufflehog:
     name: trufflehog (verified secrets)

@@ -102,7 +102,7 @@ jobs:
       - name: Install govulncheck
         run: go install golang.org/x/vuln/cmd/govulncheck@latest
 
-      - run: ./scripts/govulncheck.sh
+      - run: govulncheck ./...
 
   gitleaks:
     name: gitleaks
