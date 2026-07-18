@@ -48,6 +48,7 @@ FROM quay.io/centos/centos:stream10
 RUN dnf update -y \
  && dnf install -y --setopt=install_weak_deps=False \
         ca-certificates \
+        catatonit \
         openssh-clients \
         ansible-core \
  && dnf clean all && rm -rf /var/cache/dnf \
@@ -61,4 +62,4 @@ ENV DB_PATH=/var/lib/system-wrangler/system-wrangler.db
 VOLUME ["/var/lib/system-wrangler"]
 EXPOSE 8080 8443
 USER app
-ENTRYPOINT ["/usr/local/bin/server"]
+ENTRYPOINT ["/usr/libexec/catatonit/catatonit", "--", "/usr/local/bin/server"]
