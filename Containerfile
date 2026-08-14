@@ -12,7 +12,7 @@ COPY --from=frontend . .
 RUN npm run build
 
 FROM --platform=$BUILDPLATFORM quay.io/centos/centos:stream10 AS backend-build
-ARG GO_VERSION=1.26.5
+ARG GO_VERSION=1.26.6
 ARG BACKEND_SHA=dev
 ARG FRONTEND_SHA=dev
 ARG BUILD_DATE=unknown
